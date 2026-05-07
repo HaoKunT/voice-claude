@@ -1,0 +1,10 @@
+.env
+*.wav
+__pycache__/
+*.pyc
+*.exe
+*.app
+voice-claude
+voice-claude-amd64
+voice-claude-arm64.exe
+.DS_Store

@@ -1,0 +1,115 @@
+version: "2"
+run:
+  concurrency: 4
+  timeout: 5m
+  tests: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 50
+
+linters:
+  enable:
+    # correctness
+    - govet
+    - staticcheck
+    - unused
+    - errcheck
+    - errorlint
+    - nilerr
+    - forcetypeassert
+    - copyloopvar
+    - durationcheck
+    - reassign
+    # style
+    - gocritic
+    - revive
+    - whitespace
+    - misspell
+    - predeclared
+    - errname
+    - asciicheck
+    # complexity
+    - gocyclo
+    - nestif
+    - funlen
+    # performance
+    - perfsprint
+    - unconvert
+    - ineffassign
+    - goconst
+    # security & resources
+    - gosec
+    - bidichk
+    - bodyclose
+    - noctx
+    - sqlclosecheck
+    - rowserrcheck
+    # logging
+    - sloglint
+    # modernization
+    - modernize
+    - intrange
+    - usestdlibvars
+    - nolintlint
+
+  disable:
+    - wsl_v5         # whitespace rules — too strict for GUI/callback-heavy code
+    - godot          # comment period — too noisy for Chinese comments
+    - dupword        # duplicate words — false positives in Chinese text
+    - dupl           # code duplication — GUI sections are intentionally similar
+    - containedctx   # context in struct — not applicable here
+    - fatcontext     # context in loops — not applicable here
+    - noctx          # HTTP without context — legacy ASR APIs don't use context
+    - exhaustive     # switch exhaustiveness — not applicable without typed enums
+    - testifylint    # no testify used
+    - thelper        # no tests
+    - usetesting     # no tests
+    - paralleltest   # no tests
+    - exptostd       # no golang.org/x/exp used
+    - loggercheck    # slog is used directly without wrappers
+
+  exclusions:
+    paths:
+      - vendor$
+
+  settings:
+    funlen:
+      lines: 200      # GUI setup functions are legitimately long
+      statements: 150 # GUI settings form with multiple sections requires many widget declarations
+    gocyclo:
+      min-complexity: 20  # GUI setup and WebSocket state machines are legitimately complex
+    goconst:
+      min-len: 4
+      min-occurrences: 4
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: package-comments
+          disabled: true  # main package doesn't need a package comment
+    nestif:
+      min-complexity: 12  # WebSocket receive goroutines have inherently nested dispatch logic
+    gosec:
+      excludes:
+        - G107  # URL from variable — intentional for configurable ASR endpoints
+        - G304  # file path from variable — intentional for model download paths
+        - G115  # integer overflow conversion — audio PCM conversions are range-checked
+        - G302  # file permissions 0644 — log/config files don't need stricter permissions
+        - G306  # file permissions 0644 — config files don't need stricter permissions
+        - G110  # decompression bomb — model download from trusted GitHub releases URL
+        - G303  # temp file in shared dir — debug WAV file, intentional
+        - G204  # subprocess with variable — logPath is from our own configDir, not user input
+
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+  settings:
+    gofumpt:
+      extra-rules: true
+  exclusions:
+    generated: lax
+    paths:
+      - vendor$

@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go mod tidy
+        run: go mod tidy && git diff --exit-code
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  security:
+    name: Security
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          make vuln
+
+  test:
+    name: Test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: make test
+
+  package:
+    name: Package (${{ matrix.os }})
+    if: github.ref == 'refs/heads/main'
+    needs: [test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: voice-claude-macos
+            path: voice-claude-macos.zip
+          - os: windows-latest
+            artifact: voice-claude-windows
+            path: voice-claude-windows.zip
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build & package (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          CGO_ENABLED=1 go build -tags nosherpa -o voice-claude .
+          rm -rf voice-claude.app
+          mkdir -p voice-claude.app/Contents/MacOS
+          mkdir -p voice-claude.app/Contents/Resources
+          cp voice-claude voice-claude.app/Contents/MacOS/voice-claude
+          cp icon.png voice-claude.app/Contents/Resources/icon.png
+          cp Info.plist voice-claude.app/Contents/Info.plist
+          zip -r voice-claude-macos.zip voice-claude.app
+
+      - name: Build & package (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          make build-win
+          Compress-Archive -Force -Path voice-claude.exe -DestinationPath voice-claude-windows.zip
+        shell: pwsh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.path }}
+          retention-days: 7
