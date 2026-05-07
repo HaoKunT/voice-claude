@@ -1,5 +1,8 @@
 .env
 *.wav
+*.m4a
+*.mp3
+*.ogg
 __pycache__/
 *.pyc
 *.exe
