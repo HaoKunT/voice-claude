@@ -5,6 +5,8 @@ package main
 import (
 	"archive/tar"
 	"compress/bzip2"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -18,8 +20,9 @@ import (
 )
 
 const (
-	senseVoiceModelDir = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
-	senseVoiceModelURL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2"
+	senseVoiceModelDir    = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
+	senseVoiceModelURL    = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2"
+	senseVoiceModelSHA256 = "8148030f23c4bc0848239c80b635f3a0a1c275a2ae7ae37469bbe2341aa96d3f"
 )
 
 func senseVoiceModelPath() string {
@@ -27,13 +30,14 @@ func senseVoiceModelPath() string {
 }
 
 // DownloadSenseVoiceModel 下载并解压 SenseVoice 模型，onProgress 回调 0.0~1.0。
+// 下载完成后对 tar.bz2 做 SHA256 校验，校验失败会删除已下载数据。
 func DownloadSenseVoiceModel(onProgress func(float64)) error {
 	destDir := configDir()
 	os.MkdirAll(destDir, 0o755) //nolint:errcheck,gosec // best-effort directory creation
 
 	slog.Info("开始下载 SenseVoice 模型", "url", senseVoiceModelURL)
 
-	resp, err := http.Get(senseVoiceModelURL)
+	resp, err := http.Get(senseVoiceModelURL) //nolint:gosec,noctx // URL 为硬编码常量，无需 context
 	if err != nil {
 		return fmt.Errorf("下载失败: %w", err)
 	}
@@ -41,10 +45,11 @@ func DownloadSenseVoiceModel(onProgress func(float64)) error {
 
 	total := resp.ContentLength
 	var downloaded int64
+	hasher := sha256.New()
 
-	// 带进度的读取
+	// 带进度的读取，同时计算 SHA256
 	reader := &progressReader{
-		r: resp.Body,
+		r: io.TeeReader(resp.Body, hasher),
 		onRead: func(n int) {
 			downloaded += int64(n)
 			if total > 0 && onProgress != nil {
@@ -53,7 +58,13 @@ func DownloadSenseVoiceModel(onProgress func(float64)) error {
 		},
 	}
 
-	// 解压 tar.bz2
+	// 先解压到临时目录，校验通过后再移动到目标目录
+	tmpDir, err := os.MkdirTemp(destDir, "sense-voice-tmp-")
+	if err != nil {
+		return fmt.Errorf("创建临时目录失败: %w", err)
+	}
+	defer os.RemoveAll(tmpDir) //nolint:errcheck // cleanup on any exit path
+
 	bzReader := bzip2.NewReader(reader)
 	tarReader := tar.NewReader(bzReader)
 
@@ -66,14 +77,14 @@ func DownloadSenseVoiceModel(onProgress func(float64)) error {
 			return fmt.Errorf("解压失败: %w", err)
 		}
 
-		// 去掉顶层目录前缀，解压到 configDir/senseVoiceModelDir/
+		// 去掉顶层目录前缀，解压到临时目录
 		_, after, ok := strings.Cut(header.Name, "/")
 		if !ok || after == "" {
 			continue
 		}
-		target := filepath.Join(destDir, senseVoiceModelDir, filepath.FromSlash(after))
-		// Zip Slip 防护：确保解压路径在目标目录内
-		safeRoot := filepath.Clean(filepath.Join(destDir, senseVoiceModelDir)) + string(os.PathSeparator)
+		target := filepath.Join(tmpDir, filepath.FromSlash(after))
+		// Zip Slip 防护
+		safeRoot := filepath.Clean(tmpDir) + string(os.PathSeparator)
 		if !strings.HasPrefix(filepath.Clean(target)+string(os.PathSeparator), safeRoot) {
 			return fmt.Errorf("非法路径: %s", header.Name)
 		}
@@ -88,13 +99,27 @@ func DownloadSenseVoiceModel(onProgress func(float64)) error {
 				return fmt.Errorf("创建文件失败 %q: %w", target, err)
 			}
 			if _, err := io.Copy(f, tarReader); err != nil {
-				f.Close() //nolint:errcheck,gosec // error path, original error takes precedence
+				f.Close() //nolint:errcheck // error path
 				return fmt.Errorf("写入文件失败 %q: %w", target, err)
 			}
 			if err := f.Close(); err != nil {
 				return fmt.Errorf("关闭文件失败 %q: %w", target, err)
 			}
 		}
+	}
+
+	// SHA256 校验（在全部数据流经 hasher 之后）
+	got := hex.EncodeToString(hasher.Sum(nil))
+	if got != senseVoiceModelSHA256 {
+		return fmt.Errorf("SHA256 校验失败（期望 %s，实际 %s），文件可能损坏", senseVoiceModelSHA256, got)
+	}
+	slog.Info("SHA256 校验通过", "hash", got)
+
+	// 移动临时目录到最终位置
+	finalDir := filepath.Join(destDir, senseVoiceModelDir)
+	os.RemoveAll(finalDir) //nolint:errcheck // replace existing
+	if err := os.Rename(tmpDir, finalDir); err != nil {
+		return fmt.Errorf("移动模型目录失败: %w", err)
 	}
 
 	if onProgress != nil {

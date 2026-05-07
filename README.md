@@ -45,7 +45,7 @@ make build-win   # 生成 voice-claude.exe
 | 讯飞 | 流式 | 需要 AppID + AccessKey |
 | 豆包/火山 | 流式 | 效果最好，注册送 40 小时额度 |
 | OpenRouter | 批处理 | Whisper large-v3-turbo |
-| 本地 SenseVoice | 离线批处理 | 约 100MB 模型，macOS arm64/amd64 |
+| 本地 SenseVoice | 离线批处理 | 约 1GB 模型，macOS arm64/amd64 |
 
 ## AI 纠错（可选）
 

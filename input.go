@@ -8,3 +8,10 @@ import (
 func TypeText(text string) {
 	robotgo.Type(text)
 }
+
+// DeleteChars 发送 n 个退格键，用于删除之前输入的中间结果。
+func DeleteChars(n int) {
+	for range n {
+		robotgo.KeyTap("backspace")
+	}
+}

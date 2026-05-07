@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"image/color"
 	"log/slog"
+	"os/exec"
+	"runtime"
 	"strconv"
 	"sync"
 
@@ -20,6 +22,10 @@ import (
 var (
 	currentHotkey   *hotkey.Hotkey
 	currentHotkeyMu sync.Mutex
+
+	// 录音切换状态：非 nil 表示正在录音，关闭它触发停止
+	recordingStopCh   chan struct{}
+	recordingStopMu   sync.Mutex
 )
 
 // 自定义暗色主题
@@ -104,8 +110,34 @@ func ShowSettings(app fyne.App, cfg *Config) { //nolint:gocyclo,funlen // GUI se
 	w.Resize(fyne.NewSize(520, 640))
 
 	// === 语音识别 ===
-	providerSelect := widget.NewSelect([]string{ASRProviderZhipu, ASRProviderXfyun, ASRProviderVolc, ASRProviderOpenRouter, ASRProviderLocal}, nil)
-	providerSelect.SetSelected(cfg.ASRProvider)
+	providerLabels := []string{
+		ASRProviderVolc + "（实时）",
+		ASRProviderXfyun + "（实时）",
+		ASRProviderZhipu + "（准确优先）",
+		ASRProviderOpenRouter + "（准确优先）",
+		ASRProviderLocal + "（离线/隐私）",
+	}
+	providerValues := []string{
+		ASRProviderVolc, ASRProviderXfyun, ASRProviderZhipu, ASRProviderOpenRouter, ASRProviderLocal,
+	}
+	providerLabelOf := func(v string) string {
+		for i, pv := range providerValues {
+			if pv == v {
+				return providerLabels[i]
+			}
+		}
+		return v
+	}
+	providerValueOf := func(label string) string {
+		for i, pl := range providerLabels {
+			if pl == label {
+				return providerValues[i]
+			}
+		}
+		return label
+	}
+	providerSelect := widget.NewSelect(providerLabels, nil)
+	providerSelect.SetSelected(providerLabelOf(cfg.ASRProvider))
 
 	// 智谱配置
 	apiKeyEntry := widget.NewPasswordEntry()
@@ -183,7 +215,7 @@ func ShowSettings(app fyne.App, cfg *Config) { //nolint:gocyclo,funlen // GUI se
 			downloadBtn.SetText("重新下载")
 		} else {
 			localStatusLabel.SetText("状态：模型未下载")
-			downloadBtn.SetText("下载模型（约 100MB）")
+			downloadBtn.SetText("下载模型（约 1GB）")
 		}
 	}
 	refreshLocalStatus()
@@ -218,22 +250,38 @@ func ShowSettings(app fyne.App, cfg *Config) { //nolint:gocyclo,funlen // GUI se
 		}()
 	}
 
+	openDirBtn := widget.NewButton("打开模型目录", func() {
+		dir := senseVoiceModelPath()
+		var cmd *exec.Cmd
+		switch runtime.GOOS {
+		case "darwin":
+			cmd = exec.Command("open", dir)
+		case "windows":
+			cmd = exec.Command("explorer", dir)
+		default:
+			cmd = exec.Command("xdg-open", dir)
+		}
+		if err := cmd.Start(); err != nil {
+			slog.Warn("打开目录失败", "error", err)
+		}
+	})
+
 	localSection := container.NewVBox(
 		widget.NewLabel("本地 SenseVoice（离线，无需 API Key）"),
 		localStatusLabel,
 		localProgressBar,
-		downloadBtn,
+		container.NewHBox(downloadBtn, openDirBtn),
 	)
 
 	asrFields := container.NewVBox(zhipuSection, xfyunSection, volcSection, openrouterSection, localSection)
 
-	updateASRVisibility := func(provider string) {
+	updateASRVisibility := func(label string) {
 		zhipuSection.Hide()
 		xfyunSection.Hide()
 		volcSection.Hide()
 		openrouterSection.Hide()
 		localSection.Hide()
-		switch provider {
+		switch providerValueOf(label) {
 		case ASRProviderXfyun:
 			xfyunSection.Show()
 		case ASRProviderVolc:
@@ -247,7 +295,7 @@ func ShowSettings(app fyne.App, cfg *Config) { //nolint:gocyclo,funlen // GUI se
 		}
 	}
 	providerSelect.OnChanged = updateASRVisibility
-	updateASRVisibility(cfg.ASRProvider)
+	updateASRVisibility(providerLabelOf(cfg.ASRProvider))
 
 	asrSection := sectionCard("语音识别引擎", "🎙", container.NewVBox(
 		widget.NewLabel("识别后端"),
@@ -361,7 +409,7 @@ func ShowSettings(app fyne.App, cfg *Config) { //nolint:gocyclo,funlen // GUI se
 	saveBtn := widget.NewButton("保存配置", func() {
 		oldHotkey := cfg.Hotkey
 
-		cfg.ASRProvider = providerSelect.Selected
+		cfg.ASRProvider = providerValueOf(providerSelect.Selected)
 		cfg.ASRAPIKey = apiKeyEntry.Text
 		cfg.XfyunAppID = xfyunAppIDEntry.Text
 		cfg.XfyunAccessKeyID = xfyunKeyIDEntry.Text
@@ -445,7 +493,11 @@ func reRegisterHotkey(cfg *Config) error {
 	currentHotkey = hk
 	currentHotkeyMu.Unlock()
 
-	go handleRecord(hk, cfg)
+	go func() {
+		for range hk.Keydown() {
+			toggleRecording(cfg)
+		}
+	}()
 	slog.Info("快捷键已更新", "hotkey", cfg.Hotkey)
 	return nil
 }

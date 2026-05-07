@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -62,8 +63,9 @@ func main() {
 		currentHotkeyMu.Unlock()
 
 		slog.Info("快捷键已注册", "hotkey", cfg.Hotkey)
+
 		for range hk.Keydown() {
-			handleRecord(hk, cfg)
+			toggleRecording(cfg)
 		}
 	}()
 
@@ -71,13 +73,12 @@ func main() {
 	fyneApp.Run()
 }
 
-func handleRecord(hk *hotkey.Hotkey, cfg *Config) {
+func handleRecord(stopCh <-chan struct{}, cfg *Config) {
 	slog.Info("开始录音")
 
 	rec, err := NewRecorder(cfg.Gain, cfg.DeviceName)
 	if err != nil {
 		slog.Error("录音初始化失败", "error", err)
-		<-hk.Keyup()
 		return
 	}
 
@@ -85,11 +86,11 @@ func handleRecord(hk *hotkey.Hotkey, cfg *Config) {
 
 	switch cfg.ASRProvider {
 	case ASRProviderXfyun:
-		rawText, err = handleRecordStream(hk, rec, cfg, TranscribeXfyunStream)
+		rawText, err = handleRecordStream(stopCh, rec, cfg, TranscribeXfyunStream)
 	case ASRProviderVolc:
-		rawText, err = handleRecordStream(hk, rec, cfg, TranscribeVolc)
+		rawText, err = handleRecordStream(stopCh, rec, cfg, TranscribeVolc)
 	default:
-		rawText, err = handleRecordBatch(hk, rec, cfg)
+		rawText, err = handleRecordBatch(stopCh, rec, cfg)
 	}
 
 	rec.Close()
@@ -122,10 +123,16 @@ func handleRecord(hk *hotkey.Hotkey, cfg *Config) {
 
 type streamASRFunc func(cfg *Config, pcmCh <-chan []byte, onPartial func(string), ready chan<- struct{}) (string, error)
 
-// handleRecordStream 通用流式录音识别：等连接就绪后开始录音，松键后停止推流。
-func handleRecordStream(hk *hotkey.Hotkey, rec *Recorder, cfg *Config, fn streamASRFunc) (string, error) {
+// handleRecordStream 流式录音识别：等连接就绪后开始录音，中间结果实时输出，
+// 第二次按热键（stopCh 关闭）后停止，用退格删掉中间结果再输入最终结果。
+func handleRecordStream(stopCh <-chan struct{}, rec *Recorder, cfg *Config, fn streamASRFunc) (string, error) {
 	ready := make(chan struct{})
 	pcmCh := rec.StartStream()
+
+	var (
+		partialMu   sync.Mutex
+		partialRunes int // 已输入的中间结果字符数
+	)
 
 	type result struct {
 		text string
@@ -141,6 +148,13 @@ func handleRecordStream(hk *hotkey.Hotkey, rec *Recorder, cfg *Config, fn stream
 		}()
 		text, err := fn(cfg, pcmCh, func(partial string) {
 			slog.Debug("实时识别", "text", partial)
+			partialMu.Lock()
+			prev := partialRunes
+			partialRunes = len([]rune(partial))
+			partialMu.Unlock()
+			// 删掉上一次的中间结果，输入新的
+			DeleteChars(prev)
+			TypeText(partial)
 		}, ready)
 		done <- result{text, err}
 	}()
@@ -148,26 +162,35 @@ func handleRecordStream(hk *hotkey.Hotkey, rec *Recorder, cfg *Config, fn stream
 	<-ready
 	if err := rec.Start(); err != nil {
 		rec.StopStream()
-		<-hk.Keyup()
 		return "", fmt.Errorf("开始录音失败: %w", err)
 	}
 
-	<-hk.Keyup()
+	<-stopCh
 	rec.StopStream()
 	rec.Stop()
 
 	r := <-done
-	return r.text, r.err
+	if r.err != nil {
+		return "", r.err
+	}
+
+	// 删掉全部中间结果，由外层统一输入最终文字
+	partialMu.Lock()
+	prev := partialRunes
+	partialRunes = 0
+	partialMu.Unlock()
+	DeleteChars(prev)
+
+	return r.text, nil
 }
 
 // handleRecordBatch 录完整段再识别（智谱 / OpenRouter / 本地）。
-func handleRecordBatch(hk *hotkey.Hotkey, rec *Recorder, cfg *Config) (string, error) {
+func handleRecordBatch(stopCh <-chan struct{}, rec *Recorder, cfg *Config) (string, error) {
 	if err := rec.Start(); err != nil {
-		<-hk.Keyup()
 		return "", fmt.Errorf("开始录音失败: %w", err)
 	}
 
-	<-hk.Keyup()
+	<-stopCh
 	pcm := rec.Stop()
 	wav := rec.ToWAV(pcm)
 
@@ -195,4 +218,29 @@ func asrTranscribe(ctx context.Context, wavBytes []byte, cfg *Config) (string, e
 	default:
 		return TranscribeZhipu(ctx, wavBytes, cfg.ASRAPIKey)
 	}
+}
+
+// toggleRecording 切换录音状态：第一次调用开始录音，第二次调用停止录音。
+func toggleRecording(cfg *Config) {
+	recordingStopMu.Lock()
+	if recordingStopCh != nil {
+		// 正在录音，停止
+		close(recordingStopCh)
+		recordingStopCh = nil
+		recordingStopMu.Unlock()
+		return
+	}
+	// 开始录音
+	ch := make(chan struct{})
+	recordingStopCh = ch
+	recordingStopMu.Unlock()
+
+	go func() {
+		handleRecord(ch, cfg)
+		recordingStopMu.Lock()
+		if recordingStopCh == ch {
+			recordingStopCh = nil
+		}
+		recordingStopMu.Unlock()
+	}()
 }
