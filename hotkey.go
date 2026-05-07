@@ -26,21 +26,6 @@ var keyMap = map[string]hotkey.Key{
 	"esc": hotkey.KeyEscape, "delete": hotkey.KeyDelete,
 }
 
-var modMap = map[string]hotkey.Modifier{
-	"ctrl":     hotkey.ModCtrl,
-	"command":  hotkey.ModCmd,
-	"cmd":      hotkey.ModCmd,
-	"option":   hotkey.ModOption,
-	"alt":      hotkey.ModOption,
-	"shift":    hotkey.ModShift,
-	"rctrl":    hotkey.ModCtrl,
-	"rcommand": hotkey.ModCmd,
-	"rcmd":     hotkey.ModCmd,
-	"roption":  hotkey.ModOption,
-	"ralt":     hotkey.ModOption,
-	"rshift":   hotkey.ModShift,
-}
-
 // ParsedHotkey 保存解析后的热键修饰键和主键。
 type ParsedHotkey struct {
 	Mods []hotkey.Modifier
