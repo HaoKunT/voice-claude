@@ -86,11 +86,11 @@ func TestVolcDecodeResponse(t *testing.T) {
 	midPayload, _ := json.Marshal(volcServerPayload{Result: volcServerResult{Text: "中间结果"}})
 
 	tests := []struct {
-		name      string
-		data      []byte
-		wantText  string
-		wantFinal bool
-		wantErr   bool
+		name        string
+		data        []byte
+		wantText    string
+		wantFinal   bool
+		wantErr     bool
 		errContains string
 	}{
 		{

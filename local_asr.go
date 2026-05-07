@@ -37,7 +37,7 @@ func DownloadSenseVoiceModel(onProgress func(float64)) error {
 
 	slog.Info("开始下载 SenseVoice 模型", "url", senseVoiceModelURL)
 
-	resp, err := http.Get(senseVoiceModelURL) //nolint:gosec,noctx // URL 为硬编码常量，无需 context
+	resp, err := http.Get(senseVoiceModelURL) //nolint:noctx // 模型下载无需 context，超时由用户手动取消
 	if err != nil {
 		return fmt.Errorf("下载失败: %w", err)
 	}
@@ -99,7 +99,7 @@ func DownloadSenseVoiceModel(onProgress func(float64)) error {
 				return fmt.Errorf("创建文件失败 %q: %w", target, err)
 			}
 			if _, err := io.Copy(f, tarReader); err != nil {
-				f.Close() //nolint:errcheck // error path
+				f.Close() //nolint:errcheck,gosec // error path, original error takes precedence
 				return fmt.Errorf("写入文件失败 %q: %w", target, err)
 			}
 			if err := f.Close(); err != nil {
@@ -117,7 +117,7 @@ func DownloadSenseVoiceModel(onProgress func(float64)) error {
 
 	// 移动临时目录到最终位置
 	finalDir := filepath.Join(destDir, senseVoiceModelDir)
-	os.RemoveAll(finalDir) //nolint:errcheck // replace existing
+	os.RemoveAll(finalDir) //nolint:errcheck,gosec // replace existing installation, error means nothing to clean up
 	if err := os.Rename(tmpDir, finalDir); err != nil {
 		return fmt.Errorf("移动模型目录失败: %w", err)
 	}

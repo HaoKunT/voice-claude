@@ -82,6 +82,7 @@ linters:
     goconst:
       min-len: 4
       min-occurrences: 4
+      ignore-string-values: "darwin|windows|debug|info|warn|error|cmd\\+shift\\+f5"
     nolintlint:
       require-explanation: true
       require-specific: true

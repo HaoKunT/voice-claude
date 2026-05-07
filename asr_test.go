@@ -64,13 +64,14 @@ func TestSplitWAV(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var wav []byte
-			if tt.name == "数据不足44字节直接返回" {
+			switch tt.name {
+			case "数据不足44字节直接返回":
 				wav = []byte("too short")
-			} else if tt.name == "bitsPerSample为零安全返回" {
+			case "bitsPerSample为零安全返回":
 				wav = buildWAV(make([]byte, 100), 16000, 1, 16)
 				wav[34] = 0
 				wav[35] = 0
-			} else {
+			default:
 				wav = buildWAV(tt.pcm, 16000, 1, 16)
 			}
 

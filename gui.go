@@ -24,8 +24,8 @@ var (
 	currentHotkeyMu sync.Mutex
 
 	// 录音切换状态：非 nil 表示正在录音，关闭它触发停止
-	recordingStopCh   chan struct{}
-	recordingStopMu   sync.Mutex
+	recordingStopCh chan struct{}
+	recordingStopMu sync.Mutex
 )
 
 // 自定义暗色主题

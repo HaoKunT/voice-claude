@@ -29,11 +29,11 @@ func TestConfigSaveAndLoad(t *testing.T) {
 	t.Setenv("HOME", tmpDir)
 
 	cfg := &Config{
-		ASRProvider:  "volc",
-		Hotkey:       "cmd+shift+space",
-		Gain:         3,
-		LogLevel:     "debug",
-		CorrectMode:  CorrectModeOff,
+		ASRProvider:    "volc",
+		Hotkey:         "cmd+shift+space",
+		Gain:           3,
+		LogLevel:       "debug",
+		CorrectMode:    CorrectModeOff,
 		CorrectTimeout: 20,
 	}
 
@@ -68,7 +68,7 @@ func TestLoadConfig_InvalidJSON(t *testing.T) {
 
 	// 写入非法 JSON
 	cfgPath := filepath.Join(tmpDir, "Library", "Application Support", "voice-claude")
-	require.NoError(t, os.MkdirAll(cfgPath, 0o755))
+	require.NoError(t, os.MkdirAll(cfgPath, 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(cfgPath, "config.json"), []byte("not json"), 0o600))
 
 	// 解析失败应返回默认值
@@ -78,17 +78,17 @@ func TestLoadConfig_InvalidJSON(t *testing.T) {
 
 func TestConfigJSON_RoundTrip(t *testing.T) {
 	original := &Config{
-		ASRProvider:      ASRProviderVolc,
-		VolcAppKey:       "my-app-key",
-		VolcAccessToken:  "my-token",
-		VolcResourceID:   "volc.seedasr.sauc.duration",
-		CorrectMode:      CorrectModeCloud,
-		CorrectModel:     "gpt-4o",
-		CorrectAPIKey:    "sk-xxx",
-		CorrectTimeout:   15,
-		Hotkey:           "option+shift+r",
-		Gain:             2,
-		LogLevel:         "debug",
+		ASRProvider:     ASRProviderVolc,
+		VolcAppKey:      "my-app-key",
+		VolcAccessToken: "my-token",
+		VolcResourceID:  "volc.seedasr.sauc.duration",
+		CorrectMode:     CorrectModeCloud,
+		CorrectModel:    "gpt-4o",
+		CorrectAPIKey:   "sk-xxx",
+		CorrectTimeout:  15,
+		Hotkey:          "option+shift+r",
+		Gain:            2,
+		LogLevel:        "debug",
 	}
 
 	data, err := json.Marshal(original)

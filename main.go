@@ -130,7 +130,7 @@ func handleRecordStream(stopCh <-chan struct{}, rec *Recorder, cfg *Config, fn s
 	pcmCh := rec.StartStream()
 
 	var (
-		partialMu   sync.Mutex
+		partialMu    sync.Mutex
 		partialRunes int // 已输入的中间结果字符数
 	)
 
