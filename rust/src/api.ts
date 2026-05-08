@@ -54,7 +54,7 @@ export const ASR_PROVIDERS = [
   { value: "xfyun", label: "讯飞（实时）" },
   { value: "zhipu", label: "智谱（准确优先）" },
   { value: "openrouter", label: "OpenRouter Whisper（准确优先）" },
-  { value: "local", label: "本地 SenseVoice（离线/隐私，开发中）" },
+  { value: "local", label: "本地 SenseVoice（离线 / 隐私）" },
 ];
 
 export const CORRECT_MODES = [
