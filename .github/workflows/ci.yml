@@ -87,12 +87,12 @@ jobs:
           - platform: macos-latest
             target: aarch64-apple-darwin
             artifact: voice-claude-macos-arm64
-          - platform: macos-13 # Intel
-            target: x86_64-apple-darwin
-            artifact: voice-claude-macos-amd64
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: voice-claude-windows-amd64
+    # macOS Intel（x86_64-apple-darwin）在 GitHub Actions 公共 runner 上队列严重拥堵，
+    # 已从 CI 矩阵移除。发布 Intel 版需本地 `cargo build --target x86_64-apple-darwin`
+    # 或后续引入 release workflow 触发（release-*.yml，按 tag 构建）。
     runs-on: ${{ matrix.platform }}
     defaults:
       run:
