@@ -53,7 +53,8 @@ rust-install: rust-build
 	if [ -z "$$BUNDLE" ]; then echo "未找到 .app bundle" && exit 1; fi; \
 	rm -rf "/Applications/$(APP_BUNDLE)"; \
 	cp -r "$$BUNDLE" "/Applications/$(APP_BUNDLE)"; \
-	echo "✓ 已安装到 /Applications/$(APP_BUNDLE)"
+	rm -rf "$$BUNDLE"; \
+	echo "✓ 已安装到 /Applications/$(APP_BUNDLE)（target 副本已清理，避免两个 app 共存）"
 
 rust-build-win:
 	cd $(RUST_DIR) && pnpm install && pnpm tauri build --target x86_64-pc-windows-msvc --bundles msi,nsis
