@@ -73,7 +73,22 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(state)
+        .on_window_event(|window, event| {
+            // 关闭主窗口时仅隐藏，app 本体靠托盘保持运行
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
+            }
+        })
         .setup(move |app| {
+            // macOS：LSUIElement 行为——只在菜单栏显示，不占 Dock
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::ActivationPolicy;
+                app.set_activation_policy(ActivationPolicy::Accessory);
+            }
             let handle = app.handle().clone();
 
             // 注册全局热键
