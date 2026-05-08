@@ -19,29 +19,42 @@
 
 ## 安装
 
-### macOS
+### macOS：从 Releases 下载（推荐）
+
+从 [Releases](https://github.com/HaoKunT/voice-claude/releases/latest) 下载 `voice-claude_x.x.x_aarch64.dmg`（Apple Silicon）。
+
+因为没有 Apple Developer 证书，macOS 会把 app 标记为"不受信任"。需要一条命令解除隔离：
+
+```bash
+# 1. 双击 .dmg，把 voice-claude 拖进 Applications
+# 2. 在终端执行（绕过 Gatekeeper）：
+xattr -dr com.apple.quarantine /Applications/voice-claude.app
+
+# 3. 启动 app
+open /Applications/voice-claude.app
+```
+
+启动后会依次请求：
+1. **麦克风权限** — 点"允许"
+2. **辅助功能权限** — 系统设置 → 隐私与安全性 → 辅助功能 → 点 `+` → 选 `/Applications/voice-claude.app` → 勾选
+3. **菜单栏图标**出现后点击 → 设置 → 填 ASR API Key 或下载本地 SenseVoice 模型
+4. **默认热键** `Cmd+Shift+F5`：按一下说话，再按一下结束
+
+### macOS：从源码构建
 
 ```bash
 git clone https://github.com/HaoKunT/voice-claude.git
 cd voice-claude
-make install   # 编译 + 打包 + 安装到 /Applications
+make install   # 编译 + 打包 + 自动签名 + 安装到 /Applications
 ```
 
-首次启动需要在 **系统设置 → 隐私与安全性 → 辅助功能** 中授权 voice-claude。
-
-**前置依赖**：Rust stable + Node.js 20+ + pnpm
+源码构建会自动做稳定签名，不需要 xattr。**前置依赖**：Rust stable + Node.js 20+ + pnpm。
 
 ### Windows
 
-目前需要有 Windows 机器：
+从 [Releases](https://github.com/HaoKunT/voice-claude/releases/latest) 下载 `voice-claude_x.x.x_x64-setup.exe`（NSIS 安装包）或 `.msi`。
 
-```powershell
-cd rust
-pnpm install
-pnpm tauri build --bundles msi,nsis
-```
-
-产物在 `src-tauri\target\release\bundle\` 下。Windows 版 NSPanel 等价未做，详见 `rust/WINDOWS_TODO.md`。
+> Windows 版 NSPanel 等价尚未实现（悬浮窗会抢焦点），详见 `rust/WINDOWS_TODO.md`。
 
 ## 快速上手
 
