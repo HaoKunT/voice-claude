@@ -36,6 +36,8 @@ pub fn prebuild(app: &AppHandle) {
         .inner_size(W, H)
         .resizable(false)
         .decorations(false)
+        .transparent(true)
+        .shadow(false)
         .always_on_top(true)
         .skip_taskbar(true)
         .focused(false)
@@ -49,6 +51,19 @@ pub fn prebuild(app: &AppHandle) {
             }
             #[cfg(target_os = "macos")]
             {
+                // 转 panel 前先把底层 NSWindow 的 opaque / backgroundColor 改为透明；
+                // 否则即使 webview 背景是 transparent，NSWindow 仍会有白色底板。
+                if let Ok(ns_window) = w.ns_window() {
+                    use tauri_nspanel::cocoa::base::{id, NO};
+                    use objc::{class, msg_send, sel, sel_impl};
+                    unsafe {
+                        let ns_window = ns_window as id;
+                        let _: () = msg_send![ns_window, setOpaque: NO];
+                        let clear: id = msg_send![class!(NSColor), clearColor];
+                        let _: () = msg_send![ns_window, setBackgroundColor: clear];
+                    }
+                }
+
                 use tauri_nspanel::WebviewWindowExt;
                 match w.to_panel() {
                     Ok(panel) => {

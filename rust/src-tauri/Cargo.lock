@@ -5649,6 +5649,7 @@ dependencies = [
  "hex",
  "hmac",
  "hound",
+ "objc",
  "once_cell",
  "parking_lot",
  "reqwest 0.12.28",

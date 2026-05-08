@@ -16,7 +16,7 @@ chrono = "0.4"
 
 [dependencies]
 # Tauri 核心 + 常用插件
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-opener = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-store = "2"
@@ -84,6 +84,7 @@ optional = true
 # macOS 专用：用 NSPanel 做真·不抢焦点浮窗（对应 type4me 的 FloatingBarPanel 方案）
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2" }
+objc = "0.2"
 
 [features]
 # 默认启用 local-asr：对齐 Go 版的 !nosherpa 发布（带离线 SenseVoice）
