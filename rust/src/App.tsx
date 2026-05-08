@@ -1,12 +1,20 @@
 import { useEffect, useState } from "react";
 import { SettingsView } from "./views/SettingsView";
 import { HistoryView } from "./views/HistoryView";
+import { AboutView } from "./views/AboutView";
 
-type Route = "settings" | "history";
+type Route = "settings" | "history" | "about";
+
+const ROUTE_HASHES: Record<Route, string> = {
+  settings: "#/",
+  history: "#/history",
+  about: "#/about",
+};
 
 function useHashRoute(): [Route, (r: Route) => void] {
   const read = (): Route => {
     if (window.location.hash === "#/history") return "history";
+    if (window.location.hash === "#/about") return "about";
     return "settings";
   };
   const [route, setRoute] = useState<Route>(read);
@@ -15,7 +23,7 @@ function useHashRoute(): [Route, (r: Route) => void] {
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
-  return [route, (r: Route) => (window.location.hash = r === "history" ? "#/history" : "#/")];
+  return [route, (r: Route) => (window.location.hash = ROUTE_HASHES[r])];
 }
 
 function App() {
@@ -38,10 +46,13 @@ function App() {
           </div>
           <NavItem icon="⚙" label="设置" active={route === "settings"} onClick={() => setRoute("settings")} />
           <NavItem icon="⏱" label="历史记录" active={route === "history"} onClick={() => setRoute("history")} />
+          <div className="flex-1" />
+          <NavItem icon="ℹ" label="关于" active={route === "about"} onClick={() => setRoute("about")} />
         </nav>
         <main className="flex-1 overflow-y-auto">
           {route === "settings" && <SettingsView />}
           {route === "history" && <HistoryView />}
+          {route === "about" && <AboutView />}
         </main>
       </div>
     </div>

@@ -84,6 +84,7 @@ async fn run(
     stop_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<()> {
     tracing::info!("开始录音");
+    let started_at = std::time::Instant::now();
 
     let _ = app.emit("recording-started", ());
     crate::beep::start();
@@ -142,7 +143,8 @@ async fn run(
         tracing::info!(text = %final_text, "热词替换");
     }
 
-    history::save(&raw_text, &final_text, &cfg.asr_provider);
+    let duration_ms = started_at.elapsed().as_millis() as i64;
+    history::save(&raw_text, &final_text, &cfg.asr_provider, duration_ms);
     let _ = app.emit("history-updated", ());
     // 刷新托盘菜单的"最近 5 条"（必须主线程：Tauri 的 Menu/TrayIcon API）
     let refresh_app = app.clone();

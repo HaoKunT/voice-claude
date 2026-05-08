@@ -73,6 +73,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build());
 
     #[cfg(target_os = "macos")]
@@ -147,6 +148,9 @@ pub fn run() {
             commands::open_config_dir,
             commands::is_sense_voice_available,
             commands::download_sense_voice,
+            commands::get_app_info,
+            commands::export_hotwords_csv,
+            commands::import_hotwords_csv,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

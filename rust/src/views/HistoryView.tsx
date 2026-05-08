@@ -63,7 +63,12 @@ export function HistoryView() {
           >
             <div className="flex justify-between items-start mb-1 text-[11px] text-gray-500 font-mono">
               <span>{formatTime(e.created_at)}</span>
-              <span className="px-1.5 py-0.5 rounded bg-white/5">{e.asr_provider}</span>
+              <div className="flex items-center gap-2">
+                {e.duration_ms > 0 && (
+                  <span className="text-gray-500">{formatDuration(e.duration_ms)}</span>
+                )}
+                <span className="px-1.5 py-0.5 rounded bg-white/5">{e.asr_provider}</span>
+              </div>
             </div>
             <div className="text-sm line-clamp-2 text-gray-200">{e.corrected_text}</div>
           </li>
@@ -81,7 +86,12 @@ export function HistoryView() {
           >
             <div className="flex justify-between items-center text-xs text-gray-500 font-mono">
               <span>{formatTime(selected.created_at)}</span>
-              <span className="px-1.5 py-0.5 rounded bg-white/5">{selected.asr_provider}</span>
+              <div className="flex items-center gap-2">
+                {selected.duration_ms > 0 && (
+                  <span>{formatDuration(selected.duration_ms)}</span>
+                )}
+                <span className="px-1.5 py-0.5 rounded bg-white/5">{selected.asr_provider}</span>
+              </div>
             </div>
             <div>
               <div className="label">原文</div>
@@ -114,6 +124,14 @@ export function HistoryView() {
       )}
     </div>
   );
+}
+
+function formatDuration(ms: number): string {
+  const total = Math.round(ms / 1000);
+  if (total < 60) return `${total}s`;
+  const mm = Math.floor(total / 60);
+  const ss = total % 60;
+  return `${mm}:${String(ss).padStart(2, "0")}`;
 }
 
 function formatTime(ts: number): string {

@@ -33,6 +33,19 @@ export interface HistoryEntry {
   raw_text: string;
   corrected_text: string;
   asr_provider: string;
+  duration_ms: number;
+}
+
+export interface AppInfo {
+  name: string;
+  version: string;
+  git_hash: string;
+  git_dirty: string;
+  rustc_version: string;
+  build_time: string;
+  target: string;
+  tauri_version: string;
+  debug: boolean;
 }
 
 export const api = {
@@ -47,6 +60,10 @@ export const api = {
   openConfigDir: () => invoke<void>("open_config_dir"),
   isSenseVoiceAvailable: () => invoke<boolean>("is_sense_voice_available"),
   downloadSenseVoice: () => invoke<void>("download_sense_voice"),
+  getAppInfo: () => invoke<AppInfo>("get_app_info"),
+  exportHotwordsCsv: () => invoke<string>("export_hotwords_csv"),
+  importHotwordsCsv: (csv: string, merge: boolean) =>
+    invoke<number>("import_hotwords_csv", { csv, merge }),
 };
 
 export const ASR_PROVIDERS = [

@@ -16,6 +16,8 @@ pub struct HistoryEntry {
     pub raw_text: String,
     pub corrected_text: String,
     pub asr_provider: String,
+    #[serde(default)]
+    pub duration_ms: i64,
 }
 
 static DB: OnceLock<Mutex<Connection>> = OnceLock::new();
@@ -36,21 +38,38 @@ pub fn init() -> Result<()> {
         [],
     )
     .context("create history table")?;
+    // Migration: 加 duration_ms 列（旧数据为 0）。
+    // 用 PRAGMA 查现有列，不存在才 ALTER（ALTER TABLE IF NOT EXISTS 在 SQLite 不支持列）
+    let has_duration = {
+        let mut stmt = conn.prepare("PRAGMA table_info(history)")?;
+        let cols: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .collect();
+        cols.iter().any(|c| c == "duration_ms")
+    };
+    if !has_duration {
+        conn.execute(
+            "ALTER TABLE history ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .context("add duration_ms column")?;
+    }
     DB.set(Mutex::new(conn))
         .map_err(|_| anyhow::anyhow!("DB already initialized"))?;
     Ok(())
 }
 
 /// 保存一条识别记录；DB 未初始化时静默返回。
-pub fn save(raw: &str, corrected: &str, provider: &str) {
+pub fn save(raw: &str, corrected: &str, provider: &str, duration_ms: i64) {
     let Some(lock) = DB.get() else {
         return;
     };
     let conn = lock.lock();
     let ts = chrono::Utc::now().timestamp();
     let _ = conn.execute(
-        "INSERT INTO history (created_at, raw_text, corrected_text, asr_provider) VALUES (?, ?, ?, ?)",
-        params![ts, raw, corrected, provider],
+        "INSERT INTO history (created_at, raw_text, corrected_text, asr_provider, duration_ms) VALUES (?, ?, ?, ?, ?)",
+        params![ts, raw, corrected, provider, duration_ms],
     );
 }
 
@@ -61,7 +80,7 @@ pub fn load(limit: i64) -> Result<Vec<HistoryEntry>> {
     };
     let conn = lock.lock();
     let mut stmt = conn.prepare(
-        "SELECT id, created_at, raw_text, corrected_text, asr_provider
+        "SELECT id, created_at, raw_text, corrected_text, asr_provider, duration_ms
          FROM history ORDER BY created_at DESC LIMIT ?",
     )?;
     let rows = stmt.query_map(params![limit], |row| {
@@ -71,6 +90,7 @@ pub fn load(limit: i64) -> Result<Vec<HistoryEntry>> {
             raw_text: row.get(2)?,
             corrected_text: row.get(3)?,
             asr_provider: row.get(4)?,
+            duration_ms: row.get(5).unwrap_or(0),
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)

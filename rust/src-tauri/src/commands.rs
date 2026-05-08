@@ -63,6 +63,34 @@ pub fn open_logs() -> Result<(), String> {
     open_path(&dirs::log_file_path().to_string_lossy())
 }
 
+#[derive(Serialize)]
+pub struct AppInfo {
+    pub name: &'static str,
+    pub version: &'static str,
+    pub git_hash: &'static str,
+    pub git_dirty: &'static str,
+    pub rustc_version: &'static str,
+    pub build_time: &'static str,
+    pub target: &'static str,
+    pub tauri_version: &'static str,
+    pub debug: bool,
+}
+
+#[tauri::command]
+pub fn get_app_info() -> AppInfo {
+    AppInfo {
+        name: env!("CARGO_PKG_NAME"),
+        version: env!("CARGO_PKG_VERSION"),
+        git_hash: env!("VC_GIT_HASH"),
+        git_dirty: env!("VC_GIT_DIRTY"),
+        rustc_version: env!("VC_RUSTC_VERSION"),
+        build_time: env!("VC_BUILD_TIME"),
+        target: env!("VC_TARGET"),
+        tauri_version: tauri::VERSION,
+        debug: cfg!(debug_assertions),
+    }
+}
+
 #[tauri::command]
 pub fn is_sense_voice_available() -> bool {
     local::is_available()
@@ -75,6 +103,102 @@ pub async fn download_sense_voice(app: AppHandle) -> Result<(), String> {
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+/// 把当前热词导出为 CSV 字符串（前端用 save dialog 保存）
+#[tauri::command]
+pub fn export_hotwords_csv(state: State<'_, AppState>) -> String {
+    let cfg = state.snapshot();
+    let mut out = String::from("原词,替换为\n");
+    let mut entries: Vec<_> = cfg.hotwords.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (k, v) in entries {
+        out.push_str(&format!("{},{}\n", csv_escape(k), csv_escape(v)));
+    }
+    out
+}
+
+/// 从 CSV 字符串解析热词，覆盖当前配置（保留其他字段）
+#[tauri::command]
+pub fn import_hotwords_csv(
+    csv: String,
+    merge: bool,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let mut hotwords = if merge {
+        state.snapshot().hotwords.clone()
+    } else {
+        std::collections::HashMap::new()
+    };
+    let mut added = 0usize;
+    for (i, line) in csv.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // 跳过表头（可选）
+        if i == 0 && (line.starts_with("原词") || line.to_lowercase().starts_with("from")) {
+            continue;
+        }
+        let Some(row) = parse_csv_row(line) else {
+            continue;
+        };
+        if row.len() < 2 {
+            continue;
+        }
+        let from = row[0].trim();
+        let to = row[1].trim();
+        if from.is_empty() {
+            continue;
+        }
+        hotwords.insert(from.to_string(), to.to_string());
+        added += 1;
+    }
+
+    // 更新配置
+    let mut cfg = (*state.snapshot()).clone();
+    cfg.hotwords = hotwords;
+    cfg.save().map_err(|e| e.to_string())?;
+    state.replace(cfg);
+    Ok(added)
+}
+
+fn csv_escape(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// 简易 CSV 行解析（支持引号包围 + 引号转义）。
+fn parse_csv_row(line: &str) -> Option<Vec<String>> {
+    let mut fields = Vec::new();
+    let mut cur = String::new();
+    let mut in_quote = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_quote {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    cur.push('"');
+                    chars.next();
+                } else {
+                    in_quote = false;
+                }
+            } else {
+                cur.push(c);
+            }
+        } else if c == '"' {
+            in_quote = true;
+        } else if c == ',' {
+            fields.push(std::mem::take(&mut cur));
+        } else {
+            cur.push(c);
+        }
+    }
+    fields.push(cur);
+    Some(fields)
 }
 
 #[tauri::command]

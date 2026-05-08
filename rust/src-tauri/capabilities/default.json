@@ -18,6 +18,12 @@
     "opener:default",
     "dialog:default",
     "notification:default",
+    "fs:allow-read-text-file",
+    "fs:allow-write-text-file",
+    {
+      "identifier": "fs:scope",
+      "allow": [{ "path": "$HOME/**" }, { "path": "$DOWNLOAD/**" }, { "path": "$DESKTOP/**" }, { "path": "$DOCUMENT/**" }]
+    },
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
     "global-shortcut:allow-is-registered",

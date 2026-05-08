@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, ASR_PROVIDERS, CORRECT_MODES, Config, DeviceInfo } from "../api";
 
 export function SettingsView() {
@@ -190,7 +191,7 @@ export function SettingsView() {
       <Section title="热词替换" icon="📝" subtitle="识别后自动替换（AI 纠错之后执行）">
         <div className="space-y-2">
           {Object.entries(cfg.hotwords).length === 0 && (
-            <div className="text-xs text-gray-500 py-2">暂无热词，点下方添加</div>
+            <div className="text-xs text-gray-500 py-2">暂无热词，点下方添加或导入 CSV</div>
           )}
           {Object.entries(cfg.hotwords).map(([from, to]) => (
             <HotwordRow
@@ -206,12 +207,20 @@ export function SettingsView() {
               onDelete={() => deleteHotword(from)}
             />
           ))}
-          <button
-            className="btn-ghost w-full justify-center"
-            onClick={() => updateHotword(`新热词_${Date.now()}`, "")}
-          >
-            ＋ 添加热词
-          </button>
+          <div className="flex gap-2">
+            <button
+              className="btn-ghost flex-1 justify-center"
+              onClick={() => updateHotword(`新热词_${Date.now()}`, "")}
+            >
+              ＋ 添加
+            </button>
+            <button className="btn-ghost" onClick={() => handleExportCsv()}>
+              导出 CSV
+            </button>
+            <button className="btn-ghost" onClick={() => handleImportCsv(setCfg, cfg)}>
+              导入 CSV
+            </button>
+          </div>
         </div>
       </Section>
 
@@ -237,6 +246,48 @@ export function SettingsView() {
 
     </div>
   );
+}
+
+async function handleExportCsv() {
+  try {
+    const csv = await api.exportHotwordsCsv();
+    const path = await saveDialog({
+      defaultPath: `voice-claude-hotwords-${new Date().toISOString().slice(0, 10)}.csv`,
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+    });
+    if (!path) return;
+    // 用 Rust 写文件（前端直接写有权限问题）
+    const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+    await writeTextFile(path, csv);
+  } catch (e) {
+    alert(`导出失败：${e}`);
+  }
+}
+
+async function handleImportCsv(setCfg: (c: Config) => void, cfg: Config) {
+  try {
+    const selected = await openDialog({
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+      multiple: false,
+    });
+    if (!selected || typeof selected !== "string") return;
+
+    const merge = confirm(
+      "选择「确定」合并到现有热词\n选择「取消」用 CSV 完全替换现有热词",
+    );
+
+    const { readTextFile } = await import("@tauri-apps/plugin-fs");
+    const csv = await readTextFile(selected);
+    const added = await api.importHotwordsCsv(csv, merge);
+    alert(`已导入 ${added} 条热词`);
+    // 刷新
+    const latest = await api.getConfig();
+    setCfg(latest);
+    // cfg 引用保持一致（防止 useEffect 自动保存覆盖）
+    void cfg;
+  } catch (e) {
+    alert(`导入失败：${e}`);
+  }
 }
 
 function SaveIndicator({ state, errMsg }: { state: "idle" | "saving" | "saved" | "error"; errMsg: string }) {

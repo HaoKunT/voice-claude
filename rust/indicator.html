@@ -28,9 +28,8 @@
         align-items: center;
         justify-content: center;
         flex-direction: column;
-        gap: 12px;
+        gap: 10px;
         border-radius: 22px;
-        /* Raycast 风格：深色 + 细腻渐变 + 发光边框 */
         background:
           radial-gradient(120% 120% at 50% 0%, rgba(155, 135, 245, 0.12) 0%, transparent 60%),
           radial-gradient(120% 120% at 50% 100%, rgba(255, 92, 92, 0.08) 0%, transparent 60%),
@@ -46,7 +45,6 @@
         overflow: hidden;
       }
 
-      /* 顶部彩色细光条 Raycast 招牌 */
       .panel::before {
         content: "";
         position: absolute;
@@ -66,24 +64,47 @@
 
       canvas {
         width: 460px;
-        height: 72px;
+        height: 60px;
       }
 
-      .label {
+      /* 实时识别文字 */
+      .partial {
+        min-height: 18px;
+        max-width: 440px;
+        font-size: 13px;
+        color: rgba(230, 230, 240, 0.95);
+        text-align: center;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        transition: opacity 0.2s;
+      }
+      .partial.empty {
+        opacity: 0.3;
+        font-style: italic;
+      }
+
+      .bottom {
         display: flex;
         align-items: center;
-        gap: 10px;
-        font-size: 12px;
-        font-weight: 500;
-        color: rgba(200, 200, 220, 0.85);
+        justify-content: space-between;
+        width: 440px;
+        font-size: 11px;
+        color: rgba(200, 200, 220, 0.7);
+      }
+
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
       }
 
       .pulse {
-        width: 8px;
-        height: 8px;
+        width: 7px;
+        height: 7px;
         border-radius: 50%;
         background: #ff5c5c;
-        box-shadow: 0 0 10px rgba(255, 92, 92, 0.6);
+        box-shadow: 0 0 8px rgba(255, 92, 92, 0.6);
         animation: pulse 1.4s ease-in-out infinite;
       }
 
@@ -92,32 +113,42 @@
         50% { opacity: 0.5; transform: scale(0.8); }
       }
 
+      .timer {
+        font-family: "SF Mono", ui-monospace, monospace;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.02em;
+        color: rgba(220, 220, 230, 0.9);
+      }
+
       kbd {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-width: 20px;
-        padding: 2px 6px;
+        min-width: 18px;
+        padding: 1px 5px;
         margin: 0 1px;
         background: rgba(255, 255, 255, 0.1);
         border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 4px;
+        border-radius: 3px;
         font-family: "SF Mono", ui-monospace, monospace;
-        font-size: 10px;
+        font-size: 9px;
         color: rgba(220, 220, 230, 1);
       }
     </style>
   </head>
   <body>
     <div class="panel">
-      <canvas id="wave" width="920" height="144"></canvas>
-      <div class="label">
-        <span class="pulse"></span>
-        <span>正在录音</span>
-        <span style="opacity: 0.5">•</span>
-        <span style="opacity: 0.7">再按一次</span>
-        <kbd>⌘</kbd><kbd>⇧</kbd><kbd>F5</kbd>
-        <span style="opacity: 0.7">结束</span>
+      <canvas id="wave" width="920" height="120"></canvas>
+      <div class="partial empty" id="partial">等待语音…</div>
+      <div class="bottom">
+        <div class="status">
+          <span class="pulse"></span>
+          <span id="status-text">录音中</span>
+          <span class="timer" id="timer">00:00</span>
+        </div>
+        <div style="opacity: 0.8">
+          再按 <kbd id="kbd-1">⌘</kbd><kbd id="kbd-2">⇧</kbd><kbd id="kbd-3">F5</kbd> 结束
+        </div>
       </div>
     </div>
     <script type="module" src="/src/indicator.tsx"></script>
