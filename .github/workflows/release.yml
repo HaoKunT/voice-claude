@@ -58,15 +58,31 @@ jobs:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "voice-claude ${{ github.event.inputs.tag || github.ref_name }}"
           releaseBody: |
-            ## voice-claude Release
+            按一下热键说话，再按一下结束，识别文字自动输入到当前焦点窗口。
 
-            下载对应平台的安装包：
+            ## 下载
+
             - **macOS (Apple Silicon)**：`*.dmg` 或 `*.app.tar.gz`
             - **Windows (x64)**：`*.msi` 或 `*-setup.exe`
 
             > Intel Mac 需本地 `cargo build --target x86_64-apple-darwin` 构建。
 
+            ## macOS 首次使用
+
+            1. 双击 `.dmg` → 把 voice-claude 拖进 Applications
+            2. 首次打开会弹麦克风权限请求，点允许
+            3. 系统设置 → 隐私与安全性 → 辅助功能 → `+` → 选 voice-claude → 勾选
+            4. 菜单栏出现 voice-claude 图标
+            5. 点图标 → 设置 → 选 ASR 后端填 API Key（或下载 SenseVoice 离线模型）
+            6. 默认热键 `Cmd+Shift+F5`：按一下开始说话，再按一下结束
+
+            ## 已知限制
+
+            - Windows NSPanel 等价尚未实现，悬浮窗会抢焦点（macOS 体验完整）
+            - 非 Apple Developer 证书签名，每次重装可能需要重新授权辅助功能
+            - 本地 SenseVoice 模型约 1GB，首次下载需稳定网络
+
             完整变更日志见提交历史。
           releaseDraft: true
-          prerelease: false
+          prerelease: true
           args: --target ${{ matrix.target }}
