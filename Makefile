@@ -45,8 +45,9 @@ rust-dev:
 	cd $(RUST_DIR) && pnpm install && pnpm tauri dev
 
 rust-build:
-	cd $(RUST_DIR) && pnpm install && pnpm tauri build --bundles app,dmg
+	cd $(RUST_DIR) && pnpm install && pnpm tauri build --bundles app
 	@echo "✓ Rust 版构建完成: $(RUST_DIR)/src-tauri/target/release/bundle/"
+	@echo "  （如需 dmg：pnpm tauri build --bundles app,dmg，偶发 hdiutil 失败重跑即可）"
 
 rust-install: rust-build
 	@BUNDLE=$$(find $(RUST_DIR)/src-tauri/target/release/bundle/macos -maxdepth 1 -name "*.app" | head -n1); \

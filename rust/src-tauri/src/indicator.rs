@@ -58,6 +58,10 @@ pub fn prebuild(app: &AppHandle) {
                                 | NS_WINDOW_STYLE_MASK_BORDERLESS,
                         );
                         panel.set_floating_panel(true);
+                        // 关键：panel 只在真的需要时才 become key（默认 false 会抢焦点）
+                        panel.set_becomes_key_only_if_needed(true);
+                        // 防止 app 失活时 panel 被 hide
+                        panel.set_hides_on_deactivate(false);
                         use tauri_nspanel::cocoa::appkit::NSWindowCollectionBehavior;
                         panel.set_collection_behaviour(
                             NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
@@ -78,18 +82,21 @@ pub fn prebuild(app: &AppHandle) {
 }
 
 /// 显示悬浮指示器（复用预创建的 NSPanel）。
+///
+/// **不要调 panel.show()** —— tauri-nspanel 的 show() 内部会 make_key_window，
+/// 导致目标 app 失焦，enigo 输入到错误窗口。只 order_front_regardless。
 pub fn show(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     {
         use tauri_nspanel::ManagerExt;
         if let Ok(panel) = app.get_webview_panel(LABEL) {
-            panel.show();
+            panel.order_front_regardless();
             return;
         }
         // 没预创建，补创建一次（可能 prebuild 失败）
         prebuild(app);
         if let Ok(panel) = app.get_webview_panel(LABEL) {
-            panel.show();
+            panel.order_front_regardless();
             return;
         }
     }

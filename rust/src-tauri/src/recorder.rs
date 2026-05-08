@@ -69,7 +69,6 @@ pub fn toggle(app: AppHandle, cfg: Arc<crate::config::Config>) {
     rec_state.active.store(true, Ordering::Relaxed);
 
     let app_handle = app.clone();
-    // 用 tauri::async_runtime：热键回调不在 tokio runtime 里，直接 tokio::spawn 会 panic
     tauri::async_runtime::spawn(async move {
         if let Err(e) = run(app_handle.clone(), cfg, stop_rx).await {
             tracing::error!(error = ?e, "录音流程失败");
@@ -87,6 +86,7 @@ async fn run(
     tracing::info!("开始录音");
 
     let _ = app.emit("recording-started", ());
+    crate::beep::start();
     // indicator 窗口创建 + tauri-nspanel to_panel() 必须在主线程，不能在 worker
     let show_app = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -144,6 +144,11 @@ async fn run(
 
     history::save(&raw_text, &final_text, &cfg.asr_provider);
     let _ = app.emit("history-updated", ());
+    // 刷新托盘菜单的"最近 5 条"（必须主线程：Tauri 的 Menu/TrayIcon API）
+    let refresh_app = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let _ = crate::tray::refresh(&refresh_app);
+    });
 
     tracing::info!(text = %final_text, "输入文字");
     if let Err(e) = input::type_text(&final_text) {
@@ -190,6 +195,7 @@ async fn run_stream(
 
     // 等用户停止
     let _ = stop_rx.await;
+    crate::beep::stop();
     rec.stop_stream();
     rec.stop();
 
@@ -207,6 +213,7 @@ async fn run_batch(
 ) -> Result<String> {
     rec.start()?;
     let _ = stop_rx.await;
+    crate::beep::stop();
     let pcm = rec.stop();
     let wav = to_wav(&pcm);
     if wav.len() < 100 {
@@ -215,6 +222,10 @@ async fn run_batch(
     }
     // debug：保存最近一次录音 WAV 到 /tmp，方便用 afplay 听
     let _ = std::fs::write("/tmp/voice-claude-last.wav", &wav);
-    tracing::info!(wav_bytes = wav.len(), path = "/tmp/voice-claude-last.wav", "识别中");
+    tracing::info!(
+        wav_bytes = wav.len(),
+        path = "/tmp/voice-claude-last.wav",
+        "识别中"
+    );
     asr::transcribe_batch(cfg, &wav).await
 }

@@ -3,10 +3,24 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    color-scheme: dark;
+  }
+  html,
   body {
-    @apply bg-bg-900 text-gray-200 antialiased;
-    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei",
-      system-ui, sans-serif;
+    @apply bg-bg-900 text-gray-100 antialiased;
+    font-family:
+      -apple-system,
+      BlinkMacSystemFont,
+      "SF Pro Text",
+      "SF Pro Display",
+      "PingFang SC",
+      "Microsoft YaHei",
+      system-ui,
+      sans-serif;
+    font-feature-settings: "cv11", "ss01", "ss03";
+    -webkit-font-smoothing: antialiased;
+    letter-spacing: -0.01em;
   }
   ::-webkit-scrollbar {
     width: 6px;
@@ -15,26 +29,83 @@
   ::-webkit-scrollbar-thumb {
     @apply bg-bg-600 rounded;
   }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-bg-500;
+  }
+
+  /* 去掉 input 默认样式 */
+  input,
+  select,
+  textarea,
+  button {
+    font-family: inherit;
+    letter-spacing: inherit;
+  }
 }
 
 @layer components {
   .card {
-    @apply bg-bg-800 rounded-xl p-5 border border-white/5 shadow-lg;
+    @apply bg-bg-800/90 rounded-2xl p-5 border border-white/5 shadow-card backdrop-blur-heavy;
   }
+
   .btn {
-    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg transition-colors text-sm;
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium
+           transition-all active:scale-[0.98];
   }
   .btn-primary {
-    @apply btn bg-accent text-white hover:bg-blue-500;
+    @apply btn bg-gradient-to-b from-accent to-accent-hi text-white
+           shadow-[0_1px_0_rgba(255,255,255,0.15)_inset,0_2px_8px_rgba(255,92,92,0.3)]
+           hover:brightness-110;
   }
   .btn-ghost {
-    @apply btn bg-bg-700 hover:bg-bg-600 text-gray-200;
+    @apply btn bg-white/[0.06] hover:bg-white/10 text-gray-200
+           border border-white/5;
   }
+  .btn-danger {
+    @apply btn bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/20;
+  }
+
   .input {
-    @apply w-full bg-bg-900 border border-bg-600 rounded-lg px-3 py-2 text-sm
-           outline-none focus:border-accent;
+    @apply w-full bg-bg-900/50 border border-white/[0.08] rounded-xl px-3.5 py-2.5 text-sm
+           outline-none transition-all
+           focus:border-accent/60 focus:bg-bg-900/80 focus:shadow-[0_0_0_3px_rgba(255,92,92,0.15)]
+           placeholder:text-gray-500;
   }
+
   .label {
-    @apply block text-xs text-gray-400 mb-1.5;
+    @apply block text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-2;
   }
+
+  .section-title {
+    @apply flex items-center gap-2 text-sm font-semibold text-gray-200 mb-4;
+  }
+
+  .nav-item {
+    @apply w-full text-left px-3 py-2 rounded-lg text-sm
+           transition-colors flex items-center gap-2;
+  }
+  .nav-item-active {
+    @apply bg-white/[0.08] text-white;
+  }
+  .nav-item-inactive {
+    @apply text-gray-400 hover:bg-white/[0.04] hover:text-gray-200;
+  }
+
+  /* Raycast 风格 kbd */
+  kbd {
+    @apply inline-flex items-center justify-center min-w-[20px] px-1.5 py-0.5
+           bg-white/10 border border-white/10 rounded text-[11px] font-mono text-gray-300;
+  }
+}
+
+/* 渐变顶部细光条，Raycast 的招牌 */
+.top-accent {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(155, 135, 245, 0.6) 25%,
+    rgba(255, 92, 92, 0.6) 50%,
+    rgba(125, 211, 252, 0.6) 75%,
+    transparent 100%
+  );
 }

@@ -16,6 +16,7 @@
 
 pub mod asr;
 pub mod audio;
+pub mod beep;
 pub mod commands;
 pub mod config;
 pub mod correct;
@@ -71,6 +72,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build());
 
     #[cfg(target_os = "macos")]
@@ -87,7 +89,9 @@ pub fn run() {
                     #[cfg(target_os = "macos")]
                     {
                         use tauri::{ActivationPolicy, Manager};
-                        let _ = window.app_handle().set_activation_policy(ActivationPolicy::Accessory);
+                        let _ = window
+                            .app_handle()
+                            .set_activation_policy(ActivationPolicy::Accessory);
                     }
                 }
             }

@@ -89,7 +89,11 @@ impl Recorder {
 
         // 优先尝试 16kHz mono 原生配置（避免我们的下采样 aliasing）；设备不支持再用 default
         let (config, sample_format, device_rate, device_channels): (cpal::StreamConfig, _, _, _) = {
-            let ranges: Vec<_> = device.supported_input_configs().ok().map(|it| it.collect()).unwrap_or_default();
+            let ranges: Vec<_> = device
+                .supported_input_configs()
+                .ok()
+                .map(|it| it.collect())
+                .unwrap_or_default();
             let supports_16k_mono = ranges.iter().any(|r| {
                 r.channels() == 1
                     && r.min_sample_rate().0 <= SAMPLE_RATE
@@ -104,7 +108,12 @@ impl Recorder {
                 (cfg, default_cfg.sample_format(), SAMPLE_RATE, 1u16)
             } else {
                 let cfg: cpal::StreamConfig = default_cfg.clone().into();
-                (cfg, default_cfg.sample_format(), default_cfg.sample_rate().0, default_cfg.channels())
+                (
+                    cfg,
+                    default_cfg.sample_format(),
+                    default_cfg.sample_rate().0,
+                    default_cfg.channels(),
+                )
             }
         };
 

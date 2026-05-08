@@ -5,12 +5,32 @@ import { api, ASR_PROVIDERS, CORRECT_MODES, Config, DeviceInfo } from "../api";
 export function SettingsView() {
   const [cfg, setCfg] = useState<Config | null>(null);
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
-  const [saveMsg, setSaveMsg] = useState<string>("");
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [errMsg, setErrMsg] = useState("");
 
   useEffect(() => {
     api.getConfig().then(setCfg);
     api.listDevices().then(setDevices).catch(() => setDevices([]));
   }, []);
+
+  // 自动保存：cfg 每次变化 → 500ms debounce → 调 saveConfig
+  useEffect(() => {
+    if (!cfg) return;
+    setSaveState("saving");
+    const timer = setTimeout(async () => {
+      try {
+        await api.saveConfig(cfg);
+        setSaveState("saved");
+        setErrMsg("");
+        setTimeout(() => setSaveState("idle"), 1500);
+      } catch (e) {
+        setSaveState("error");
+        setErrMsg(String(e));
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(cfg)]);
 
   if (!cfg) return <div className="p-8 text-gray-500">加载中…</div>;
 
@@ -30,24 +50,19 @@ export function SettingsView() {
     setCfg({ ...cfg, hotwords });
   };
 
-  const save = async () => {
-    try {
-      await api.saveConfig(cfg);
-      setSaveMsg("已保存 ✓");
-      setTimeout(() => setSaveMsg(""), 2000);
-    } catch (e) {
-      setSaveMsg(`保存失败：${e}`);
-    }
-  };
-
   return (
-    <div className="p-8 max-w-3xl mx-auto space-y-6">
-      <h2 className="text-2xl font-semibold">设置</h2>
-
-      <section className="card space-y-4">
-        <h3 className="text-accent font-medium">🎙 语音识别引擎</h3>
+    <div className="p-10 max-w-3xl mx-auto space-y-5 pb-10">
+      <div className="mb-2 flex items-start justify-between gap-4">
         <div>
-          <label className="label">识别后端</label>
+          <h1 className="text-xl font-semibold text-gray-100">设置</h1>
+          <p className="text-sm text-gray-500 mt-0.5">修改即自动保存</p>
+        </div>
+        <SaveIndicator state={saveState} errMsg={errMsg} />
+      </div>
+
+      {/* ASR */}
+      <Section title="语音识别" icon="🎙">
+        <Field label="识别后端">
           <select
             className="input"
             value={cfg.asr_provider}
@@ -59,34 +74,32 @@ export function SettingsView() {
               </option>
             ))}
           </select>
-        </div>
+        </Field>
 
         {cfg.asr_provider === "zhipu" && (
-          <div>
-            <label className="label">智谱 API Key</label>
+          <Field label="智谱 API Key">
             <input
               type="password"
               className="input"
               value={cfg.asr_api_key}
               onChange={(e) => update("asr_api_key", e.target.value)}
             />
-          </div>
+          </Field>
         )}
 
         {cfg.asr_provider === "xfyun" && (
           <>
-            <Field label="App ID" value={cfg.xfyun_app_id} onChange={(v) => update("xfyun_app_id", v)} />
-            <Field label="Access Key ID" value={cfg.xfyun_access_key_id} onChange={(v) => update("xfyun_access_key_id", v)} />
-            <Field label="Access Key Secret" value={cfg.xfyun_access_key_secret} onChange={(v) => update("xfyun_access_key_secret", v)} password />
+            <TextField label="App ID" value={cfg.xfyun_app_id} onChange={(v) => update("xfyun_app_id", v)} />
+            <TextField label="Access Key ID" value={cfg.xfyun_access_key_id} onChange={(v) => update("xfyun_access_key_id", v)} />
+            <TextField label="Access Key Secret" value={cfg.xfyun_access_key_secret} onChange={(v) => update("xfyun_access_key_secret", v)} password />
           </>
         )}
 
         {cfg.asr_provider === "volc" && (
           <>
-            <Field label="App Key" value={cfg.volc_app_key} onChange={(v) => update("volc_app_key", v)} />
-            <Field label="Access Token" value={cfg.volc_access_token} onChange={(v) => update("volc_access_token", v)} password />
-            <div>
-              <label className="label">识别模型</label>
+            <TextField label="App Key" value={cfg.volc_app_key} onChange={(v) => update("volc_app_key", v)} />
+            <TextField label="Access Token" value={cfg.volc_access_token} onChange={(v) => update("volc_access_token", v)} password />
+            <Field label="识别模型">
               <select
                 className="input"
                 value={cfg.volc_resource_id}
@@ -95,21 +108,20 @@ export function SettingsView() {
                 <option value="volc.seedasr.sauc.duration">volc.seedasr.sauc.duration (2.0)</option>
                 <option value="volc.bigasr.sauc.duration">volc.bigasr.sauc.duration (1.0)</option>
               </select>
-            </div>
+            </Field>
           </>
         )}
 
         {cfg.asr_provider === "openrouter" && (
-          <Field label="OpenRouter API Key" value={cfg.openrouter_api_key} onChange={(v) => update("openrouter_api_key", v)} password />
+          <TextField label="OpenRouter API Key" value={cfg.openrouter_api_key} onChange={(v) => update("openrouter_api_key", v)} password />
         )}
 
         {cfg.asr_provider === "local" && <LocalSenseVoicePanel />}
-      </section>
+      </Section>
 
-      <section className="card space-y-4">
-        <h3 className="text-accent font-medium">🧠 AI 纠错</h3>
-        <div>
-          <label className="label">纠错模式</label>
+      {/* AI 纠错 */}
+      <Section title="AI 纠错" icon="🧠">
+        <Field label="纠错模式">
           <select
             className="input"
             value={cfg.correct_mode}
@@ -119,29 +131,27 @@ export function SettingsView() {
               <option key={m.value} value={m.value}>{m.label}</option>
             ))}
           </select>
-        </div>
+        </Field>
         {cfg.correct_mode !== "off" && (
           <>
-            <Field label="API 地址" value={cfg.correct_url} onChange={(v) => update("correct_url", v)} />
-            <Field label="模型名称" value={cfg.correct_model} onChange={(v) => update("correct_model", v)} />
-            <Field label="API Key" value={cfg.correct_api_key} onChange={(v) => update("correct_api_key", v)} password />
-            <div>
-              <label className="label">超时（秒）</label>
+            <TextField label="API 地址" value={cfg.correct_url} onChange={(v) => update("correct_url", v)} />
+            <TextField label="模型名称" value={cfg.correct_model} onChange={(v) => update("correct_model", v)} />
+            <TextField label="API Key" value={cfg.correct_api_key} onChange={(v) => update("correct_api_key", v)} password />
+            <Field label="超时（秒）">
               <input
                 type="number"
                 className="input"
                 value={cfg.correct_timeout}
                 onChange={(e) => update("correct_timeout", parseInt(e.target.value) || 10)}
               />
-            </div>
+            </Field>
           </>
         )}
-      </section>
+      </Section>
 
-      <section className="card space-y-4">
-        <h3 className="text-accent font-medium">🎤 录音参数</h3>
-        <div>
-          <label className="label">麦克风</label>
+      {/* 录音参数 */}
+      <Section title="录音参数" icon="🎤">
+        <Field label="麦克风">
           <select
             className="input"
             value={cfg.device_name}
@@ -152,36 +162,44 @@ export function SettingsView() {
               <option key={d.name} value={d.name}>{d.name}</option>
             ))}
           </select>
-        </div>
-        <Field label="录音快捷键" value={cfg.hotkey} onChange={(v) => update("hotkey", v)} />
-        <div>
-          <label className="label">信号增益: {cfg.gain}x</label>
+        </Field>
+        <Field label={<><span>快捷键</span><KbdCombo combo={cfg.hotkey} /></>}>
+          <input
+            className="input font-mono"
+            value={cfg.hotkey}
+            onChange={(e) => update("hotkey", e.target.value)}
+            placeholder="cmd+shift+f5"
+          />
+        </Field>
+        <Field label={<><span>信号增益</span><span className="ml-auto font-mono text-accent">{cfg.gain}×</span></>}>
           <input
             type="range"
             min={1}
             max={10}
             value={cfg.gain}
             onChange={(e) => update("gain", parseInt(e.target.value))}
-            className="w-full"
+            className="w-full accent-accent"
           />
-        </div>
-      </section>
+          <div className="flex justify-between text-[10px] text-gray-600 mt-1 font-mono">
+            <span>1×</span><span>5×</span><span>10×</span>
+          </div>
+        </Field>
+      </Section>
 
-      <section className="card space-y-3">
-        <h3 className="text-accent font-medium">📝 热词替换</h3>
-        <p className="text-xs text-gray-400">识别后自动替换（AI 纠错之后执行）</p>
+      {/* 热词 */}
+      <Section title="热词替换" icon="📝" subtitle="识别后自动替换（AI 纠错之后执行）">
         <div className="space-y-2">
+          {Object.entries(cfg.hotwords).length === 0 && (
+            <div className="text-xs text-gray-500 py-2">暂无热词，点下方添加</div>
+          )}
           {Object.entries(cfg.hotwords).map(([from, to]) => (
             <HotwordRow
               key={from}
               from={from}
               to={to}
               onChange={(k, v) => {
-                // 更新 key 或 value
                 const hotwords = { ...cfg.hotwords };
-                if (k !== from) {
-                  delete hotwords[from];
-                }
+                if (k !== from) delete hotwords[from];
                 if (k) hotwords[k] = v;
                 setCfg({ ...cfg, hotwords });
               }}
@@ -189,18 +207,17 @@ export function SettingsView() {
             />
           ))}
           <button
-            className="btn-ghost"
+            className="btn-ghost w-full justify-center"
             onClick={() => updateHotword(`新热词_${Date.now()}`, "")}
           >
             ＋ 添加热词
           </button>
         </div>
-      </section>
+      </Section>
 
-      <section className="card space-y-3">
-        <h3 className="text-accent font-medium">📋 日志</h3>
-        <div>
-          <label className="label">日志级别</label>
+      {/* 日志 */}
+      <Section title="日志" icon="📋">
+        <Field label="日志级别">
           <select
             className="input"
             value={cfg.log_level}
@@ -211,32 +228,82 @@ export function SettingsView() {
             <option value="warn">warn</option>
             <option value="error">error</option>
           </select>
-        </div>
-        <div className="flex gap-2">
+        </Field>
+        <div className="flex gap-2 mt-3">
           <button className="btn-ghost" onClick={() => api.openLogs()}>打开日志文件</button>
           <button className="btn-ghost" onClick={() => api.openConfigDir()}>打开配置目录</button>
         </div>
-      </section>
+      </Section>
 
-      <div className="flex items-center gap-4 sticky bottom-0 bg-bg-900/80 backdrop-blur py-3">
-        <button className="btn-primary" onClick={save}>保存配置</button>
-        {saveMsg && <span className="text-sm text-gray-400">{saveMsg}</span>}
-      </div>
     </div>
   );
 }
 
-function Field(props: { label: string; value: string; onChange: (v: string) => void; password?: boolean }) {
+function SaveIndicator({ state, errMsg }: { state: "idle" | "saving" | "saved" | "error"; errMsg: string }) {
+  if (state === "idle") {
+    return (
+      <div className="flex items-center gap-2 text-xs text-gray-500">
+        <div className="w-1.5 h-1.5 rounded-full bg-gray-500" />
+        已保存
+      </div>
+    );
+  }
+  if (state === "saving") {
+    return (
+      <div className="flex items-center gap-2 text-xs text-amber-400">
+        <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+        保存中…
+      </div>
+    );
+  }
+  if (state === "saved") {
+    return (
+      <div className="flex items-center gap-2 text-xs text-green-400">
+        <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
+        已保存 ✓
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2 text-xs text-red-400" title={errMsg}>
+      <div className="w-1.5 h-1.5 rounded-full bg-red-400" />
+      保存失败
+    </div>
+  );
+}
+
+function Section(props: { title: string; icon: string; subtitle?: string; children: React.ReactNode }) {
+  return (
+    <section className="card">
+      <div className="section-title">
+        <span className="text-base">{props.icon}</span>
+        <span>{props.title}</span>
+      </div>
+      {props.subtitle && <p className="text-xs text-gray-500 -mt-2 mb-3">{props.subtitle}</p>}
+      <div className="space-y-3.5">{props.children}</div>
+    </section>
+  );
+}
+
+function Field(props: { label: React.ReactNode; children: React.ReactNode }) {
   return (
     <div>
-      <label className="label">{props.label}</label>
+      <label className="label flex items-center">{props.label}</label>
+      {props.children}
+    </div>
+  );
+}
+
+function TextField(props: { label: string; value: string; onChange: (v: string) => void; password?: boolean }) {
+  return (
+    <Field label={props.label}>
       <input
         type={props.password ? "password" : "text"}
         className="input"
         value={props.value}
         onChange={(e) => props.onChange(e.target.value)}
       />
-    </div>
+    </Field>
   );
 }
 
@@ -254,14 +321,36 @@ function HotwordRow(props: {
         value={props.from}
         onChange={(e) => props.onChange(e.target.value, props.to)}
       />
-      <span className="text-gray-500">→</span>
+      <span className="text-gray-500 px-1">→</span>
       <input
         className="input flex-1"
         placeholder="正确的词"
         value={props.to}
         onChange={(e) => props.onChange(props.from, e.target.value)}
       />
-      <button className="btn-ghost px-3" onClick={props.onDelete}>×</button>
+      <button
+        className="w-9 h-9 rounded-lg bg-white/[0.04] hover:bg-red-500/20 hover:text-red-400 transition flex items-center justify-center text-gray-500"
+        onClick={props.onDelete}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+function KbdCombo({ combo }: { combo: string }) {
+  const keys = combo.split("+").map((k) => k.trim().toLowerCase());
+  const sym: Record<string, string> = {
+    cmd: "⌘", command: "⌘", rcmd: "⌘", rcommand: "⌘",
+    shift: "⇧", rshift: "⇧",
+    alt: "⌥", option: "⌥", ralt: "⌥", roption: "⌥",
+    ctrl: "⌃", control: "⌃", rctrl: "⌃",
+  };
+  return (
+    <div className="ml-auto flex gap-1">
+      {keys.map((k, i) => (
+        <kbd key={i}>{sym[k] ?? k.toUpperCase()}</kbd>
+      ))}
     </div>
   );
 }
@@ -298,40 +387,36 @@ function LocalSenseVoicePanel() {
   };
 
   return (
-    <div className="space-y-3">
-      <p className="text-sm text-gray-400">
-        本地 SenseVoice：离线识别，无需 API Key。点"下载模型（约 1GB）"下载到配置目录后即可直接使用。
-      </p>
-      <div className="text-sm">
-        状态：
-        {available ? (
-          <span className="text-green-400">模型已就绪 ✓</span>
-        ) : (
-          <span className="text-amber-400">模型未下载</span>
-        )}
+    <div className="rounded-xl bg-white/[0.03] border border-white/[0.06] p-4 space-y-3">
+      <div className="flex items-center gap-3">
+        <div className={`w-2 h-2 rounded-full ${available ? "bg-green-400" : "bg-amber-400"}`} />
+        <span className="text-sm text-gray-300">
+          {available ? "模型已就绪" : "模型未下载"}
+        </span>
+        <span className="text-xs text-gray-500 ml-auto">约 1 GB</span>
       </div>
       {downloading && (
         <div>
-          <div className="h-2 bg-bg-700 rounded overflow-hidden">
+          <div className="h-1 bg-bg-900 rounded-full overflow-hidden">
             <div
-              className="h-full bg-accent transition-all"
+              className="h-full bg-gradient-to-r from-accent to-brand-purple transition-all"
               style={{ width: `${progress * 100}%` }}
             />
           </div>
-          <div className="text-xs text-gray-500 mt-1">
-            {Math.round(progress * 100)}%（模型约 1GB，需稳定网络）
+          <div className="text-[11px] text-gray-500 mt-1 font-mono">
+            {Math.round(progress * 100)}%
           </div>
         </div>
       )}
       <div className="flex gap-2">
         <button
-          className="btn-primary disabled:opacity-50"
+          className="btn-primary disabled:opacity-50 text-xs py-1.5"
           disabled={downloading}
           onClick={onDownload}
         >
-          {available ? "重新下载" : "下载模型（约 1GB）"}
+          {available ? "重新下载" : "下载模型"}
         </button>
-        <button className="btn-ghost" onClick={() => api.openConfigDir()}>
+        <button className="btn-ghost text-xs py-1.5" onClick={() => api.openConfigDir()}>
           打开模型目录
         </button>
       </div>
