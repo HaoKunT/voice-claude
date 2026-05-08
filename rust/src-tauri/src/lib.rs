@@ -23,6 +23,7 @@ pub mod dirs;
 pub mod history;
 pub mod hotkey;
 pub mod hotwords;
+pub mod indicator;
 pub mod input;
 pub mod logger;
 pub mod recorder;

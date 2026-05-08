@@ -1,8 +1,10 @@
 # voice-claude
 
-按住热键，气声说话，松键后自动将识别文字输入到当前焦点窗口。专为办公室气声输入设计，不打扰同事。
+按一下热键开始说话，再按一下热键结束，识别文字自动输入到当前焦点窗口。专为办公室气声输入设计。
 
-数据流：**按住热键 → 录音 → PCM 增益 → ASR 转写 → AI 纠错（可选）→ 模拟键盘输入**
+> **迁移中：** 项目正在从 Go + Fyne 迁移到 Rust + Tauri。主线代码在 [`rust/`](./rust/) 目录，根目录的 Go 版本作为归档保留，CI 仍然同时校验两版。
+
+数据流：**按热键 → 录音 → PCM 增益 → ASR 转写 → AI 纠错（可选）→ 热词替换 → 模拟键盘输入**
 
 ## 功能特性
 
@@ -15,27 +17,38 @@
 
 ## 安装
 
-### macOS（推荐）
+### macOS（Rust 版 - 主线）
+
+需要 Rust stable + Node.js 20+ + pnpm：
 
 ```bash
-git clone https://github.com/tanghaokun/voice-claude.git
+git clone https://github.com/HaoKunT/voice-claude.git
 cd voice-claude
-make install   # 编译并安装到 /Applications/voice-claude.app
+make rust-install   # 编译 + 打包 .app + 安装到 /Applications
+# 或开发模式
+make rust-dev
 ```
 
 首次启动需在「系统设置 → 隐私与安全性 → 辅助功能」中授权。
 
-### Windows
+### macOS / Windows（Go 旧版 - 归档）
 
 ```bash
-make build-win   # 生成 voice-claude.exe
+make go-install      # macOS
+make go-build-win    # Windows
+```
+
+### Windows（Rust 版）
+
+```bash
+make rust-build-win   # 生成 Windows .msi / .exe 安装包
 ```
 
 ## 快速上手
 
 1. 启动 `voice-claude.app`，菜单栏出现图标
 2. 点击图标 → **设置**，选择 ASR 后端并填入 API Key
-3. 默认热键 `Cmd+Shift+F5`：**按住说话，松键输入**
+3. 默认热键 `Cmd+Shift+F5`：**按一下开始说话，再按一下结束**
 
 ## ASR 后端
 
@@ -64,18 +77,46 @@ make build-win   # 生成 voice-claude.exe
 ## 构建
 
 ```bash
-make install        # macOS：编译 + 打包 .app + 安装到 /Applications
-make build          # macOS：仅打包 .app，不安装
-make build-win      # Windows：编译 .exe（需 CGO 交叉编译环境）
-make lint           # 运行 golangci-lint
-make test           # 运行测试（含 race detector）
-make vuln           # govulncheck 漏洞扫描
-make clean          # 清理构建产物
+# Rust + Tauri 主线
+make rust-install    # macOS：编译 + 打包 .app + 安装到 /Applications
+make rust-build      # macOS：仅打包 .app + .dmg
+make rust-build-win  # Windows：.msi + .exe 安装包
+make rust-test       # cargo test + 前端 typecheck
+make rust-clippy     # Rust clippy lint
+make rust-fmt        # 格式化 Rust 代码
+
+# Go 旧版（归档）
+make go-install      # macOS
+make go-build-win    # Windows
+make go-test / lint / vuln
+
+# 清理
+make clean
 ```
 
 ## 项目结构
 
 ```
+rust/                # Rust + Tauri 主线（见 rust/README.md）
+├── src/             # React + TypeScript 前端
+│   ├── views/       # 设置 + 历史
+│   ├── indicator.tsx# 悬浮波形
+│   └── api.ts       # IPC 封装
+└── src-tauri/src/   # Rust 后端
+    ├── asr/         # 5 个 ASR 后端
+    ├── audio.rs     # cpal 录音
+    ├── config.rs    # JSON 配置
+    ├── correct.rs   # AI 纠错
+    ├── history.rs   # SQLite 历史
+    ├── hotkey.rs    # 热键解析
+    ├── hotwords.rs  # 热词替换
+    ├── indicator.rs # 悬浮窗
+    ├── input.rs     # enigo 键盘模拟
+    ├── recorder.rs  # 主流程
+    ├── tray.rs      # 系统托盘
+    └── commands.rs  # Tauri IPC
+
+# Go 旧版（根目录）
 main.go              # 入口：热键注册、录音→识别→纠错→输入主流程
 audio.go             # 录音设备枚举、PCM 采集、增益、WAV 打包、流式推送
 config.go            # 配置读写

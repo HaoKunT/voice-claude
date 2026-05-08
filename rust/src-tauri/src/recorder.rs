@@ -65,13 +65,33 @@ async fn run(
     tracing::info!("开始录音");
 
     let _ = app.emit("recording-started", ());
+    crate::indicator::show(&app);
 
     let rec = Arc::new(Recorder::new(cfg.gain, &cfg.device_name));
+
+    // 启动音量推送任务：30fps emit audio-level 给波形悬浮窗
+    let level_rec = Arc::clone(&rec);
+    let level_app = app.clone();
+    let level_stop = Arc::new(AtomicBool::new(false));
+    let level_stop_cb = Arc::clone(&level_stop);
+    let level_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(33));
+        while !level_stop_cb.load(Ordering::Relaxed) {
+            interval.tick().await;
+            let lvl = level_rec.current_level();
+            let _ = level_app.emit("audio-level", lvl);
+        }
+    });
+
     let raw_text = if is_streaming(&cfg.asr_provider) {
         run_stream(app.clone(), &rec, &cfg, stop_rx).await?
     } else {
         run_batch(&rec, &cfg, stop_rx).await?
     };
+
+    level_stop.store(true, Ordering::Relaxed);
+    let _ = level_task.await;
+    crate::indicator::hide(&app);
 
     if raw_text.trim().is_empty() {
         tracing::warn!("未识别到内容");

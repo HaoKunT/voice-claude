@@ -2,13 +2,28 @@
 
 ## 项目概述
 
-voice-claude 是一个跨平台语音输入法（macOS / Windows），按住热键录音、松键后自动将识别文字输入到当前焦点窗口。适合办公室气声输入场景。
+voice-claude 是一个跨平台语音输入法（macOS / Windows），按一下热键开始录音，再按一下结束，识别文字自动输入到当前焦点窗口。
 
-数据流：按住热键 → 录音（malgo）→ PCM 增益 → ASR 转写 → AI 纠错（可选）→ 模拟键盘输入
+**技术栈正在从 Go + Fyne 迁移到 Rust + Tauri。** 主线代码在 `rust/` 目录，根目录的 Go 代码保留作为归档。所有新功能应加在 Rust 版。
+
+数据流：按热键 → 录音（cpal）→ PCM 增益 → ASR 转写 → AI 纠错（可选）→ 热词替换 → 模拟键盘输入（enigo）
 
 ## 架构
 
-Go 语言实现，Fyne GUI 框架，系统托盘运行。
+### Rust + Tauri 主线（`rust/`）
+
+- **后端**：Rust + Tauri v2 + tokio
+- **前端**：React + TypeScript + Tailwind CSS + Vite
+- **全局热键**：tauri-plugin-global-shortcut
+- **数据库**：rusqlite (bundled)
+- **音频**：cpal
+- **键盘模拟**：enigo
+- **WebSocket**：tokio-tungstenite
+- **HTTP**：reqwest
+
+### Go + Fyne 旧版（根目录）
+
+保留到 Rust 版稳定。只做必要维护，不加新功能。
 
 ### ASR 后端
 
