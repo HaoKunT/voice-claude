@@ -1,13 +1,37 @@
+# env / secrets
 .env
+
+# audio
 *.wav
 *.m4a
 *.mp3
 *.ogg
+
+# python cache（demo/ 旧代码）
 __pycache__/
 *.pyc
+
+# Go 产物
 *.exe
 *.app
 voice-claude
 voice-claude-amd64
 voice-claude-arm64.exe
+
+# macOS
 .DS_Store
+
+# Rust 项目
+rust/node_modules/
+rust/dist/
+rust/src-tauri/target/
+rust/src-tauri/gen/
+rust/.vite/
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
