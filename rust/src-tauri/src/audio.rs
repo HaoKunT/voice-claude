@@ -70,6 +70,9 @@ impl Recorder {
     }
 
     /// 开始录音（必须在 start_stream 之后才能流式推送）。
+    ///
+    /// 兼容各种麦克风：用设备默认 config（通常 44.1/48kHz 立体声 F32），
+    /// 在回调里线性降采样到 16kHz mono PCM16。
     pub fn start(&self) -> Result<()> {
         let host = cpal::default_host();
         let device = if self.device_name.is_empty() {
@@ -84,15 +87,20 @@ impl Recorder {
 
         let supported = device.default_input_config().context("get input config")?;
         let sample_format = supported.sample_format();
+        let device_rate = supported.sample_rate().0;
+        let device_channels = supported.channels();
 
-        // 我们要求 16kHz mono s16，如果设备不支持，让 cpal 自动选择后续手动重采样过滤
-        let config = cpal::StreamConfig {
-            channels: CHANNELS,
-            sample_rate: cpal::SampleRate(SAMPLE_RATE),
-            buffer_size: cpal::BufferSize::Default,
-        };
+        // 直接用设备 native config，避免 "stream configuration is not supported"
+        let config: cpal::StreamConfig = supported.clone().into();
 
-        tracing::info!(device = %device_name, format = ?sample_format, gain = self.gain, "录音设备");
+        tracing::info!(
+            device = %device_name,
+            format = ?sample_format,
+            rate = device_rate,
+            channels = device_channels,
+            gain = self.gain,
+            "录音设备",
+        );
 
         let buffer = Arc::clone(&self.buffer);
         let stream_tx = Arc::clone(&self.stream_tx);
@@ -101,25 +109,47 @@ impl Recorder {
 
         let err_fn = |err| tracing::error!(?err, "cpal stream error");
 
+        // 降采样累积器（device_rate → 16kHz 线性插值的简化版：等间隔取样）
+        let stride = (device_rate as f64 / SAMPLE_RATE as f64).max(1.0);
+        let state = Arc::new(Mutex::new(ResampleState::new()));
+
         let stream = match sample_format {
-            SampleFormat::I16 => device.build_input_stream(
-                &config,
-                move |data: &[i16], _| handle_input_i16(data, gain, &buffer, &stream_tx, &level),
-                err_fn,
-                None,
-            )?,
-            SampleFormat::F32 => device.build_input_stream(
-                &config,
-                move |data: &[f32], _| handle_input_f32(data, gain, &buffer, &stream_tx, &level),
-                err_fn,
-                None,
-            )?,
-            SampleFormat::U16 => device.build_input_stream(
-                &config,
-                move |data: &[u16], _| handle_input_u16(data, gain, &buffer, &stream_tx, &level),
-                err_fn,
-                None,
-            )?,
+            SampleFormat::I16 => {
+                let state = Arc::clone(&state);
+                device.build_input_stream(
+                    &config,
+                    move |data: &[i16], _| {
+                        let mono = to_mono_f32_from_i16(data, device_channels);
+                        push_resampled(&mono, stride, &state, gain, &buffer, &stream_tx, &level);
+                    },
+                    err_fn,
+                    None,
+                )?
+            }
+            SampleFormat::F32 => {
+                let state = Arc::clone(&state);
+                device.build_input_stream(
+                    &config,
+                    move |data: &[f32], _| {
+                        let mono = to_mono_f32_from_f32(data, device_channels);
+                        push_resampled(&mono, stride, &state, gain, &buffer, &stream_tx, &level);
+                    },
+                    err_fn,
+                    None,
+                )?
+            }
+            SampleFormat::U16 => {
+                let state = Arc::clone(&state);
+                device.build_input_stream(
+                    &config,
+                    move |data: &[u16], _| {
+                        let mono = to_mono_f32_from_u16(data, device_channels);
+                        push_resampled(&mono, stride, &state, gain, &buffer, &stream_tx, &level);
+                    },
+                    err_fn,
+                    None,
+                )?
+            }
             other => anyhow::bail!("不支持的采样格式: {:?}", other),
         };
 
@@ -143,74 +173,96 @@ impl Recorder {
     }
 }
 
-fn handle_input_i16(
-    data: &[i16],
-    gain: u8,
-    buffer: &Arc<Mutex<Vec<u8>>>,
-    stream_tx: &Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
-    level: &Arc<AtomicU32>,
-) {
-    let mut bytes = Vec::with_capacity(data.len() * 2);
-    let mut sum_sq = 0.0f64;
-    for &s in data {
-        let v = (s as i32 * gain as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        bytes.extend_from_slice(&v.to_le_bytes());
-        let f = s as f64 / 32768.0;
-        sum_sq += f * f;
-    }
-    push_common(bytes, data.len(), sum_sq, gain, buffer, stream_tx, level);
+/// 降采样状态：记录累积的"相位"，按 stride 间隔取样。
+struct ResampleState {
+    phase: f64,
 }
 
-fn handle_input_f32(
-    data: &[f32],
+impl ResampleState {
+    fn new() -> Self {
+        Self { phase: 0.0 }
+    }
+}
+
+fn to_mono_f32_from_f32(data: &[f32], channels: u16) -> Vec<f32> {
+    if channels <= 1 {
+        return data.to_vec();
+    }
+    let ch = channels as usize;
+    let n = data.len() / ch;
+    let mut mono = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut sum = 0.0f32;
+        for c in 0..ch {
+            sum += data[i * ch + c];
+        }
+        mono.push(sum / ch as f32);
+    }
+    mono
+}
+
+fn to_mono_f32_from_i16(data: &[i16], channels: u16) -> Vec<f32> {
+    let mut floats: Vec<f32> = data.iter().map(|&s| s as f32 / 32768.0).collect();
+    if channels > 1 {
+        floats = to_mono_f32_from_f32(&floats, channels);
+    }
+    floats
+}
+
+fn to_mono_f32_from_u16(data: &[u16], channels: u16) -> Vec<f32> {
+    let mut floats: Vec<f32> = data
+        .iter()
+        .map(|&u| {
+            let s: i16 = u.to_sample();
+            s as f32 / 32768.0
+        })
+        .collect();
+    if channels > 1 {
+        floats = to_mono_f32_from_f32(&floats, channels);
+    }
+    floats
+}
+
+fn push_resampled(
+    mono_in: &[f32],
+    stride: f64,
+    state: &Arc<Mutex<ResampleState>>,
     gain: u8,
     buffer: &Arc<Mutex<Vec<u8>>>,
     stream_tx: &Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
     level: &Arc<AtomicU32>,
 ) {
-    let mut bytes = Vec::with_capacity(data.len() * 2);
+    // 等间隔抽样（最近邻）到 16kHz
+    let mut out = Vec::<i16>::with_capacity((mono_in.len() as f64 / stride) as usize + 1);
+    let mut st = state.lock();
     let mut sum_sq = 0.0f64;
-    for &f in data {
-        let clamped = f.clamp(-1.0, 1.0);
-        let s = (clamped * 32767.0) as i32 * gain as i32;
-        let s = s.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    let mut n_out = 0usize;
+    while st.phase < mono_in.len() as f64 {
+        let idx = st.phase as usize;
+        if idx >= mono_in.len() {
+            break;
+        }
+        let v = (mono_in[idx].clamp(-1.0, 1.0) * 32767.0) as i32 * gain as i32;
+        let s = v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        out.push(s);
+        let f = s as f64 / 32768.0;
+        sum_sq += f * f;
+        n_out += 1;
+        st.phase += stride;
+    }
+    st.phase -= mono_in.len() as f64;
+    drop(st);
+
+    if out.is_empty() {
+        return;
+    }
+    let mut bytes = Vec::with_capacity(out.len() * 2);
+    for s in &out {
         bytes.extend_from_slice(&s.to_le_bytes());
-        sum_sq += (clamped as f64) * (clamped as f64);
     }
-    push_common(bytes, data.len(), sum_sq, gain, buffer, stream_tx, level);
-}
 
-fn handle_input_u16(
-    data: &[u16],
-    gain: u8,
-    buffer: &Arc<Mutex<Vec<u8>>>,
-    stream_tx: &Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
-    level: &Arc<AtomicU32>,
-) {
-    let mut bytes = Vec::with_capacity(data.len() * 2);
-    let mut sum_sq = 0.0f64;
-    for &u in data {
-        // 用 cpal::Sample 的 to_sample::<i16>() 转换
-        let s: i16 = u.to_sample();
-        let v = (s as i32 * gain as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        bytes.extend_from_slice(&v.to_le_bytes());
-        let f = s as f64 / 32768.0;
-        sum_sq += f * f;
-    }
-    push_common(bytes, data.len(), sum_sq, gain, buffer, stream_tx, level);
-}
-
-fn push_common(
-    bytes: Vec<u8>,
-    sample_count: usize,
-    sum_sq: f64,
-    gain: u8,
-    buffer: &Arc<Mutex<Vec<u8>>>,
-    stream_tx: &Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
-    level: &Arc<AtomicU32>,
-) {
-    if sample_count > 0 {
-        let rms = (sum_sq / sample_count as f64).sqrt() * gain as f64;
+    if n_out > 0 {
+        let rms = (sum_sq / n_out as f64).sqrt();
         let lvl = rms.min(1.0) as f32;
         level.store(lvl.to_bits(), Ordering::Relaxed);
     }

@@ -300,7 +300,7 @@ function LocalSenseVoicePanel() {
   return (
     <div className="space-y-3">
       <p className="text-sm text-gray-400">
-        本地 SenseVoice：离线识别，无需 API Key。需启用 <code>local-asr</code> feature 后首次运行会自动使用已下载模型。
+        本地 SenseVoice：离线识别，无需 API Key。点"下载模型（约 1GB）"下载到配置目录后即可直接使用。
       </p>
       <div className="text-sm">
         状态：

@@ -2,11 +2,23 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <!-- 麦克风录音 -->
   <key>com.apple.security.device.audio-input</key>
   <true/>
+  <!-- AppleScript / 自动化（给 robotgo/enigo 用） -->
   <key>com.apple.security.automation.apple-events</key>
   <true/>
+  <!-- HTTP / WebSocket 访问 ASR 后端 -->
   <key>com.apple.security.network.client</key>
+  <true/>
+  <!-- WKWebView WebContent 进程需要 JIT（macOS 14+ 严格；没有这个会导致
+       "web content process terminated"，webview 启动就崩溃） -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <!-- cpal / malgo 等 native 录音库可能用到 -->
+  <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
 </dict>
 </plist>

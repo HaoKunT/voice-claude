@@ -32,6 +32,27 @@ fn recording() -> &'static RecordingState {
     RECORDING_CELL.get_or_init(RecordingState::new)
 }
 
+/// Drop guard：任何路径（正常返回 / ? / panic）结束 run 函数时，
+/// 停止音量推送 + 关闭悬浮 indicator。
+struct RecordingGuard {
+    app: AppHandle,
+    level_stop: Arc<AtomicBool>,
+}
+
+impl Drop for RecordingGuard {
+    fn drop(&mut self) {
+        self.level_stop.store(true, Ordering::Relaxed);
+        let hide_app = self.app.clone();
+        let _ = self.app.run_on_main_thread(move || {
+            crate::indicator::hide(&hide_app);
+        });
+    }
+}
+
+fn scopeguard(app: AppHandle, level_stop: Arc<AtomicBool>) -> RecordingGuard {
+    RecordingGuard { app, level_stop }
+}
+
 /// 切换录音状态：首次调用开始，再次调用停止。
 pub fn toggle(app: AppHandle, cfg: Arc<crate::config::Config>) {
     let rec_state = recording();
@@ -48,7 +69,8 @@ pub fn toggle(app: AppHandle, cfg: Arc<crate::config::Config>) {
     rec_state.active.store(true, Ordering::Relaxed);
 
     let app_handle = app.clone();
-    tokio::spawn(async move {
+    // 用 tauri::async_runtime：热键回调不在 tokio runtime 里，直接 tokio::spawn 会 panic
+    tauri::async_runtime::spawn(async move {
         if let Err(e) = run(app_handle.clone(), cfg, stop_rx).await {
             tracing::error!(error = ?e, "录音流程失败");
         }
@@ -65,16 +87,23 @@ async fn run(
     tracing::info!("开始录音");
 
     let _ = app.emit("recording-started", ());
-    crate::indicator::show(&app);
+    // indicator 窗口创建 + tauri-nspanel to_panel() 必须在主线程，不能在 worker
+    let show_app = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        crate::indicator::show(&show_app);
+    });
+
+    // guard：无论正常 / 提前 return / panic，都关闭 indicator + stop level task
+    let level_stop = Arc::new(AtomicBool::new(false));
+    let _guard = scopeguard(app.clone(), Arc::clone(&level_stop));
 
     let rec = Arc::new(Recorder::new(cfg.gain, &cfg.device_name));
 
     // 启动音量推送任务：30fps emit audio-level 给波形悬浮窗
     let level_rec = Arc::clone(&rec);
     let level_app = app.clone();
-    let level_stop = Arc::new(AtomicBool::new(false));
     let level_stop_cb = Arc::clone(&level_stop);
-    let level_task = tokio::spawn(async move {
+    let _level_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(33));
         while !level_stop_cb.load(Ordering::Relaxed) {
             interval.tick().await;
@@ -89,9 +118,7 @@ async fn run(
         run_batch(&rec, &cfg, stop_rx).await?
     };
 
-    level_stop.store(true, Ordering::Relaxed);
-    let _ = level_task.await;
-    crate::indicator::hide(&app);
+    // guard drop 时自动做：level_stop + hide indicator
 
     if raw_text.trim().is_empty() {
         tracing::warn!("未识别到内容");

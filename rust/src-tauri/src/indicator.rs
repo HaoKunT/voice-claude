@@ -24,24 +24,13 @@ const NS_WINDOW_STYLE_MASK_NONACTIVATING_PANEL: i32 = 1 << 7; // 0x80
 #[cfg(target_os = "macos")]
 const NS_FLOATING_WINDOW_LEVEL: i32 = 3;
 
-/// 显示或创建悬浮指示器。
-pub fn show(app: &AppHandle) {
-    #[cfg(target_os = "macos")]
-    {
-        use tauri_nspanel::ManagerExt;
-        // 已经是 panel：直接 show
-        if let Ok(panel) = app.get_webview_panel(LABEL) {
-            panel.show();
-            return;
-        }
-    }
-
-    if let Some(w) = app.get_webview_window(LABEL) {
-        let _ = w.show();
-        let _ = w.set_always_on_top(true);
+/// 启动时预创建 indicator 窗口并立即转换为 NSPanel，但保持隐藏。
+/// 这样后续 show() 不会触发窗口创建（避免首次创建时的 app 激活抢焦点）。
+/// 必须在 Tauri setup 里调用，main 线程上下文。
+pub fn prebuild(app: &AppHandle) {
+    if app.get_webview_window(LABEL).is_some() {
         return;
     }
-
     let builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("indicator.html".into()))
         .title("")
         .inner_size(W, H)
@@ -49,9 +38,8 @@ pub fn show(app: &AppHandle) {
         .decorations(false)
         .always_on_top(true)
         .skip_taskbar(true)
-        .transparent(true)
-        .shadow(false)
         .focused(false)
+        .visible(false) // 预创建时不显示，show() 时再展示
         .visible_on_all_workspaces(true);
 
     match builder.build() {
@@ -59,8 +47,6 @@ pub fn show(app: &AppHandle) {
             if let Err(e) = center(&w) {
                 tracing::warn!(error = ?e, "悬浮窗居中失败");
             }
-
-            // macOS：把 NSWindow swizzle 成 NSPanel，设置不抢焦点 style mask
             #[cfg(target_os = "macos")]
             {
                 use tauri_nspanel::WebviewWindowExt;
@@ -72,29 +58,44 @@ pub fn show(app: &AppHandle) {
                                 | NS_WINDOW_STYLE_MASK_BORDERLESS,
                         );
                         panel.set_floating_panel(true);
-                        // collection_behaviour: canJoinAllSpaces | fullScreenAuxiliary = 1 | 256
                         use tauri_nspanel::cocoa::appkit::NSWindowCollectionBehavior;
                         panel.set_collection_behaviour(
                             NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
                                 | NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary,
                         );
-                        panel.show();
+                        tracing::info!("indicator NSPanel 预创建完成");
                     }
                     Err(e) => {
                         tracing::error!(error = ?e, "转换为 NSPanel 失败");
-                        let _ = w.show();
                     }
                 }
             }
-
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = w.show();
-            }
         }
         Err(e) => {
-            tracing::error!(error = ?e, "创建悬浮窗失败");
+            tracing::error!(error = ?e, "预创建悬浮窗失败");
         }
+    }
+}
+
+/// 显示悬浮指示器（复用预创建的 NSPanel）。
+pub fn show(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_nspanel::ManagerExt;
+        if let Ok(panel) = app.get_webview_panel(LABEL) {
+            panel.show();
+            return;
+        }
+        // 没预创建，补创建一次（可能 prebuild 失败）
+        prebuild(app);
+        if let Ok(panel) = app.get_webview_panel(LABEL) {
+            panel.show();
+            return;
+        }
+    }
+
+    if let Some(w) = app.get_webview_window(LABEL) {
+        let _ = w.show();
     }
 }
 

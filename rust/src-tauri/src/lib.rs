@@ -79,16 +79,22 @@ pub fn run() {
     builder
         .manage(state)
         .on_window_event(|window, event| {
-            // 关闭主窗口时仅隐藏，app 本体靠托盘保持运行
+            // 关闭主窗口时：隐藏窗口 + 切回 Accessory 让 app 从 Dock 消失
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     let _ = window.hide();
                     api.prevent_close();
+                    #[cfg(target_os = "macos")]
+                    {
+                        use tauri::{ActivationPolicy, Manager};
+                        let _ = window.app_handle().set_activation_policy(ActivationPolicy::Accessory);
+                    }
                 }
             }
         })
         .setup(move |app| {
-            // macOS：LSUIElement 行为——只在菜单栏显示，不占 Dock
+            // macOS：Accessory 模式，app 不占 Dock，NSPanel 才能真·不抢焦点。
+            // 点击 tray 菜单"设置"时会临时切到 Regular 再显示主窗口（见 tray.rs）。
             #[cfg(target_os = "macos")]
             {
                 use tauri::ActivationPolicy;
@@ -118,6 +124,11 @@ pub fn run() {
             }
 
             tray::setup(app.handle())?;
+
+            // 预创建 indicator NSPanel：启动时一次性创建 + swizzle 成 NSPanel，
+            // 后续录音只 show/hide，永远不再重新创建窗口，避免 WebView 初始化期间抢焦点。
+            indicator::prebuild(app.handle());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

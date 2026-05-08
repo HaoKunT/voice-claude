@@ -15,7 +15,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # Tauri 核心 + 常用插件
-tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-store = "2"
@@ -83,10 +83,11 @@ optional = true
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2" }
 
 [features]
-default = ["custom-protocol"]
+# 默认启用 local-asr：对齐 Go 版的 !nosherpa 发布（带离线 SenseVoice）
+default = ["custom-protocol", "local-asr"]
 # DO NOT REMOVE!! Tauri 生产模式依赖
 custom-protocol = ["tauri/custom-protocol"]
-# 本地 SenseVoice 离线 ASR（对齐 Go 版 !nosherpa 模式）
-# 启用方式：cargo build --features local-asr
-# 首次编译需下载 + 编译 sherpa-onnx C 库（~500MB, 10-20 分钟）
+# 本地 SenseVoice 离线 ASR
+# 首次编译需下载 + 编译 sherpa-onnx C 库（10-20 分钟），后续增量编译恢复秒级
+# 若要禁用：cargo build --no-default-features --features custom-protocol
 local-asr = ["dep:sherpa-onnx"]
