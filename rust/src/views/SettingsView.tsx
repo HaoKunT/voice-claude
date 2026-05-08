@@ -3,7 +3,17 @@ import { listen } from "@tauri-apps/api/event";
 import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, ASR_PROVIDERS, CORRECT_MODES, Config, DeviceInfo } from "../api";
 
-export function SettingsView() {
+export type SettingsSection = "asr" | "correct" | "record" | "hotwords" | "log";
+
+const SECTION_META: Record<SettingsSection, { title: string; subtitle: string }> = {
+  asr: { title: "语音识别", subtitle: "识别后端与对应的密钥" },
+  correct: { title: "AI 纠错", subtitle: "识别后可选的文本纠错" },
+  record: { title: "录音参数", subtitle: "麦克风、快捷键与增益" },
+  hotwords: { title: "热词替换", subtitle: "识别后自动替换（AI 纠错之后执行）" },
+  log: { title: "日志", subtitle: "日志级别与文件位置" },
+};
+
+export function SettingsView({ section }: { section: SettingsSection }) {
   const [cfg, setCfg] = useState<Config | null>(null);
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
@@ -51,199 +61,205 @@ export function SettingsView() {
     setCfg({ ...cfg, hotwords });
   };
 
+  const meta = SECTION_META[section];
+
   return (
     <div className="p-10 max-w-3xl mx-auto space-y-5 pb-10">
       <div className="mb-2 flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold text-gray-100">设置</h1>
-          <p className="text-sm text-gray-500 mt-0.5">修改即自动保存</p>
+          <h1 className="text-xl font-semibold text-gray-100">{meta.title}</h1>
+          <p className="text-sm text-gray-500 mt-0.5">{meta.subtitle}</p>
         </div>
         <SaveIndicator state={saveState} errMsg={errMsg} />
       </div>
 
-      {/* ASR */}
-      <Section title="语音识别" icon="🎙">
-        <Field label="识别后端">
-          <select
-            className="input"
-            value={cfg.asr_provider}
-            onChange={(e) => update("asr_provider", e.target.value)}
-          >
-            {ASR_PROVIDERS.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        </Field>
-
-        {cfg.asr_provider === "zhipu" && (
-          <Field label="智谱 API Key">
-            <input
-              type="password"
+      {section === "asr" && (
+        <section className="card space-y-3.5">
+          <Field label="识别后端">
+            <select
               className="input"
-              value={cfg.asr_api_key}
-              onChange={(e) => update("asr_api_key", e.target.value)}
-            />
+              value={cfg.asr_provider}
+              onChange={(e) => update("asr_provider", e.target.value)}
+            >
+              {ASR_PROVIDERS.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
           </Field>
-        )}
 
-        {cfg.asr_provider === "xfyun" && (
-          <>
-            <TextField label="App ID" value={cfg.xfyun_app_id} onChange={(v) => update("xfyun_app_id", v)} />
-            <TextField label="Access Key ID" value={cfg.xfyun_access_key_id} onChange={(v) => update("xfyun_access_key_id", v)} />
-            <TextField label="Access Key Secret" value={cfg.xfyun_access_key_secret} onChange={(v) => update("xfyun_access_key_secret", v)} password />
-          </>
-        )}
-
-        {cfg.asr_provider === "volc" && (
-          <>
-            <TextField label="App Key" value={cfg.volc_app_key} onChange={(v) => update("volc_app_key", v)} />
-            <TextField label="Access Token" value={cfg.volc_access_token} onChange={(v) => update("volc_access_token", v)} password />
-            <Field label="识别模型">
-              <select
-                className="input"
-                value={cfg.volc_resource_id}
-                onChange={(e) => update("volc_resource_id", e.target.value)}
-              >
-                <option value="volc.seedasr.sauc.duration">volc.seedasr.sauc.duration (2.0)</option>
-                <option value="volc.bigasr.sauc.duration">volc.bigasr.sauc.duration (1.0)</option>
-              </select>
-            </Field>
-          </>
-        )}
-
-        {cfg.asr_provider === "openrouter" && (
-          <TextField label="OpenRouter API Key" value={cfg.openrouter_api_key} onChange={(v) => update("openrouter_api_key", v)} password />
-        )}
-
-        {cfg.asr_provider === "local" && <LocalSenseVoicePanel />}
-      </Section>
-
-      {/* AI 纠错 */}
-      <Section title="AI 纠错" icon="🧠">
-        <Field label="纠错模式">
-          <select
-            className="input"
-            value={cfg.correct_mode}
-            onChange={(e) => update("correct_mode", e.target.value)}
-          >
-            {CORRECT_MODES.map((m) => (
-              <option key={m.value} value={m.value}>{m.label}</option>
-            ))}
-          </select>
-        </Field>
-        {cfg.correct_mode !== "off" && (
-          <>
-            <TextField label="API 地址" value={cfg.correct_url} onChange={(v) => update("correct_url", v)} />
-            <TextField label="模型名称" value={cfg.correct_model} onChange={(v) => update("correct_model", v)} />
-            <TextField label="API Key" value={cfg.correct_api_key} onChange={(v) => update("correct_api_key", v)} password />
-            <Field label="超时（秒）">
+          {cfg.asr_provider === "zhipu" && (
+            <Field label="智谱 API Key">
               <input
-                type="number"
+                type="password"
                 className="input"
-                value={cfg.correct_timeout}
-                onChange={(e) => update("correct_timeout", parseInt(e.target.value) || 10)}
+                value={cfg.asr_api_key}
+                onChange={(e) => update("asr_api_key", e.target.value)}
               />
             </Field>
-          </>
-        )}
-      </Section>
-
-      {/* 录音参数 */}
-      <Section title="录音参数" icon="🎤">
-        <Field label="麦克风">
-          <select
-            className="input"
-            value={cfg.device_name}
-            onChange={(e) => update("device_name", e.target.value)}
-          >
-            <option value="">(默认设备)</option>
-            {devices.map((d) => (
-              <option key={d.name} value={d.name}>{d.name}</option>
-            ))}
-          </select>
-        </Field>
-        <Field label={<><span>快捷键</span><KbdCombo combo={cfg.hotkey} /></>}>
-          <input
-            className="input font-mono"
-            value={cfg.hotkey}
-            onChange={(e) => update("hotkey", e.target.value)}
-            placeholder="cmd+shift+f5"
-          />
-        </Field>
-        <Field label={<><span>信号增益</span><span className="ml-auto font-mono text-accent">{cfg.gain}×</span></>}>
-          <input
-            type="range"
-            min={1}
-            max={10}
-            value={cfg.gain}
-            onChange={(e) => update("gain", parseInt(e.target.value))}
-            className="w-full accent-accent"
-          />
-          <div className="flex justify-between text-[10px] text-gray-600 mt-1 font-mono">
-            <span>1×</span><span>5×</span><span>10×</span>
-          </div>
-        </Field>
-      </Section>
-
-      {/* 热词 */}
-      <Section title="热词替换" icon="📝" subtitle="识别后自动替换（AI 纠错之后执行）">
-        <div className="space-y-2">
-          {Object.entries(cfg.hotwords).length === 0 && (
-            <div className="text-xs text-gray-500 py-2">暂无热词，点下方添加或导入 CSV</div>
           )}
-          {Object.entries(cfg.hotwords).map(([from, to]) => (
-            <HotwordRow
-              key={from}
-              from={from}
-              to={to}
-              onChange={(k, v) => {
-                const hotwords = { ...cfg.hotwords };
-                if (k !== from) delete hotwords[from];
-                if (k) hotwords[k] = v;
-                setCfg({ ...cfg, hotwords });
-              }}
-              onDelete={() => deleteHotword(from)}
-            />
-          ))}
-          <div className="flex gap-2">
-            <button
-              className="btn-ghost flex-1 justify-center"
-              onClick={() => updateHotword(`新热词_${Date.now()}`, "")}
+
+          {cfg.asr_provider === "xfyun" && (
+            <>
+              <TextField label="App ID" value={cfg.xfyun_app_id} onChange={(v) => update("xfyun_app_id", v)} />
+              <TextField label="Access Key ID" value={cfg.xfyun_access_key_id} onChange={(v) => update("xfyun_access_key_id", v)} />
+              <TextField label="Access Key Secret" value={cfg.xfyun_access_key_secret} onChange={(v) => update("xfyun_access_key_secret", v)} password />
+            </>
+          )}
+
+          {cfg.asr_provider === "volc" && (
+            <>
+              <TextField label="App Key" value={cfg.volc_app_key} onChange={(v) => update("volc_app_key", v)} />
+              <TextField label="Access Token" value={cfg.volc_access_token} onChange={(v) => update("volc_access_token", v)} password />
+              <Field label="识别模型">
+                <select
+                  className="input"
+                  value={cfg.volc_resource_id}
+                  onChange={(e) => update("volc_resource_id", e.target.value)}
+                >
+                  <option value="volc.seedasr.sauc.duration">volc.seedasr.sauc.duration (2.0)</option>
+                  <option value="volc.bigasr.sauc.duration">volc.bigasr.sauc.duration (1.0)</option>
+                </select>
+              </Field>
+            </>
+          )}
+
+          {cfg.asr_provider === "openrouter" && (
+            <TextField label="OpenRouter API Key" value={cfg.openrouter_api_key} onChange={(v) => update("openrouter_api_key", v)} password />
+          )}
+
+          {cfg.asr_provider === "local" && <LocalSenseVoicePanel />}
+        </section>
+      )}
+
+      {section === "correct" && (
+        <section className="card space-y-3.5">
+          <Field label="纠错模式">
+            <select
+              className="input"
+              value={cfg.correct_mode}
+              onChange={(e) => update("correct_mode", e.target.value)}
             >
-              ＋ 添加
-            </button>
-            <button className="btn-ghost" onClick={() => handleExportCsv()}>
-              导出 CSV
-            </button>
-            <button className="btn-ghost" onClick={() => handleImportCsv(setCfg, cfg)}>
-              导入 CSV
-            </button>
+              {CORRECT_MODES.map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+            </select>
+          </Field>
+          {cfg.correct_mode !== "off" && (
+            <>
+              <TextField label="API 地址" value={cfg.correct_url} onChange={(v) => update("correct_url", v)} />
+              <TextField label="模型名称" value={cfg.correct_model} onChange={(v) => update("correct_model", v)} />
+              <TextField label="API Key" value={cfg.correct_api_key} onChange={(v) => update("correct_api_key", v)} password />
+              <Field label="超时（秒）">
+                <input
+                  type="number"
+                  className="input"
+                  value={cfg.correct_timeout}
+                  onChange={(e) => update("correct_timeout", parseInt(e.target.value) || 10)}
+                />
+              </Field>
+            </>
+          )}
+        </section>
+      )}
+
+      {section === "record" && (
+        <section className="card space-y-3.5">
+          <Field label="麦克风">
+            <select
+              className="input"
+              value={cfg.device_name}
+              onChange={(e) => update("device_name", e.target.value)}
+            >
+              <option value="">(默认设备)</option>
+              {devices.map((d) => (
+                <option key={d.name} value={d.name}>{d.name}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label={<><span>快捷键</span><KbdCombo combo={cfg.hotkey} /></>}>
+            <input
+              className="input font-mono"
+              value={cfg.hotkey}
+              onChange={(e) => update("hotkey", e.target.value)}
+              placeholder="cmd+shift+f5"
+            />
+          </Field>
+          <Field label={<><span>信号增益</span><span className="ml-auto font-mono text-accent">{cfg.gain}×</span></>}>
+            <input
+              type="range"
+              min={1}
+              max={10}
+              value={cfg.gain}
+              onChange={(e) => update("gain", parseInt(e.target.value))}
+              className="w-full accent-accent"
+            />
+            <div className="flex justify-between text-[10px] text-gray-600 mt-1 font-mono">
+              <span>1×</span><span>5×</span><span>10×</span>
+            </div>
+          </Field>
+        </section>
+      )}
+
+      {section === "hotwords" && (
+        <section className="card space-y-3.5">
+          <div className="space-y-2">
+            {Object.entries(cfg.hotwords).length === 0 && (
+              <div className="text-xs text-gray-500 py-2">暂无热词，点下方添加或导入 CSV</div>
+            )}
+            {Object.entries(cfg.hotwords).map(([from, to]) => (
+              <HotwordRow
+                key={from}
+                from={from}
+                to={to}
+                onChange={(k, v) => {
+                  const hotwords = { ...cfg.hotwords };
+                  if (k !== from) delete hotwords[from];
+                  if (k) hotwords[k] = v;
+                  setCfg({ ...cfg, hotwords });
+                }}
+                onDelete={() => deleteHotword(from)}
+              />
+            ))}
+            <div className="flex gap-2">
+              <button
+                className="btn-ghost flex-1 justify-center"
+                onClick={() => updateHotword(`新热词_${Date.now()}`, "")}
+              >
+                ＋ 添加
+              </button>
+              <button className="btn-ghost" onClick={() => handleExportCsv()}>
+                导出 CSV
+              </button>
+              <button className="btn-ghost" onClick={() => handleImportCsv(setCfg, cfg)}>
+                导入 CSV
+              </button>
+            </div>
           </div>
-        </div>
-      </Section>
+        </section>
+      )}
 
-      {/* 日志 */}
-      <Section title="日志" icon="📋">
-        <Field label="日志级别">
-          <select
-            className="input"
-            value={cfg.log_level}
-            onChange={(e) => update("log_level", e.target.value)}
-          >
-            <option value="debug">debug</option>
-            <option value="info">info</option>
-            <option value="warn">warn</option>
-            <option value="error">error</option>
-          </select>
-        </Field>
-        <div className="flex gap-2 mt-3">
-          <button className="btn-ghost" onClick={() => api.openLogs()}>打开日志文件</button>
-          <button className="btn-ghost" onClick={() => api.openConfigDir()}>打开配置目录</button>
-        </div>
-      </Section>
-
+      {section === "log" && (
+        <section className="card space-y-3.5">
+          <Field label="日志级别">
+            <select
+              className="input"
+              value={cfg.log_level}
+              onChange={(e) => update("log_level", e.target.value)}
+            >
+              <option value="debug">debug</option>
+              <option value="info">info</option>
+              <option value="warn">warn</option>
+              <option value="error">error</option>
+            </select>
+          </Field>
+          <div className="flex gap-2 mt-3">
+            <button className="btn-ghost" onClick={() => api.openLogs()}>打开日志文件</button>
+            <button className="btn-ghost" onClick={() => api.openConfigDir()}>打开配置目录</button>
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -320,19 +336,6 @@ function SaveIndicator({ state, errMsg }: { state: "idle" | "saving" | "saved" |
       <div className="w-1.5 h-1.5 rounded-full bg-red-400" />
       保存失败
     </div>
-  );
-}
-
-function Section(props: { title: string; icon: string; subtitle?: string; children: React.ReactNode }) {
-  return (
-    <section className="card">
-      <div className="section-title">
-        <span className="text-base">{props.icon}</span>
-        <span>{props.title}</span>
-      </div>
-      {props.subtitle && <p className="text-xs text-gray-500 -mt-2 mb-3">{props.subtitle}</p>}
-      <div className="space-y-3.5">{props.children}</div>
-    </section>
   );
 }
 

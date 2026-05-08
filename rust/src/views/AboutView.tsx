@@ -1,28 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, AppInfo } from "../api";
 
-const LICENSE_MIT = `MIT License
-
-Copyright (c) 2026 HaoKunT
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.`;
-
 export function AboutView() {
   const [info, setInfo] = useState<AppInfo | null>(null);
 
@@ -107,11 +85,22 @@ export function AboutView() {
         </div>
       </section>
 
-      <section className="card space-y-3">
+      <section className="card space-y-2">
         <div className="section-title">📄 License</div>
-        <pre className="text-[11px] text-gray-400 whitespace-pre-wrap font-mono leading-relaxed bg-bg-900/60 rounded-xl p-4 border border-white/5 max-h-96 overflow-y-auto">
-          {LICENSE_MIT}
-        </pre>
+        <div className="text-sm text-gray-300">
+          MIT License ·{" "}
+          <a
+            href="https://github.com/HaoKunT/voice-claude/blob/main/LICENSE"
+            target="_blank"
+            rel="noreferrer"
+            className="text-brand-blue hover:underline"
+          >
+            查看完整许可证
+          </a>
+        </div>
+        <p className="text-xs text-gray-500">
+          Copyright © 2026 HaoKunT. 你可以自由使用、修改、分发本软件，包括商业用途，但需保留版权声明。
+        </p>
       </section>
 
       <section className="card space-y-3">

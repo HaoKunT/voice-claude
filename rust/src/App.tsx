@@ -1,21 +1,44 @@
 import { useEffect, useState } from "react";
-import { SettingsView } from "./views/SettingsView";
+import { SettingsView, SettingsSection } from "./views/SettingsView";
 import { HistoryView } from "./views/HistoryView";
 import { AboutView } from "./views/AboutView";
 
-type Route = "settings" | "history" | "about";
+type Route =
+  | "asr"
+  | "correct"
+  | "record"
+  | "hotwords"
+  | "log"
+  | "history"
+  | "about";
 
 const ROUTE_HASHES: Record<Route, string> = {
-  settings: "#/",
+  asr: "#/",
+  correct: "#/correct",
+  record: "#/record",
+  hotwords: "#/hotwords",
+  log: "#/log",
   history: "#/history",
   about: "#/about",
 };
 
+const NAV_ITEMS: { route: Route; icon: string; label: string }[] = [
+  { route: "asr", icon: "🎙", label: "语音识别" },
+  { route: "correct", icon: "🧠", label: "AI 纠错" },
+  { route: "record", icon: "🎤", label: "录音参数" },
+  { route: "hotwords", icon: "📝", label: "热词替换" },
+  { route: "log", icon: "📋", label: "日志" },
+  { route: "history", icon: "⏱", label: "历史记录" },
+  { route: "about", icon: "ℹ", label: "关于" },
+];
+
 function useHashRoute(): [Route, (r: Route) => void] {
   const read = (): Route => {
-    if (window.location.hash === "#/history") return "history";
-    if (window.location.hash === "#/about") return "about";
-    return "settings";
+    const h = window.location.hash;
+    for (const [r, path] of Object.entries(ROUTE_HASHES)) {
+      if (h === path) return r as Route;
+    }
+    return "asr";
   };
   const [route, setRoute] = useState<Route>(read);
   useEffect(() => {
@@ -44,15 +67,22 @@ function App() {
               <div className="text-[10px] text-gray-500">按 Cmd+Shift+F5</div>
             </div>
           </div>
-          <NavItem icon="⚙" label="设置" active={route === "settings"} onClick={() => setRoute("settings")} />
-          <NavItem icon="⏱" label="历史记录" active={route === "history"} onClick={() => setRoute("history")} />
-          <div className="flex-1" />
-          <NavItem icon="ℹ" label="关于" active={route === "about"} onClick={() => setRoute("about")} />
+          {NAV_ITEMS.map((item) => (
+            <NavItem
+              key={item.route}
+              icon={item.icon}
+              label={item.label}
+              active={route === item.route}
+              onClick={() => setRoute(item.route)}
+            />
+          ))}
         </nav>
         <main className="flex-1 overflow-y-auto">
-          {route === "settings" && <SettingsView />}
           {route === "history" && <HistoryView />}
           {route === "about" && <AboutView />}
+          {route !== "history" && route !== "about" && (
+            <SettingsView section={route as SettingsSection} />
+          )}
         </main>
       </div>
     </div>
