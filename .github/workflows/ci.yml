@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+# 新 push 自动取消同分支上还在跑的旧 run，避免堆积浪费额度
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -76,9 +82,11 @@ jobs:
         working-directory: rust/src-tauri
         run: cargo test --locked
 
+  # Package job 只在手动触发（workflow_dispatch）时跑，日常 push 不跑以省 CI 额度。
+  # 正式发布请打 tag 让 release.yml 跑（tauri-action 一步到位）。
   rust-package:
     name: Rust Package (${{ matrix.platform }})
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch'
     needs: [rust-lint, rust-test]
     strategy:
       fail-fast: false
