@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 发布 tag（如 v0.2.0）
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            label: macos-arm64
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows-amd64
+    runs-on: ${{ matrix.platform }}
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: rust/pnpm-lock.yaml
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/src-tauri -> target
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Tauri build + create release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: rust
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: "voice-claude ${{ github.event.inputs.tag || github.ref_name }}"
+          releaseBody: |
+            ## voice-claude Release
+
+            下载对应平台的安装包：
+            - **macOS (Apple Silicon)**：`*.dmg` 或 `*.app.tar.gz`
+            - **Windows (x64)**：`*.msi` 或 `*-setup.exe`
+
+            > Intel Mac 需本地 `cargo build --target x86_64-apple-darwin` 构建。
+
+            完整变更日志见提交历史。
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
