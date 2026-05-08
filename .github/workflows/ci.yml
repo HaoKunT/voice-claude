@@ -37,8 +37,8 @@ jobs:
           workspaces: rust/src-tauri -> target
       - name: Install pnpm deps
         run: pnpm install --frozen-lockfile
-      - name: Install system deps (ubuntu 跳过)
-        run: echo "macOS"
+      - name: Build frontend (need dist/ for tauri::generate_context)
+        run: pnpm build
       - name: cargo fmt --check
         working-directory: rust/src-tauri
         run: cargo fmt --check
@@ -70,6 +70,8 @@ jobs:
           workspaces: rust/src-tauri -> target
       - name: Install pnpm deps
         run: pnpm install --frozen-lockfile
+      - name: Build frontend (need dist/ for tauri::generate_context)
+        run: pnpm build
       - name: cargo test
         working-directory: rust/src-tauri
         run: cargo test --locked

@@ -9,7 +9,7 @@ use serde::Deserialize;
 use std::time::Duration;
 
 const ZHIPU_URL: &str = "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions";
-const MAX_SEGMENT_SECONDS: f64 = 28.0;
+const MAX_SEGMENT_SECONDS: f64 = 30.0;
 
 #[derive(Deserialize)]
 struct ZhipuResponse {
