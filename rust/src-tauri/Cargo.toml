@@ -78,13 +78,9 @@ tar = "0.4"
 version = "1.13"
 optional = true
 
-# macOS NSPanel 支持：后续 iteration 通过 tauri-nspanel 接入真·不抢焦点浮窗。
-# 现阶段用 Tauri 内置的 always-on-top + skip-taskbar + transparent 组合，视觉效果一致但焦点会抖一下。
-# [target.'cfg(target_os = "macos")'.dependencies]
-# tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2" }
-# cocoa = "0.26"
-# objc = "0.2"
-# core-foundation = "0.10"
+# macOS 专用：用 NSPanel 做真·不抢焦点浮窗（对应 type4me 的 FloatingBarPanel 方案）
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2" }
 
 [features]
 default = ["custom-protocol"]

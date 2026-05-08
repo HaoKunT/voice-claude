@@ -45,6 +45,8 @@ export const api = {
   checkOllama: (url: string) => invoke<void>("check_ollama", { url }),
   openLogs: () => invoke<void>("open_logs"),
   openConfigDir: () => invoke<void>("open_config_dir"),
+  isSenseVoiceAvailable: () => invoke<boolean>("is_sense_voice_available"),
+  downloadSenseVoice: () => invoke<void>("download_sense_voice"),
 };
 
 export const ASR_PROVIDERS = [

@@ -66,12 +66,17 @@ pub fn run() {
     let hotkey_str = cfg.hotkey.clone();
     let state = AppState::new(cfg);
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build());
+
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_nspanel::init());
+
+    builder
         .manage(state)
         .on_window_event(|window, event| {
             // 关闭主窗口时仅隐藏，app 本体靠托盘保持运行

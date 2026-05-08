@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { api, ASR_PROVIDERS, CORRECT_MODES, Config, DeviceInfo } from "../api";
 
 export function SettingsView() {
@@ -102,9 +103,7 @@ export function SettingsView() {
           <Field label="OpenRouter API Key" value={cfg.openrouter_api_key} onChange={(v) => update("openrouter_api_key", v)} password />
         )}
 
-        {cfg.asr_provider === "local" && (
-          <p className="text-sm text-amber-400">本地 SenseVoice 的 Rust 版本开发中，当前迭代不可用。</p>
-        )}
+        {cfg.asr_provider === "local" && <LocalSenseVoicePanel />}
       </section>
 
       <section className="card space-y-4">
@@ -263,6 +262,80 @@ function HotwordRow(props: {
         onChange={(e) => props.onChange(props.from, e.target.value)}
       />
       <button className="btn-ghost px-3" onClick={props.onDelete}>×</button>
+    </div>
+  );
+}
+
+function LocalSenseVoicePanel() {
+  const [available, setAvailable] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    api.isSenseVoiceAvailable().then(setAvailable);
+    const unlisten = listen<number>("sense-voice-download-progress", (e) => {
+      setProgress(e.payload);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  const onDownload = async () => {
+    setDownloading(true);
+    setMsg("");
+    setProgress(0);
+    try {
+      await api.downloadSenseVoice();
+      setAvailable(true);
+      setMsg("下载完成 ✓");
+    } catch (e) {
+      setMsg(`下载失败：${e}`);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-gray-400">
+        本地 SenseVoice：离线识别，无需 API Key。需启用 <code>local-asr</code> feature 后首次运行会自动使用已下载模型。
+      </p>
+      <div className="text-sm">
+        状态：
+        {available ? (
+          <span className="text-green-400">模型已就绪 ✓</span>
+        ) : (
+          <span className="text-amber-400">模型未下载</span>
+        )}
+      </div>
+      {downloading && (
+        <div>
+          <div className="h-2 bg-bg-700 rounded overflow-hidden">
+            <div
+              className="h-full bg-accent transition-all"
+              style={{ width: `${progress * 100}%` }}
+            />
+          </div>
+          <div className="text-xs text-gray-500 mt-1">
+            {Math.round(progress * 100)}%（模型约 1GB，需稳定网络）
+          </div>
+        </div>
+      )}
+      <div className="flex gap-2">
+        <button
+          className="btn-primary disabled:opacity-50"
+          disabled={downloading}
+          onClick={onDownload}
+        >
+          {available ? "重新下载" : "下载模型（约 1GB）"}
+        </button>
+        <button className="btn-ghost" onClick={() => api.openConfigDir()}>
+          打开模型目录
+        </button>
+      </div>
+      {msg && <div className="text-xs text-gray-400">{msg}</div>}
     </div>
   );
 }
