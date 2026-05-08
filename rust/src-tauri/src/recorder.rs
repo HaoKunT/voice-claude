@@ -57,13 +57,13 @@ fn scopeguard(app: AppHandle, level_stop: Arc<AtomicBool>) -> RecordingGuard {
 pub fn toggle(app: AppHandle, cfg: Arc<crate::config::Config>) {
     let rec_state = recording();
     if rec_state.active.load(Ordering::Relaxed) {
-        // 正在录音，停止
-        if let Some(tx) = rec_state.stop_tx.lock().take() {
-            let _ = tx.send(());
-        }
+        // 正在录音，第二次按热键 → 停止
+        let had_tx = rec_state.stop_tx.lock().take().map(|tx| tx.send(()));
+        tracing::info!(send_result = ?had_tx, "toggle: 请求停止录音");
         return;
     }
 
+    tracing::info!("toggle: 请求开始录音");
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     *rec_state.stop_tx.lock() = Some(stop_tx);
     rec_state.active.store(true, Ordering::Relaxed);
@@ -213,6 +213,8 @@ async fn run_batch(
         tracing::warn!(wav_bytes = wav.len(), "未录到声音");
         return Ok(String::new());
     }
-    tracing::info!(wav_bytes = wav.len(), "识别中");
+    // debug：保存最近一次录音 WAV 到 /tmp，方便用 afplay 听
+    let _ = std::fs::write("/tmp/voice-claude-last.wav", &wav);
+    tracing::info!(wav_bytes = wav.len(), path = "/tmp/voice-claude-last.wav", "识别中");
     asr::transcribe_batch(cfg, &wav).await
 }

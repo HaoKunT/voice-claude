@@ -54,7 +54,13 @@ rust-install: rust-build
 	rm -rf "/Applications/$(APP_BUNDLE)"; \
 	cp -r "$$BUNDLE" "/Applications/$(APP_BUNDLE)"; \
 	rm -rf "$$BUNDLE"; \
-	echo "✓ 已安装到 /Applications/$(APP_BUNDLE)（target 副本已清理，避免两个 app 共存）"
+	codesign --force --deep --sign - \
+		--identifier com.haokunt.voice-claude \
+		--entitlements $(RUST_DIR)/src-tauri/entitlements.plist \
+		"/Applications/$(APP_BUNDLE)" >/dev/null 2>&1 && \
+		echo "✓ 签名已固定为 com.haokunt.voice-claude + entitlements 已嵌入" || \
+		echo "⚠ 重签失败（可忽略）"; \
+	echo "✓ 已安装到 /Applications/$(APP_BUNDLE)"
 
 rust-build-win:
 	cd $(RUST_DIR) && pnpm install && pnpm tauri build --target x86_64-pc-windows-msvc --bundles msi,nsis

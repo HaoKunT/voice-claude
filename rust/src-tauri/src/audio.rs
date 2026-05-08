@@ -85,13 +85,28 @@ impl Recorder {
         };
         let device_name = device.name().unwrap_or_default();
 
-        let supported = device.default_input_config().context("get input config")?;
-        let sample_format = supported.sample_format();
-        let device_rate = supported.sample_rate().0;
-        let device_channels = supported.channels();
+        let default_cfg = device.default_input_config().context("get input config")?;
 
-        // 直接用设备 native config，避免 "stream configuration is not supported"
-        let config: cpal::StreamConfig = supported.clone().into();
+        // 优先尝试 16kHz mono 原生配置（避免我们的下采样 aliasing）；设备不支持再用 default
+        let (config, sample_format, device_rate, device_channels): (cpal::StreamConfig, _, _, _) = {
+            let ranges: Vec<_> = device.supported_input_configs().ok().map(|it| it.collect()).unwrap_or_default();
+            let supports_16k_mono = ranges.iter().any(|r| {
+                r.channels() == 1
+                    && r.min_sample_rate().0 <= SAMPLE_RATE
+                    && r.max_sample_rate().0 >= SAMPLE_RATE
+            });
+            if supports_16k_mono {
+                let cfg = cpal::StreamConfig {
+                    channels: 1,
+                    sample_rate: cpal::SampleRate(SAMPLE_RATE),
+                    buffer_size: cpal::BufferSize::Default,
+                };
+                (cfg, default_cfg.sample_format(), SAMPLE_RATE, 1u16)
+            } else {
+                let cfg: cpal::StreamConfig = default_cfg.clone().into();
+                (cfg, default_cfg.sample_format(), default_cfg.sample_rate().0, default_cfg.channels())
+            }
+        };
 
         tracing::info!(
             device = %device_name,
@@ -164,8 +179,10 @@ impl Recorder {
     }
 
     /// 停止录音并返回累积的 PCM。
+    /// 显式调 stream.pause() 再 drop —— macOS CoreAudio 仅靠 Drop 清理有时系统级录音指示灯不灭。
     pub fn stop(&self) -> Vec<u8> {
         if let Some(s) = self.stream.lock().take() {
+            let _ = s.pause();
             drop(s);
         }
         let mut guard = self.buffer.lock();
