@@ -2,8 +2,6 @@
 
 按一下热键说话，再按一下结束，识别的文字自动输入到当前焦点窗口。macOS / Windows 跨平台，专为办公室气声输入设计。
 
-![screenshot placeholder](docs/screenshot.png)
-
 数据流：**按热键 → 录音 → PCM 增益 → ASR 转写 → AI 纠错（可选）→ 热词替换 → 模拟键盘输入**
 
 ## 功能
