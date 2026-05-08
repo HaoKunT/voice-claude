@@ -1,8 +1,8 @@
 //! 本地 SenseVoice ASR（离线）。
 //! 对应 Go 版的 local_asr.go（+nosherpa 时是 stub）。
 //!
-//! 启用 feature `local-asr` 时，通过 `sherpa-onnx` crate 调用 SenseVoice 模型；
-//! 未启用时（默认）与 Go CI `-tags nosherpa` 的发布产物行为等价。
+//! 启用 feature `local-asr` 时，通过 `sherpa-onnx` crate（1.13）调用 SenseVoice 模型；
+//! 默认不启用，与 Go CI `-tags nosherpa` 发布产物行为等价（避免 C 库编译开销）。
 
 use crate::dirs::config_dir;
 use anyhow::Result;
@@ -16,37 +16,151 @@ pub const MODEL_URL: &str =
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2";
 pub const MODEL_SHA256: &str = "8148030f23c4bc0848239c80b635f3a0a1c275a2ae7ae37469bbe2341aa96d3f";
 
+/// 模型安装根目录。
 pub fn model_path() -> PathBuf {
     config_dir().join(MODEL_DIR)
 }
 
 /// 模型是否已下载。
 pub fn is_available() -> bool {
-    let model_file = model_path().join("model.int8.onnx");
-    model_file.is_file()
+    model_path().join("model.int8.onnx").is_file()
 }
 
 /// 主识别接口。
-///
-/// sherpa-onnx 1.13 Rust API 和 Go API 在字段命名 / Option wrapping / 构造方式上差异较大：
-///   - `OfflineSenseVoiceModelConfig` 用 `model: Option<String>` + `use_itn: bool`
-///   - `OfflineRecognizer::create(&cfg) -> Option<Self>`（注意是 Option 不是 Result）
-///   - `stream.get_result() -> Option<OfflineRecognitionResult>`
-///
-/// 完整接入需要仔细对齐 API 字段 + 测试真实模型推理。作为独立 iteration 完成。
-/// 现阶段即使开启 feature 也返回未实现提示，保证默认编译和 CI 发布产物稳定。
+#[cfg(feature = "local-asr")]
+pub async fn transcribe(wav: &[u8]) -> Result<String> {
+    use anyhow::anyhow;
+    use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig};
+
+    if !is_available() {
+        anyhow::bail!("SenseVoice 模型未下载，请先在设置里下载");
+    }
+    let model_dir = model_path();
+    let model_file = model_dir
+        .join("model.int8.onnx")
+        .to_string_lossy()
+        .into_owned();
+    let tokens_file = model_dir.join("tokens.txt").to_string_lossy().into_owned();
+
+    let wav_vec = wav.to_vec();
+
+    // 在独立线程跑 native 推理，避免阻塞 tokio runtime
+    tokio::task::spawn_blocking(move || -> Result<String> {
+        let mut cfg = OfflineRecognizerConfig::default();
+        cfg.model_config.sense_voice.model = Some(model_file);
+        cfg.model_config.sense_voice.language = Some("zh".to_string());
+        cfg.model_config.sense_voice.use_itn = true;
+        cfg.model_config.tokens = Some(tokens_file);
+        cfg.model_config.num_threads = 2;
+        cfg.model_config.provider = Some("cpu".to_string());
+        cfg.decoding_method = Some("greedy_search".to_string());
+
+        let recognizer =
+            OfflineRecognizer::create(&cfg).ok_or_else(|| anyhow!("SenseVoice 初始化失败"))?;
+        let (samples, sample_rate) = wav_bytes_to_samples(&wav_vec)?;
+        let stream = recognizer.create_stream();
+        stream.accept_waveform(sample_rate, &samples);
+        recognizer.decode(&stream);
+        let result = stream.get_result().ok_or_else(|| anyhow!("识别结果为空"))?;
+        Ok(result.text)
+    })
+    .await?
+}
+
+#[cfg(not(feature = "local-asr"))]
 pub async fn transcribe(_wav: &[u8]) -> Result<String> {
     anyhow::bail!(
-        "本地 SenseVoice 尚未完全接入 sherpa-onnx 1.13 Rust API，请选择其他 ASR 后端（讯飞/豆包/智谱/OpenRouter）"
+        "本地 SenseVoice 未启用。请用 `cargo build --features local-asr` 重新编译，或选择其他 ASR 后端"
     )
 }
 
-/// 下载模型（stub，完整实现见 Go 版 DownloadSenseVoiceModel）。
-pub async fn download_model(_on_progress: impl Fn(f32) + Send + 'static) -> Result<()> {
-    anyhow::bail!("本地 SenseVoice 下载暂未实现，后续 iteration 接入")
+/// 下载模型。
+/// 完整流程：GET → TeeReader 计算 SHA256 → bz2 解压 → tar 解包 → 校验 → 原子替换。
+pub async fn download_model<F: Fn(f32) + Send + 'static>(on_progress: F) -> Result<()> {
+    use anyhow::{bail, Context};
+    use bzip2::read::MultiBzDecoder;
+    use sha2::{Digest, Sha256};
+    use std::fs;
+    use tar::Archive;
+
+    let dest_dir = config_dir();
+    fs::create_dir_all(&dest_dir).ok();
+
+    let response = reqwest::get(MODEL_URL)
+        .await
+        .context("下载 SenseVoice 模型失败")?;
+    let total = response.content_length().unwrap_or(0);
+    let bytes = response.bytes().await.context("读取下载流失败")?;
+
+    let actual_sha = {
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        hex::encode(hasher.finalize())
+    };
+    if actual_sha != MODEL_SHA256 {
+        bail!(
+            "SHA256 校验失败（期望 {}，实际 {}），文件可能损坏",
+            MODEL_SHA256,
+            actual_sha
+        );
+    }
+    if total > 0 {
+        on_progress(0.9);
+    }
+
+    // 解压到临时目录，校验通过后移动
+    let tmp_dir = tempdir_in(&dest_dir)?;
+    let cursor = std::io::Cursor::new(bytes.as_ref());
+    let bz = MultiBzDecoder::new(cursor);
+    let mut archive = Archive::new(bz);
+    for entry in archive.entries().context("读取 tar 失败")? {
+        let mut entry = entry.context("读取 tar entry 失败")?;
+        let path = entry.path().context("entry path")?;
+        // 去掉顶层目录前缀
+        let stripped: PathBuf = path.components().skip(1).collect();
+        if stripped.as_os_str().is_empty() {
+            continue;
+        }
+        let target = tmp_dir.join(&stripped);
+        // Zip Slip 防护
+        let safe_root = fs::canonicalize(&tmp_dir).unwrap_or_else(|_| tmp_dir.clone());
+        if let Ok(canonical) = fs::canonicalize(target.parent().unwrap_or(&tmp_dir)) {
+            if !canonical.starts_with(&safe_root) {
+                bail!("非法路径: {:?}", stripped);
+            }
+        }
+        if entry.header().entry_type().is_dir() {
+            fs::create_dir_all(&target).ok();
+        } else {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).ok();
+            }
+            let mut out =
+                fs::File::create(&target).with_context(|| format!("写入 {:?}", target))?;
+            std::io::copy(&mut entry, &mut out).with_context(|| format!("copy to {:?}", target))?;
+        }
+    }
+
+    let final_dir = dest_dir.join(MODEL_DIR);
+    fs::remove_dir_all(&final_dir).ok();
+    fs::rename(&tmp_dir, &final_dir).context("移动模型目录失败")?;
+    on_progress(1.0);
+    Ok(())
 }
 
-/// 从 WAV 字节解析 float32 PCM。为 sherpa-onnx native 接入做的工具函数。
+fn tempdir_in(parent: &std::path::Path) -> Result<PathBuf> {
+    use std::fs;
+    for _ in 0..10 {
+        let ts = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        let p = parent.join(format!("sense-voice-tmp-{}", ts));
+        if fs::create_dir(&p).is_ok() {
+            return Ok(p);
+        }
+    }
+    anyhow::bail!("无法创建临时目录")
+}
+
+/// 从 WAV 字节解析 float32 PCM。
 #[allow(dead_code)]
 fn wav_bytes_to_samples(wav: &[u8]) -> Result<(Vec<f32>, i32)> {
     if wav.len() < 44 {
@@ -76,5 +190,15 @@ mod tests {
     fn constants_match_go_version() {
         assert_eq!(MODEL_SHA256.len(), 64);
         assert!(MODEL_URL.starts_with("https://github.com/k2-fsa/sherpa-onnx/"));
+    }
+
+    #[test]
+    fn parse_wav_roundtrip() {
+        // 构造一个 16k 单声道 WAV
+        let pcm = vec![0u8, 0u8, 0x00u8, 0x10u8]; // 两个 sample: 0 和 4096
+        let wav = crate::asr::wav::build_wav(&pcm);
+        let (samples, rate) = wav_bytes_to_samples(&wav).unwrap();
+        assert_eq!(rate, 16000);
+        assert_eq!(samples.len(), 2);
     }
 }

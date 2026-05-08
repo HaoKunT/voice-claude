@@ -125,6 +125,8 @@ pub fn run() {
             commands::check_ollama,
             commands::open_logs,
             commands::open_config_dir,
+            commands::is_sense_voice_available,
+            commands::download_sense_voice,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

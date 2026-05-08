@@ -1,11 +1,12 @@
 //! Tauri IPC commands：前端（React）调用的 Rust 函数。
 
+use crate::asr::local;
 use crate::audio::{list_capture_devices, CaptureDevice};
 use crate::config::Config;
 use crate::AppState;
 use crate::{correct, dirs, history};
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 #[derive(Serialize)]
 pub struct DeviceInfo {
@@ -60,6 +61,20 @@ pub async fn check_ollama(url: String) -> Result<(), String> {
 #[tauri::command]
 pub fn open_logs() -> Result<(), String> {
     open_path(&dirs::log_file_path().to_string_lossy())
+}
+
+#[tauri::command]
+pub fn is_sense_voice_available() -> bool {
+    local::is_available()
+}
+
+#[tauri::command]
+pub async fn download_sense_voice(app: AppHandle) -> Result<(), String> {
+    local::download_model(move |progress| {
+        let _ = app.emit("sense-voice-download-progress", progress);
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

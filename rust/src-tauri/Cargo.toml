@@ -68,14 +68,15 @@ parking_lot = "0.12"
 chrono = { version = "0.4", features = ["serde"] }
 url = "2"
 
-# 本地 SenseVoice（离线 ASR）依赖预留：
-# sherpa-onnx 1.13 Rust API 和 Go API 差异较大，完整接入作为独立 iteration 完成。
-# 启用骨架后默认关闭，Cargo.toml 里保持引用但不 pull crate，避免影响 CI 构建时间。
-# 接入步骤见 src/asr/local.rs 开头注释。
-#
-# [dependencies.sherpa-onnx]
-# version = "1.13"
-# optional = true
+# 本地 SenseVoice（离线 ASR）依赖：
+# - sherpa-onnx 走 feature gate `local-asr`，默认关闭（C 库编译时间长）
+# - bzip2 + tar 是模型下载 / 解压用，永远启用（download_model 主功能代码不 cfg 切分）
+bzip2 = "0.4"
+tar = "0.4"
+
+[dependencies.sherpa-onnx]
+version = "1.13"
+optional = true
 
 # macOS NSPanel 支持：后续 iteration 通过 tauri-nspanel 接入真·不抢焦点浮窗。
 # 现阶段用 Tauri 内置的 always-on-top + skip-taskbar + transparent 组合，视觉效果一致但焦点会抖一下。
@@ -89,3 +90,7 @@ url = "2"
 default = ["custom-protocol"]
 # DO NOT REMOVE!! Tauri 生产模式依赖
 custom-protocol = ["tauri/custom-protocol"]
+# 本地 SenseVoice 离线 ASR（对齐 Go 版 !nosherpa 模式）
+# 启用方式：cargo build --features local-asr
+# 首次编译需下载 + 编译 sherpa-onnx C 库（~500MB, 10-20 分钟）
+local-asr = ["dep:sherpa-onnx"]
