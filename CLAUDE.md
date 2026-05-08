@@ -4,123 +4,85 @@
 
 voice-claude 是一个跨平台语音输入法（macOS / Windows），按一下热键开始录音，再按一下结束，识别文字自动输入到当前焦点窗口。
 
-**技术栈正在从 Go + Fyne 迁移到 Rust + Tauri。** 主线代码在 `rust/` 目录，根目录的 Go 代码保留作为归档。所有新功能应加在 Rust 版。
+**技术栈**：Rust + Tauri v2 + React + TypeScript，主线代码全部在 `rust/` 目录。
 
-数据流：按热键 → 录音（cpal）→ PCM 增益 → ASR 转写 → AI 纠错（可选）→ 热词替换 → 模拟键盘输入（enigo）
+**归档**：`legacy/go/` 是旧版 Go + Fyne 代码，已经转正到 Rust，legacy 不再维护。
+
+数据流：按热键 → 录音（cpal）→ PCM 增益 + 降采样 → ASR 转写 → AI 纠错（可选）→ 热词替换 → 模拟键盘输入（enigo）
 
 ## 架构
 
-### Rust + Tauri 主线（`rust/`）
+### 核心依赖
 
-- **后端**：Rust + Tauri v2 + tokio
-- **前端**：React + TypeScript + Tailwind CSS + Vite
-- **全局热键**：tauri-plugin-global-shortcut
-- **数据库**：rusqlite (bundled)
-- **音频**：cpal
-- **键盘模拟**：enigo
-- **WebSocket**：tokio-tungstenite
-- **HTTP**：reqwest
+- **后端**：tokio / reqwest / tokio-tungstenite / cpal / enigo / rusqlite (bundled)
+- **Tauri 插件**：tauri-plugin-global-shortcut / tauri-plugin-clipboard-manager / tauri-plugin-store / tauri-plugin-dialog
+- **macOS 专用**：tauri-nspanel（NSPanel 真·不抢焦点）
+- **离线 ASR**：sherpa-onnx 1.13（SenseVoice，默认启用 feature = "local-asr"）
 
-### Go + Fyne 旧版（根目录）
+### 前端
 
-保留到 Rust 版稳定。只做必要维护，不加新功能。
+- React + TypeScript + Tailwind CSS + Vite
+- Raycast 风格视觉（深色毛玻璃 + 三色渐变 + SF Pro 字体）
+- 两个 entry：`index.html`（主窗口设置+历史）/ `indicator.html`（悬浮录音窗 Canvas 波形）
 
-### ASR 后端
+### 模块对照
 
-在设置界面切换，配置保存到 `config.json`：
-
-| 后端 | provider 值 | 协议 | 说明 |
-|---|---|---|---|
-| 智谱（默认） | `zhipu` | HTTP 批处理 | 需要 API Key |
-| 讯飞 | `xfyun` | WebSocket 流式 | 需要 AppID + AccessKey |
-| 豆包/火山 | `volc` | WebSocket 流式 | 需要 App Key + Access Token，效果最好 |
-| OpenRouter | `openrouter` | HTTP 批处理 | Whisper 模型 |
-| 本地 SenseVoice | `local` | 离线 | 需手动下载模型，macOS arm64/amd64 |
-
-流式后端（讯飞/豆包）：WebSocket 连接就绪后开始录音，松键发结束帧，实时出字。
-批处理后端（智谱/OpenRouter/本地）：录完整段后识别。
-
-### AI 纠错
-
-可选，在识别完成后对文字做后处理：
-
-| 模式 | 说明 |
+| Rust 模块 | 职责 |
 |---|---|
-| `off` | 不纠错（默认） |
-| `ollama` | 本地 Ollama 模型 |
-| `openrouter` | OpenRouter 任意模型 |
-| `cloud` | 兼容 OpenAI API 的任意云端模型 |
-
-## 项目结构
-
-```
-main.go              # 入口，热键注册，录音→识别→纠错→输入主流程
-audio.go             # 录音设备枚举、PCM 采集、增益、静音裁剪、WAV 打包、流式推送
-config.go            # 配置读写，路径由 dirs.go 提供
-dirs.go              # 平台相关路径（配置/日志目录）
-logger.go            # 日志初始化，同时写 stderr 和文件
-hotkey.go            # 热键字符串解析
-input.go             # 模拟键盘输入（robotgo）
-gui.go               # 设置窗口（Fyne，暗色主题）
-tray.go              # 系统托盘菜单
-history.go           # 历史记录 SQLite 存储
-history_window.go    # 历史记录窗口
-asr.go               # 智谱 ASR（HTTP，支持超 30s 自动分段）
-xfyun_asr.go         # 讯飞 ASR（WebSocket 流式）
-volc_asr.go          # 豆包/火山 ASR（WebSocket 流式，VolcProtocol 二进制帧）
-openrouter_asr.go    # OpenRouter ASR（Whisper，HTTP）
-local_asr.go         # 本地 SenseVoice ASR（sherpa-onnx，build tag: !nosherpa）
-local_asr_stub.go    # 本地 ASR stub（build tag: nosherpa，用于不支持平台）
-correct.go           # AI 纠错（ollama / openrouter / cloud）
-```
+| `lib.rs` | 主入口 + Tauri Builder + 热键绑定 |
+| `recorder.rs` | 录音切换状态机 + 主流程 |
+| `audio.rs` | cpal 录音 + 设备兼容降采样到 16kHz mono |
+| `input.rs` | enigo 键盘模拟输入 |
+| `indicator.rs` | 悬浮波形窗（macOS NSPanel + 预创建） |
+| `tray.rs` | 系统托盘 + 最近识别快捷复制 |
+| `beep.rs` | 录音提示音（macOS afplay / Windows SystemSounds） |
+| `asr/zhipu.rs` | 智谱 HTTP + 自动分段 |
+| `asr/xfyun.rs` | 讯飞 WebSocket 流式 |
+| `asr/volc.rs` | 豆包 WebSocket 流式（二进制帧协议） |
+| `asr/openrouter.rs` | OpenRouter Whisper |
+| `asr/local.rs` | 本地 SenseVoice（sherpa-onnx） |
+| `correct.rs` | AI 纠错（ollama / openrouter / cloud） |
+| `hotwords.rs` | 热词替换 |
+| `history.rs` | SQLite 历史 |
+| `config.rs` | JSON 配置 |
+| `hotkey.rs` | 热键字符串解析 |
+| `dirs.rs` | 跨平台路径 |
+| `logger.rs` | tracing 日志 |
+| `commands.rs` | Tauri IPC commands |
 
 ## 平台适配
-
-### 跨平台原则
-- 所有路径通过 `dirs.go` 的 `configDir()` / `appLogDir()` 获取，按平台返回惯例目录
-- 不使用硬编码的 `/tmp`、`~` 路径
-- 编译标签控制平台特定代码
 
 ### macOS
 - 配置：`~/Library/Application Support/voice-claude/config.json`
 - 日志：`~/Library/Logs/voice-claude/voice-claude.log`
 - 历史：`~/Library/Application Support/voice-claude/history.db`
-- 打包：`make build` 生成 `voice-claude.app`，`Info.plist` 设 `LSUIElement=true`（仅菜单栏）
-- 安装：`make install` 编译 + 打包 + 复制到 `/Applications` 并清理本地构建产物
+- 打包：`make install` → `pnpm tauri build --bundles app` → 自动 codesign 重签（固定 identifier + 嵌入 entitlements）
+- Accessory 模式（menubar-only），tray 点"设置"临时切 Regular
+- 悬浮窗：tauri-nspanel + `order_front_regardless` + `set_becomes_key_only_if_needed(true)` → 真·不抢焦点
 
 ### Windows
 - 配置：`%APPDATA%\voice-claude\config.json`
 - 日志：`%LOCALAPPDATA%\voice-claude\logs\voice-claude.log`
-- 历史：`%APPDATA%\voice-claude\history.db`
-- 编译：`make build-win`，`-H windowsgui` 隐藏控制台窗口
-- 本地 ASR 使用 `nosherpa` 构建标签跳过 sherpa-onnx（dylib 仅 macOS）
-
-### 本地 SenseVoice（macOS only 暂时）
-- 模型文件放在 `configDir()/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/`
-- 依赖 `github.com/k2-fsa/sherpa-onnx-go`，需要预编译的 `.dylib`
-- Windows 编译时加 `-tags nosherpa` 跳过
+- 打包：`pnpm tauri build --bundles msi,nsis`
+- 待补：NSPanel 等价（`WS_EX_NOACTIVATE`）+ 快捷键符号 + 毛玻璃，详见 `rust/WINDOWS_TODO.md`
 
 ## 构建
 
 ```bash
-# macOS：编译 + 打包 .app + 安装到 /Applications（一行搞定）
-make install
-
-# macOS：仅打包 .app，不安装
-make build
-
-# Windows（无控制台窗口）
-make build-win
-
-# 卸载
-make uninstall
+make dev           # 开发模式
+make install       # macOS 打包 + 安装
+make build-win     # Windows 打包（需 Windows 机器）
+make test          # cargo test + typecheck
+make lint          # clippy + fmt --check
 ```
+
+legacy Go 版（只在 `make legacy-*` 下编译，不影响主线）。
 
 ## 编码约定
 
-- 用户界面文本和日志使用中文
-- commit message 使用中文
-- 流式后端函数签名：`func(cfg *Config, pcmCh <-chan []byte, onPartial func(string), ready chan<- struct{}) (string, error)`
-- `ready` channel 在 WebSocket 连接就绪后关闭，调用方等待后再开始录音
-- 批处理后端函数签名：`func(wavBytes []byte, cfg *Config) (string, error)`
-- 音频格式：16kHz、16bit、单声道 PCM
+- 用户界面文本 / 日志 / commit message 均使用中文
+- 所有跨平台路径走 `dirs::config_dir()` / `dirs::log_dir()`
+- Tauri 主线程 API（window/menu/panel）必须用 `app.run_on_main_thread()` 从 tokio worker 调度
+- 所有 ASR 后端都在 `async` 上下文跑，流式后端用 `transcribe_stream` 签名（onPartial 回调实时输入）
+- 每次识别完成后调 `tray::refresh(&app)` 刷新托盘菜单的最近 5 条
+- 音频格式：16kHz / 16bit / 单声道 PCM（audio.rs 自动从设备 native 采样率降采样）

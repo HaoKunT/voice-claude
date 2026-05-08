@@ -1,141 +1,125 @@
 # voice-claude
 
-按一下热键开始说话，再按一下热键结束，识别文字自动输入到当前焦点窗口。专为办公室气声输入设计。
+按一下热键说话，再按一下结束，识别的文字自动输入到当前焦点窗口。macOS / Windows 跨平台，专为办公室气声输入设计。
 
-> **迁移中：** 项目正在从 Go + Fyne 迁移到 Rust + Tauri。主线代码在 [`rust/`](./rust/) 目录，根目录的 Go 版本作为归档保留，CI 仍然同时校验两版。
+![screenshot placeholder](docs/screenshot.png)
 
 数据流：**按热键 → 录音 → PCM 增益 → ASR 转写 → AI 纠错（可选）→ 热词替换 → 模拟键盘输入**
 
-## 功能特性
+## 功能
 
-- **系统托盘运行**，不占 Dock，全程后台
-- **5 种 ASR 后端**：智谱、讯飞（流式）、豆包/火山（流式，效果最好）、OpenRouter Whisper、本地 SenseVoice（离线）
-- **流式实时出字**：讯飞/豆包后端边说边出，延迟低
-- **AI 纠错**：可选接 Ollama 本地模型或云端 API，自动修正同音字
-- **信号增益**：自动放大气声，1-10x 可调
-- **历史记录**：SQLite 本地存储，随时查看
+- **菜单栏常驻**，不占 Dock，全程后台
+- **悬浮波形窗**：Raycast 风格渐变色波形，macOS 原生 NSPanel 真·不抢焦点
+- **5 种 ASR 后端**：本地 SenseVoice（离线）、讯飞 / 豆包（实时流式）、智谱 / OpenRouter Whisper（准确优先）
+- **AI 纠错**：可选接 Ollama 本地模型 / OpenRouter / 任意兼容 OpenAI API 的云端
+- **热词替换**：专有名词自动修正（克劳德 → Claude 等）
+- **历史记录**：SQLite 本地存储，托盘菜单最近 5 条点击复制
+- **录音提示音**：开始叮、结束啵
+- **设置自动保存**：改完即生效，无需手动保存
 
 ## 安装
 
-### macOS（Rust 版 - 主线）
-
-需要 Rust stable + Node.js 20+ + pnpm：
+### macOS
 
 ```bash
 git clone https://github.com/HaoKunT/voice-claude.git
 cd voice-claude
-make rust-install   # 编译 + 打包 .app + 安装到 /Applications
-# 或开发模式
-make rust-dev
+make install   # 编译 + 打包 + 安装到 /Applications
 ```
 
-首次启动需在「系统设置 → 隐私与安全性 → 辅助功能」中授权。
+首次启动需要在 **系统设置 → 隐私与安全性 → 辅助功能** 中授权 voice-claude。
 
-### macOS / Windows（Go 旧版 - 归档）
+**前置依赖**：Rust stable + Node.js 20+ + pnpm
 
-```bash
-make go-install      # macOS
-make go-build-win    # Windows
+### Windows
+
+目前需要有 Windows 机器：
+
+```powershell
+cd rust
+pnpm install
+pnpm tauri build --bundles msi,nsis
 ```
 
-### Windows（Rust 版）
-
-```bash
-make rust-build-win   # 生成 Windows .msi / .exe 安装包
-```
+产物在 `src-tauri\target\release\bundle\` 下。Windows 版 NSPanel 等价未做，详见 `rust/WINDOWS_TODO.md`。
 
 ## 快速上手
 
 1. 启动 `voice-claude.app`，菜单栏出现图标
-2. 点击图标 → **设置**，选择 ASR 后端并填入 API Key
-3. 默认热键 `Cmd+Shift+F5`：**按一下开始说话，再按一下结束**
+2. 点图标 → **设置**，选 ASR 后端填 API Key（改完即自动保存）
+3. 默认热键 `Cmd+Shift+F5`（**按一下开始说话，再按一下结束**）
 
 ## ASR 后端
 
 | 后端 | 模式 | 说明 |
-|------|------|------|
-| 智谱（默认）| 批处理 | 需要 API Key，免费额度充足 |
-| 讯飞 | 流式 | 需要 AppID + AccessKey |
-| 豆包/火山 | 流式 | 效果最好，注册送 40 小时额度 |
+|---|---|---|
+| 本地 SenseVoice | 离线 | 约 1GB 模型，隐私最佳，需手动下载 |
+| 讯飞 | 流式 | 需要 AppID + AccessKey，边说边出字 |
+| 豆包 / 火山 | 流式 | 效果最好，注册送 40 小时额度 |
+| 智谱 | 批处理 | 免费额度充足 |
 | OpenRouter | 批处理 | Whisper large-v3-turbo |
-| 本地 SenseVoice | 离线批处理 | 约 1GB 模型，macOS arm64/amd64 |
 
-## AI 纠错（可选）
+## AI 纠错
 
-设置窗口中开启，可接：
+可选，在设置里开启：
 
-- **Ollama**：本地模型，推荐 `qwen2.5:3b`
-- **OpenRouter**：共用 ASR 的 API Key，可选任意模型
-- **云端**：兼容 OpenAI API 的任意服务
-
-## 气声输入技巧
-
-- 麦杆贴近嘴角 2-3 cm，不振动声带，只送气
-- 说话速度适中，增益调到 3-5x 可覆盖大多数气声场景
-- 推荐带麦杆的有线 USB 耳麦（EPOS IMPACT 400 / Jabra Evolve2 40）
+- **Ollama** - 本地模型（推荐 qwen2.5:3b）
+- **OpenRouter** - 云端任意模型（共用 ASR 的 API Key）
+- **Cloud** - 兼容 OpenAI API 的任意服务
 
 ## 构建
 
 ```bash
-# Rust + Tauri 主线
-make rust-install    # macOS：编译 + 打包 .app + 安装到 /Applications
-make rust-build      # macOS：仅打包 .app + .dmg
-make rust-build-win  # Windows：.msi + .exe 安装包
-make rust-test       # cargo test + 前端 typecheck
-make rust-clippy     # Rust clippy lint
-make rust-fmt        # 格式化 Rust 代码
-
-# Go 旧版（归档）
-make go-install      # macOS
-make go-build-win    # Windows
-make go-test / lint / vuln
-
-# 清理
-make clean
+make dev           # 开发模式（热重载）
+make build         # macOS 打包 .app
+make install       # 编译 + 安装到 /Applications
+make build-win     # Windows 打包 .msi + .exe
+make test          # cargo test + 前端 typecheck
+make lint          # clippy + fmt --check
+make fmt           # cargo fmt
+make clean         # 清理构建产物
+make uninstall     # 从 /Applications 卸载
 ```
 
 ## 项目结构
 
 ```
-rust/                # Rust + Tauri 主线（见 rust/README.md）
-├── src/             # React + TypeScript 前端
-│   ├── views/       # 设置 + 历史
-│   ├── indicator.tsx# 悬浮波形
-│   └── api.ts       # IPC 封装
-└── src-tauri/src/   # Rust 后端
-    ├── asr/         # 5 个 ASR 后端
-    ├── audio.rs     # cpal 录音
-    ├── config.rs    # JSON 配置
-    ├── correct.rs   # AI 纠错
-    ├── history.rs   # SQLite 历史
-    ├── hotkey.rs    # 热键解析
-    ├── hotwords.rs  # 热词替换
-    ├── indicator.rs # 悬浮窗
-    ├── input.rs     # enigo 键盘模拟
-    ├── recorder.rs  # 主流程
-    ├── tray.rs      # 系统托盘
-    └── commands.rs  # Tauri IPC
+rust/                       # Rust + Tauri 主线代码
+├── src/                    # React + TypeScript 前端
+│   ├── views/              # SettingsView / HistoryView
+│   ├── indicator.tsx       # 悬浮波形窗
+│   └── api.ts              # Tauri IPC 封装
+├── src-tauri/
+│   └── src/
+│       ├── asr/            # 5 种 ASR 后端
+│       ├── audio.rs        # cpal 录音 + 降采样
+│       ├── config.rs       # 配置
+│       ├── correct.rs      # AI 纠错
+│       ├── history.rs      # SQLite 历史
+│       ├── hotwords.rs     # 热词
+│       ├── indicator.rs    # NSPanel 悬浮窗
+│       ├── input.rs        # enigo 键盘模拟
+│       ├── recorder.rs     # 主流程
+│       ├── tray.rs         # 系统托盘
+│       └── beep.rs         # 提示音
+└── indicator.html          # 悬浮窗 HTML
 
-# Go 旧版（根目录）
-main.go              # 入口：热键注册、录音→识别→纠错→输入主流程
-audio.go             # 录音设备枚举、PCM 采集、增益、WAV 打包、流式推送
-config.go            # 配置读写
-dirs.go              # 平台相关路径（macOS/Windows）
-logger.go            # 日志初始化
-hotkey.go            # 热键字符串解析
-input.go             # 模拟键盘输入（robotgo）
-gui.go               # 设置窗口（Fyne 暗色主题）
-tray.go              # 系统托盘菜单
-history.go           # 历史记录（SQLite）
-history_window.go    # 历史记录窗口
-asr.go               # 智谱 ASR（HTTP，支持自动分段）
-xfyun_asr.go         # 讯飞 ASR（WebSocket 流式）
-volc_asr.go          # 豆包/火山 ASR（WebSocket 流式）
-openrouter_asr.go    # OpenRouter ASR（Whisper，HTTP）
-local_asr.go         # 本地 SenseVoice（sherpa-onnx，!nosherpa）
-local_asr_stub.go    # 本地 ASR stub（nosherpa，Windows/不支持平台）
-correct.go           # AI 纠错（Ollama / OpenRouter / 云端）
+legacy/go/                  # Go + Fyne 老版归档（不再维护）
 ```
+
+## 技术栈
+
+- **后端**：Rust + Tauri v2 + tokio + cpal + enigo + rusqlite
+- **前端**：React + TypeScript + Tailwind CSS + Vite
+- **悬浮窗**：tauri-nspanel（macOS 真·不抢焦点）
+- **离线 ASR**：sherpa-onnx（SenseVoice）
+- **打包**：macOS .app / .dmg，Windows .msi / .exe（Tauri bundler）
+
+## 气声输入技巧
+
+- 麦杆贴近嘴角 2-3 cm，不振动声带只送气
+- 说话速度适中，增益调到 3-5x 可覆盖大多数气声场景
+- 推荐带麦杆的有线 USB 耳麦（EPOS IMPACT 400 / Jabra Evolve2 40）
 
 ## License
 

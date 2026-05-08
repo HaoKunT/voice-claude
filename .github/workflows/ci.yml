@@ -37,8 +37,7 @@ jobs:
           node-version: 20
           cache: pnpm
           cache-dependency-path: rust/pnpm-lock.yaml
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust/src-tauri -> target
       - name: Install pnpm deps
@@ -98,9 +97,6 @@ jobs:
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: voice-claude-windows-amd64
-    # macOS Intel（x86_64-apple-darwin）在 GitHub Actions 公共 runner 上队列严重拥堵，
-    # 已从 CI 矩阵移除。发布 Intel 版需本地 `cargo build --target x86_64-apple-darwin`
-    # 或后续引入 release workflow 触发（release-*.yml，按 tag 构建）。
     runs-on: ${{ matrix.platform }}
     defaults:
       run:
@@ -146,46 +142,5 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-  # ─────────────────────────── Go + Fyne Legacy（保留到 Rust 版稳定） ────
-
-  go-lint:
-    name: Go Lint
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: go mod tidy
-        run: go mod tidy && git diff --exit-code
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.12.2
-
-  go-security:
-    name: Go Security
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: govulncheck
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          make go-vuln
-
-  go-test:
-    name: Go Test
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Test
-        run: make go-test
+  # Go 版（legacy/go/）已归档，不再 CI 验证。
+  # 如需手动校验：`make legacy-test / legacy-lint / legacy-vuln`
