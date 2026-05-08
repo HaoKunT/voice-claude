@@ -114,7 +114,10 @@ pub async fn transcribe_stream(
 
     // 构造带 header 的 WebSocket 握手
     let uri: Uri = VOLC_ENDPOINT.parse()?;
-    let connect_id = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0).to_string();
+    let connect_id = chrono::Utc::now()
+        .timestamp_nanos_opt()
+        .unwrap_or(0)
+        .to_string();
     let req = HandshakeRequest::builder()
         .uri(&uri)
         .header("Host", uri.host().unwrap_or(""))
@@ -122,20 +125,37 @@ pub async fn transcribe_stream(
         .header("X-Api-Access-Key", &cfg.volc_access_token)
         .header("X-Api-Resource-Id", &cfg.volc_resource_id)
         .header("X-Api-Connect-Id", &connect_id)
-        .header("Sec-WebSocket-Key", tokio_tungstenite::tungstenite::handshake::client::generate_key())
+        .header(
+            "Sec-WebSocket-Key",
+            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+        )
         .header("Sec-WebSocket-Version", "13")
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
         .body(())?;
 
-    let (ws_stream, _) = tokio_tungstenite::connect_async(req).await.context("豆包连接失败")?;
+    let (ws_stream, _) = tokio_tungstenite::connect_async(req)
+        .await
+        .context("豆包连接失败")?;
     let (mut write, mut read) = ws_stream.split();
 
     // 发送初始化请求
-    let uid = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0).to_string();
+    let uid = chrono::Utc::now()
+        .timestamp_nanos_opt()
+        .unwrap_or(0)
+        .to_string();
     let init_payload = build_client_request(&uid);
-    let init_msg = encode_message(MSG_FULL_CLIENT_REQUEST, FLAG_NO_SEQUENCE, SER_JSON, COMP_NONE, &init_payload);
-    write.send(Message::Binary(init_msg)).await.context("发送初始化请求失败")?;
+    let init_msg = encode_message(
+        MSG_FULL_CLIENT_REQUEST,
+        FLAG_NO_SEQUENCE,
+        SER_JSON,
+        COMP_NONE,
+        &init_payload,
+    );
+    write
+        .send(Message::Binary(init_msg))
+        .await
+        .context("发送初始化请求失败")?;
 
     let _ = ready.send(());
 
@@ -175,13 +195,25 @@ pub async fn transcribe_stream(
     // 发送 PCM
     let send_task = tokio::spawn(async move {
         while let Some(chunk) = pcm_rx.recv().await {
-            let msg = encode_message(MSG_AUDIO_ONLY_REQUEST, FLAG_NO_SEQUENCE, SER_NONE, COMP_NONE, &chunk);
+            let msg = encode_message(
+                MSG_AUDIO_ONLY_REQUEST,
+                FLAG_NO_SEQUENCE,
+                SER_NONE,
+                COMP_NONE,
+                &chunk,
+            );
             if write.send(Message::Binary(msg)).await.is_err() {
                 return write;
             }
         }
         // 发送结束帧
-        let end = encode_message(MSG_AUDIO_ONLY_REQUEST, FLAG_LAST_PACKET, SER_NONE, COMP_NONE, &[]);
+        let end = encode_message(
+            MSG_AUDIO_ONLY_REQUEST,
+            FLAG_LAST_PACKET,
+            SER_NONE,
+            COMP_NONE,
+            &[],
+        );
         let _ = write.send(Message::Binary(end)).await;
         write
     });
@@ -201,7 +233,12 @@ mod tests {
 
     #[test]
     fn header_format() {
-        let h = encode_header(MSG_FULL_CLIENT_REQUEST, FLAG_NO_SEQUENCE, SER_JSON, COMP_NONE);
+        let h = encode_header(
+            MSG_FULL_CLIENT_REQUEST,
+            FLAG_NO_SEQUENCE,
+            SER_JSON,
+            COMP_NONE,
+        );
         assert_eq!(h[0], (VERSION << 4) | HEADER_SIZE);
         assert_eq!(h[1] >> 4, MSG_FULL_CLIENT_REQUEST);
         assert_eq!(h[2] >> 4, SER_JSON);
@@ -215,10 +252,10 @@ mod tests {
 
     #[test]
     fn decode_final_result() {
-        let payload = br#"{"result":{"text":"你好"}}"#;
+        let payload = r#"{"result":{"text":"hello"}}"#.as_bytes();
         let msg = encode_message(0x09, FLAG_ASYNC_FINAL, SER_JSON, COMP_NONE, payload);
         let (text, is_final) = decode_response(&msg).unwrap();
-        assert_eq!(text, "你好");
+        assert_eq!(text, "hello");
         assert!(is_final);
     }
 }

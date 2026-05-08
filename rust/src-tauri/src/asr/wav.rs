@@ -40,8 +40,7 @@ pub fn split_wav(wav: &[u8], max_seconds: f64) -> Result<Vec<Vec<u8>>> {
     if bits_per_sample == 0 || sample_rate == 0 {
         return Ok(vec![wav.to_vec()]);
     }
-    let bytes_per_sec =
-        (sample_rate as u64) * (CHANNELS as u64) * (bits_per_sample as u64 / 8);
+    let bytes_per_sec = (sample_rate as u64) * (CHANNELS as u64) * (bits_per_sample as u64 / 8);
     let pcm = &wav[44..];
     let total_secs = pcm.len() as f64 / bytes_per_sec as f64;
     if total_secs <= max_seconds {

@@ -5,10 +5,10 @@ use anyhow::Result;
 use tauri::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, Runtime, Wry,
+    AppHandle, Manager, Wry,
 };
 
-pub fn setup<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
+pub fn setup(app: &AppHandle<Wry>) -> Result<()> {
     let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
     let history = MenuItem::with_id(app, "history", "历史记录", true, None::<&str>)?;
     let logs = MenuItem::with_id(app, "logs", "打开日志", true, None::<&str>)?;

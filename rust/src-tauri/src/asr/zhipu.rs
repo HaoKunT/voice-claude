@@ -42,13 +42,15 @@ pub async fn transcribe(cfg: &Config, wav: &[u8]) -> Result<String> {
     Ok(parts.concat())
 }
 
-async fn transcribe_segment(client: &reqwest::Client, api_key: &str, wav: Vec<u8>) -> Result<String> {
+async fn transcribe_segment(
+    client: &reqwest::Client,
+    api_key: &str,
+    wav: Vec<u8>,
+) -> Result<String> {
     let file_part = Part::bytes(wav)
         .file_name("audio.wav")
         .mime_str("audio/wav")?;
-    let form = Form::new()
-        .text("model", "glm-asr")
-        .part("file", file_part);
+    let form = Form::new().text("model", "glm-asr").part("file", file_part);
 
     let resp = client
         .post(ZHIPU_URL)

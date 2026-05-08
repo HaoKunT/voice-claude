@@ -13,7 +13,7 @@ pub fn apply(text: &str, hotwords: &HashMap<String, String>) -> String {
     }
 
     let mut keys: Vec<&String> = hotwords.keys().filter(|k| !k.is_empty()).collect();
-    keys.sort_by(|a, b| b.len().cmp(&a.len()));
+    keys.sort_by_key(|k| std::cmp::Reverse(k.len()));
 
     let mut result = text.to_string();
     for k in keys {
@@ -29,7 +29,10 @@ mod tests {
     use super::*;
 
     fn map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -52,8 +55,15 @@ mod tests {
 
     #[test]
     fn multiple_replacements() {
-        let m = map(&[("克劳德", "Claude"), ("吉他布", "GitHub"), ("艾皮爱", "API")]);
-        assert_eq!(apply("在吉他布上用克劳德调艾皮爱", &m), "在GitHub上用Claude调API");
+        let m = map(&[
+            ("克劳德", "Claude"),
+            ("吉他布", "GitHub"),
+            ("艾皮爱", "API"),
+        ]);
+        assert_eq!(
+            apply("在吉他布上用克劳德调艾皮爱", &m),
+            "在GitHub上用Claude调API"
+        );
     }
 
     #[test]

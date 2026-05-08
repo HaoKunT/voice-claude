@@ -36,13 +36,16 @@ pub fn init() -> Result<()> {
         [],
     )
     .context("create history table")?;
-    DB.set(Mutex::new(conn)).map_err(|_| anyhow::anyhow!("DB already initialized"))?;
+    DB.set(Mutex::new(conn))
+        .map_err(|_| anyhow::anyhow!("DB already initialized"))?;
     Ok(())
 }
 
 /// 保存一条识别记录；DB 未初始化时静默返回。
 pub fn save(raw: &str, corrected: &str, provider: &str) {
-    let Some(lock) = DB.get() else { return; };
+    let Some(lock) = DB.get() else {
+        return;
+    };
     let conn = lock.lock();
     let ts = chrono::Utc::now().timestamp();
     let _ = conn.execute(
@@ -53,7 +56,9 @@ pub fn save(raw: &str, corrected: &str, provider: &str) {
 
 /// 读取最近 limit 条记录。
 pub fn load(limit: i64) -> Result<Vec<HistoryEntry>> {
-    let Some(lock) = DB.get() else { return Ok(Vec::new()); };
+    let Some(lock) = DB.get() else {
+        return Ok(Vec::new());
+    };
     let conn = lock.lock();
     let mut stmt = conn.prepare(
         "SELECT id, created_at, raw_text, corrected_text, asr_provider
@@ -73,7 +78,9 @@ pub fn load(limit: i64) -> Result<Vec<HistoryEntry>> {
 
 /// 删除指定 id 的记录。
 pub fn delete(id: i64) -> Result<()> {
-    let Some(lock) = DB.get() else { return Ok(()); };
+    let Some(lock) = DB.get() else {
+        return Ok(());
+    };
     let conn = lock.lock();
     conn.execute("DELETE FROM history WHERE id = ?", params![id])?;
     Ok(())
@@ -81,7 +88,9 @@ pub fn delete(id: i64) -> Result<()> {
 
 /// 清空全部历史。
 pub fn clear() -> Result<()> {
-    let Some(lock) = DB.get() else { return Ok(()); };
+    let Some(lock) = DB.get() else {
+        return Ok(());
+    };
     let conn = lock.lock();
     conn.execute("DELETE FROM history", [])?;
     Ok(())

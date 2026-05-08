@@ -83,17 +83,31 @@ mod tests {
 
     #[test]
     fn parses_basic_combo() {
-        assert_eq!(to_tauri_shortcut("cmd+shift+f5").unwrap(), "CommandOrControl+Shift+F5");
+        assert_eq!(
+            to_tauri_shortcut("cmd+shift+f5").unwrap(),
+            "CommandOrControl+Shift+F5"
+        );
     }
 
     #[test]
     fn parses_with_option() {
-        assert_eq!(to_tauri_shortcut("ctrl+alt+space").unwrap(), "Control+Alt+Space");
+        assert_eq!(
+            to_tauri_shortcut("ctrl+alt+space").unwrap(),
+            "Control+Alt+Space"
+        );
     }
 
     #[test]
     fn normalizes_rmod_to_same() {
-        assert_eq!(to_tauri_shortcut("rshift+rcmd+a").unwrap(), "CommandOrControl+Shift+A");
+        // 修饰键顺序按用户输入保留，主键在最后
+        assert_eq!(
+            to_tauri_shortcut("rshift+rcmd+a").unwrap(),
+            "Shift+CommandOrControl+A"
+        );
+        assert_eq!(
+            to_tauri_shortcut("rcmd+rshift+a").unwrap(),
+            "CommandOrControl+Shift+A"
+        );
     }
 
     #[test]
@@ -113,7 +127,10 @@ mod tests {
 
     #[test]
     fn fkey_range() {
-        assert_eq!(to_tauri_shortcut("cmd+f12").unwrap(), "CommandOrControl+F12");
+        assert_eq!(
+            to_tauri_shortcut("cmd+f12").unwrap(),
+            "CommandOrControl+F12"
+        );
         assert!(to_tauri_shortcut("cmd+f99").is_err());
     }
 }

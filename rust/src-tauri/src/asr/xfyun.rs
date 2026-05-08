@@ -19,7 +19,11 @@ const XFYUN_URL: &str = "wss://office-api-ast-dx.iflyaisol.com/ast/communicate/v
 type HmacSha1 = Hmac<Sha1>;
 
 /// 构建鉴权 URL（对应 Go 版 xfyunBuildAuthParams）
-pub fn build_auth_url(app_id: &str, access_key_id: &str, access_key_secret: &str) -> Result<String> {
+pub fn build_auth_url(
+    app_id: &str,
+    access_key_id: &str,
+    access_key_secret: &str,
+) -> Result<String> {
     let tz = FixedOffset::east_opt(8 * 3600).unwrap();
     let now = Utc::now().with_timezone(&tz);
     let utc_str = now.format("%Y-%m-%dT%H:%M:%S%z").to_string();
@@ -138,12 +142,21 @@ pub async fn transcribe_stream(
     on_partial: Box<dyn Fn(String) + Send + Sync>,
     ready: oneshot::Sender<()>,
 ) -> Result<String> {
-    if cfg.xfyun_app_id.is_empty() || cfg.xfyun_access_key_id.is_empty() || cfg.xfyun_access_secret.is_empty() {
+    if cfg.xfyun_app_id.is_empty()
+        || cfg.xfyun_access_key_id.is_empty()
+        || cfg.xfyun_access_secret.is_empty()
+    {
         anyhow::bail!("请配置讯飞 AppID、AccessKeyID、AccessKeySecret");
     }
-    let url = build_auth_url(&cfg.xfyun_app_id, &cfg.xfyun_access_key_id, &cfg.xfyun_access_secret)?;
+    let url = build_auth_url(
+        &cfg.xfyun_app_id,
+        &cfg.xfyun_access_key_id,
+        &cfg.xfyun_access_secret,
+    )?;
 
-    let (ws_stream, _) = tokio_tungstenite::connect_async(&url).await.context("讯飞连接失败")?;
+    let (ws_stream, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .context("讯飞连接失败")?;
     let (mut write, mut read) = ws_stream.split();
     let _ = ready.send(());
 

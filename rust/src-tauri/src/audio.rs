@@ -45,6 +45,7 @@ unsafe impl Send for Recorder {}
 unsafe impl Sync for Recorder {}
 
 impl Recorder {
+    #[allow(clippy::arc_with_non_send_sync)] // Recorder 上已经 unsafe impl Send/Sync，stream 由固定线程持有
     pub fn new(gain: u8, device_name: &str) -> Self {
         Self {
             gain: gain.max(1),
@@ -72,7 +73,8 @@ impl Recorder {
     pub fn start(&self) -> Result<()> {
         let host = cpal::default_host();
         let device = if self.device_name.is_empty() {
-            host.default_input_device().ok_or_else(|| anyhow!("无可用默认录音设备"))?
+            host.default_input_device()
+                .ok_or_else(|| anyhow!("无可用默认录音设备"))?
         } else {
             host.input_devices()?
                 .find(|d| d.name().map(|n| n == self.device_name).unwrap_or(false))
@@ -80,9 +82,7 @@ impl Recorder {
         };
         let device_name = device.name().unwrap_or_default();
 
-        let supported = device
-            .default_input_config()
-            .context("get input config")?;
+        let supported = device.default_input_config().context("get input config")?;
         let sample_format = supported.sample_format();
 
         // 我们要求 16kHz mono s16，如果设备不支持，让 cpal 自动选择后续手动重采样过滤

@@ -2,8 +2,8 @@
 
 use crate::audio::{list_capture_devices, CaptureDevice};
 use crate::config::Config;
-use crate::{correct, dirs, history};
 use crate::AppState;
+use crate::{correct, dirs, history};
 use serde::Serialize;
 use tauri::State;
 

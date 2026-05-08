@@ -60,15 +60,33 @@ pub struct Config {
     pub hotwords: HashMap<String, String>,
 }
 
-fn default_asr_provider() -> String { ASR_PROVIDER_ZHIPU.into() }
-fn default_volc_resource_id() -> String { "volc.seedasr.sauc.duration".into() }
-fn default_correct_mode() -> String { CORRECT_MODE_OFF.into() }
-fn default_correct_url() -> String { "http://localhost:11434/api/generate".into() }
-fn default_correct_model() -> String { "qwen2.5:3b".into() }
-fn default_hotkey() -> String { "cmd+shift+f5".into() }
-fn default_gain() -> u8 { 1 }
-fn default_correct_timeout() -> u32 { 10 }
-fn default_log_level() -> String { "info".into() }
+fn default_asr_provider() -> String {
+    ASR_PROVIDER_ZHIPU.into()
+}
+fn default_volc_resource_id() -> String {
+    "volc.seedasr.sauc.duration".into()
+}
+fn default_correct_mode() -> String {
+    CORRECT_MODE_OFF.into()
+}
+fn default_correct_url() -> String {
+    "http://localhost:11434/api/generate".into()
+}
+fn default_correct_model() -> String {
+    "qwen2.5:3b".into()
+}
+fn default_hotkey() -> String {
+    "cmd+shift+f5".into()
+}
+fn default_gain() -> u8 {
+    1
+}
+fn default_correct_timeout() -> u32 {
+    10
+}
+fn default_log_level() -> String {
+    "info".into()
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -146,11 +164,16 @@ mod tests {
 
     #[test]
     fn correct_timeout_fallback() {
-        let mut c = Config::default();
-        c.correct_timeout = 0;
+        let c = Config {
+            correct_timeout: 0,
+            ..Config::default()
+        };
         assert_eq!(c.correct_timeout_secs(), 10);
-        c.correct_timeout = 30;
-        assert_eq!(c.correct_timeout_secs(), 30);
+        let c30 = Config {
+            correct_timeout: 30,
+            ..Config::default()
+        };
+        assert_eq!(c30.correct_timeout_secs(), 30);
     }
 
     #[test]

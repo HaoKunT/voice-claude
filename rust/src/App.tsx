@@ -1,50 +1,53 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { useEffect, useState } from "react";
+import { SettingsView } from "./views/SettingsView";
+import { HistoryView } from "./views/HistoryView";
+
+type Route = "settings" | "history";
+
+function useHashRoute(): [Route, (r: Route) => void] {
+  const read = (): Route => {
+    if (window.location.hash === "#/history") return "history";
+    return "settings";
+  };
+  const [route, setRoute] = useState<Route>(read);
+  useEffect(() => {
+    const onHash = () => setRoute(read());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  return [route, (r: Route) => (window.location.hash = r === "history" ? "#/history" : "#/")];
+}
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
-
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  const [route, setRoute] = useHashRoute();
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    <div className="min-h-screen flex">
+      <nav className="w-48 bg-bg-800 border-r border-white/5 py-6 px-3 flex flex-col gap-1">
+        <h1 className="text-lg font-semibold px-3 mb-4 text-accent">voice-claude</h1>
+        <NavItem label="设置" active={route === "settings"} onClick={() => setRoute("settings")} />
+        <NavItem label="历史记录" active={route === "history"} onClick={() => setRoute("history")} />
+      </nav>
+      <main className="flex-1 overflow-y-auto">
+        {route === "settings" && <SettingsView />}
+        {route === "history" && <HistoryView />}
+      </main>
+    </div>
+  );
+}
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+function NavItem(props: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={props.onClick}
+      className={
+        "text-left px-3 py-2 rounded-lg text-sm transition-colors " +
+        (props.active ? "bg-accent text-white" : "hover:bg-bg-700 text-gray-300")
+      }
+    >
+      {props.label}
+    </button>
   );
 }
 

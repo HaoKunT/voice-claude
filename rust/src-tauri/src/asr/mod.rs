@@ -1,11 +1,11 @@
 //! ASR 后端模块：每个后端一个子模块，共享基础工具。
 
-pub mod wav;
-pub mod zhipu;
-pub mod xfyun;
-pub mod volc;
-pub mod openrouter;
 pub mod local;
+pub mod openrouter;
+pub mod volc;
+pub mod wav;
+pub mod xfyun;
+pub mod zhipu;
 
 use crate::config::{
     Config, ASR_PROVIDER_LOCAL, ASR_PROVIDER_OPENROUTER, ASR_PROVIDER_VOLC, ASR_PROVIDER_XFYUN,
