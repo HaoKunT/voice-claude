@@ -220,7 +220,84 @@ fn push_common(
     }
 }
 
-/// 把累积的 PCM 加 WAV 头（对应 Go 版的 Recorder.ToWAV）。
+/// 把累积的 PCM 静音裁剪后打包成 WAV（对应 Go 版 Recorder.ToWAV）。
+/// 裁剪首尾低于阈值的样本，保底最少 0.5 秒。
 pub fn to_wav(pcm: &[u8]) -> Vec<u8> {
-    crate::asr::wav::build_wav(pcm)
+    let trimmed = trim_silence(pcm);
+    crate::asr::wav::build_wav(trimmed)
+}
+
+/// 去掉首尾静音，保底最少 0.5 秒。
+/// 小端 PCM S16，无通道交织（我们只做单声道）。
+fn trim_silence(pcm: &[u8]) -> &[u8] {
+    const THRESHOLD: i16 = 30;
+    const MIN_SAMPLES: usize = SAMPLE_RATE as usize / 2; // 0.5 秒
+
+    if pcm.len() < 4 {
+        return pcm;
+    }
+    let sample_count = pcm.len() / 2;
+
+    let read = |i: usize| -> i16 { i16::from_le_bytes([pcm[i * 2], pcm[i * 2 + 1]]) };
+
+    let mut start = 0;
+    while start < sample_count && read(start).unsigned_abs() < THRESHOLD as u16 {
+        start += 1;
+    }
+    if start >= sample_count {
+        return pcm; // 全静音，别裁了
+    }
+    let mut end = sample_count;
+    while end > start && read(end - 1).unsigned_abs() < THRESHOLD as u16 {
+        end -= 1;
+    }
+
+    let trimmed_count = end - start;
+    if trimmed_count < MIN_SAMPLES {
+        return pcm; // 裁剪后太短，用原始数据
+    }
+
+    &pcm[start * 2..end * 2]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn silence_pcm(n: usize) -> Vec<u8> {
+        vec![0u8; n * 2]
+    }
+
+    fn loud_pcm(n: usize) -> Vec<u8> {
+        let mut v = Vec::with_capacity(n * 2);
+        for _ in 0..n {
+            v.extend_from_slice(&5000i16.to_le_bytes());
+        }
+        v
+    }
+
+    #[test]
+    fn trim_all_silence_returns_original() {
+        let pcm = silence_pcm(100);
+        let out = trim_silence(&pcm);
+        assert_eq!(out.len(), pcm.len());
+    }
+
+    #[test]
+    fn trim_preserves_loud_middle() {
+        // 1秒静音 + 1秒声音 + 1秒静音 = 3 秒
+        let mut pcm = silence_pcm(16000);
+        pcm.extend(loud_pcm(16000));
+        pcm.extend(silence_pcm(16000));
+        let out = trim_silence(&pcm);
+        assert_eq!(out.len(), 16000 * 2); // 只剩中间 1 秒
+    }
+
+    #[test]
+    fn trim_too_short_uses_original() {
+        // 100 毫秒声音，低于 0.5 秒保底
+        let pcm = loud_pcm(1600);
+        let out = trim_silence(&pcm);
+        assert_eq!(out.len(), pcm.len());
+    }
 }
