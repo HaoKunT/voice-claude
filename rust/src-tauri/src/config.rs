@@ -58,6 +58,12 @@ pub struct Config {
     pub log_level: String,
     #[serde(default)]
     pub hotwords: HashMap<String, String>,
+    #[serde(default = "default_vad_enabled")]
+    pub vad_enabled: bool,
+    #[serde(default = "default_vad_silence_ms")]
+    pub vad_silence_ms: u32,
+    #[serde(default = "default_vad_threshold")]
+    pub vad_threshold: f32,
 }
 
 fn default_asr_provider() -> String {
@@ -87,6 +93,15 @@ fn default_correct_timeout() -> u32 {
 fn default_log_level() -> String {
     "info".into()
 }
+fn default_vad_enabled() -> bool {
+    true
+}
+fn default_vad_silence_ms() -> u32 {
+    1500
+}
+fn default_vad_threshold() -> f32 {
+    0.015
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -110,6 +125,9 @@ impl Default for Config {
             correct_timeout: default_correct_timeout(),
             log_level: default_log_level(),
             hotwords: HashMap::new(),
+            vad_enabled: default_vad_enabled(),
+            vad_silence_ms: default_vad_silence_ms(),
+            vad_threshold: default_vad_threshold(),
         }
     }
 }

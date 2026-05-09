@@ -113,6 +113,17 @@ async fn run(
         }
     });
 
+    // 启动 VAD 任务：检测说话起点之后，连续静音超过阈值时长就触发停止
+    if cfg.vad_enabled {
+        let vad_rec = Arc::clone(&rec);
+        let vad_stop_cb = Arc::clone(&level_stop);
+        let vad_silence_ms = cfg.vad_silence_ms as u64;
+        let vad_threshold = cfg.vad_threshold;
+        tokio::spawn(async move {
+            run_vad(vad_rec, vad_stop_cb, vad_silence_ms, vad_threshold).await;
+        });
+    }
+
     let raw_text = if is_streaming(&cfg.asr_provider) {
         run_stream(app.clone(), &rec, &cfg, stop_rx).await?
     } else {
@@ -157,6 +168,51 @@ async fn run(
         tracing::error!(error = ?e, "键盘输入失败");
     }
     Ok(())
+}
+
+/// VAD：检测到说话起点后，连续 silence_ms 毫秒低于 threshold 自动触发停止。
+/// 起点判定：累计 300ms 高于阈值才算"开始说话"，避免用户还没开口就停。
+async fn run_vad(
+    rec: Arc<Recorder>,
+    stop_signal: Arc<AtomicBool>,
+    silence_ms: u64,
+    threshold: f32,
+) {
+    const TICK_MS: u64 = 50;
+    const SPEECH_START_MS: u64 = 300;
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(TICK_MS));
+    let mut started_speaking = false;
+    let mut speech_accum_ms: u64 = 0;
+    let mut silence_accum_ms: u64 = 0;
+
+    while !stop_signal.load(Ordering::Relaxed) {
+        interval.tick().await;
+        let lvl = rec.current_level();
+        let above = lvl >= threshold;
+
+        if !started_speaking {
+            if above {
+                speech_accum_ms += TICK_MS;
+                if speech_accum_ms >= SPEECH_START_MS {
+                    started_speaking = true;
+                    tracing::debug!(level = lvl, "VAD: 说话起点");
+                }
+            } else {
+                speech_accum_ms = 0;
+            }
+        } else if above {
+            silence_accum_ms = 0;
+        } else {
+            silence_accum_ms += TICK_MS;
+            if silence_accum_ms >= silence_ms {
+                tracing::info!(silence_ms, "VAD: 静音超时，自动停止");
+                if let Some(tx) = recording().stop_tx.lock().take() {
+                    let _ = tx.send(());
+                }
+                return;
+            }
+        }
+    }
 }
 
 async fn run_stream(
