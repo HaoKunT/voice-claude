@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * 根据 commit 历史生成按类型分组的 release notes（markdown），输出到 stdout。
+ * 生成 release notes markdown，输出到 stdout。
+ *
+ * 优先级：
+ *   1. 从仓库根 CHANGELOG.md 读取 `## <version>` 段落（人工维护的真源）
+ *   2. 找不到时，fallback 用 git log 按 conventional commit 前缀分组生成
  *
  * 用法：
  *   node scripts/gen-release-notes.mjs <tag> [prev-tag]
- *
- * 前缀规则采用 conventional commits 风格：
- *   type(scope)?: subject
- * 比如 feat:、fix(ci):、build+ci:。release: 前缀视为版本 bump，不列入。
  *
  * 示例：
  *   node scripts/gen-release-notes.mjs v0.1.1
@@ -15,12 +15,56 @@
  */
 
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const tag = process.argv[2];
 if (!tag) {
   console.error("用法: node scripts/gen-release-notes.mjs <tag> [prev-tag]");
   process.exit(1);
 }
+
+// 优先：从 CHANGELOG.md 读对应版本段落
+const version = tag.replace(/^v/, "");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const changelogSection = readChangelogSection(
+  path.join(repoRoot, "CHANGELOG.md"),
+  version,
+);
+if (changelogSection) {
+  process.stdout.write(changelogSection);
+  process.exit(0);
+}
+
+function readChangelogSection(filePath, version) {
+  let raw;
+  try {
+    raw = readFileSync(filePath, "utf8");
+  } catch {
+    return null;
+  }
+  const lines = raw.split("\n");
+  const out = [];
+  let inSection = false;
+  for (const line of lines) {
+    const heading = line.match(/^##\s+(.+?)\s*$/);
+    if (heading) {
+      if (inSection) break; // 命中下一个 ## 就结束
+      // 接受 "0.1.1"、"v0.1.1"、"0.1.1 — 2026-05-09" 等形式
+      const normalized = heading[1].replace(/^v/, "").split(/\s+/)[0];
+      if (normalized === version) {
+        inSection = true;
+      }
+    } else if (inSection) {
+      out.push(line);
+    }
+  }
+  const body = out.join("\n").trim();
+  return body || null;
+}
+
+// —— 以下 fallback：从 commit 生成 ——
 
 let prevTag = process.argv[3];
 if (!prevTag) {

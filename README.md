@@ -148,6 +148,10 @@ legacy/go/                  # Go + Fyne 老版归档（不再维护）
 - 说话速度适中，增益调到 3-5x 可覆盖大多数气声场景
 - 推荐带麦杆的有线 USB 耳麦（EPOS IMPACT 400 / Jabra Evolve2 40）
 
+## 变更历史
+
+完整版本变更记录见 [CHANGELOG.md](./CHANGELOG.md)。
+
 ## License
 
 MIT
