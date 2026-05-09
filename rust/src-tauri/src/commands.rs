@@ -48,6 +48,8 @@ pub fn save_config(
     if new_log_level != prev_log_level {
         crate::logger::reload(&new_log_level);
     }
+    // 广播给其他前端组件（比如主窗口 sidebar 显示的快捷键）刷新自己的 cfg 副本
+    let _ = app.emit("config-updated", ());
     Ok(())
 }
 

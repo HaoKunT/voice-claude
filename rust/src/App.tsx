@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "./api";
+import { listen } from "@tauri-apps/api/event";
+import { api, Config } from "./api";
+import { formatHotkey } from "./lib/hotkey";
 import { SettingsView, SettingsSection } from "./views/SettingsView";
 import { HistoryView } from "./views/HistoryView";
 import { AboutView } from "./views/AboutView";
@@ -54,6 +56,18 @@ function useHashRoute(): [Route, (r: Route) => void] {
 function Shell() {
   const [route, setRoute] = useHashRoute();
   const { hasUpdate } = useUpdate();
+  const [cfg, setCfg] = useState<Config | null>(null);
+
+  useEffect(() => {
+    api.getConfig().then(setCfg);
+    // 监听 save_config 后的广播，保持 sidebar 显示和当前 hotkey 同步
+    const unlisten = listen("config-updated", () => {
+      api.getConfig().then(setCfg);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -70,7 +84,9 @@ function Shell() {
             />
             <div>
               <div className="text-[13px] font-semibold text-gray-100">voice-claude</div>
-              <div className="text-[10px] text-gray-500">按 Cmd+Shift+F5</div>
+              <div className="text-[10px] text-gray-500">
+                按 {cfg ? formatHotkey(cfg.hotkey) : "…"}
+              </div>
             </div>
           </div>
           {NAV_ITEMS.map((item) => (

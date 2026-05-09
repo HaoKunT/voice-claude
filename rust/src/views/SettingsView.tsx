@@ -11,6 +11,7 @@ import {
   PolishProfile,
   SenseVoiceInfo,
 } from "../api";
+import { parseHotkeyKeys, formatHotkeyKey } from "../lib/hotkey";
 
 export type SettingsSection = "asr" | "polish" | "record" | "hotwords" | "log";
 
@@ -911,17 +912,10 @@ function HotwordRow(props: {
 }
 
 function KbdCombo({ combo }: { combo: string }) {
-  const keys = combo.split("+").map((k) => k.trim().toLowerCase());
-  const sym: Record<string, string> = {
-    cmd: "⌘", command: "⌘", rcmd: "⌘", rcommand: "⌘",
-    shift: "⇧", rshift: "⇧",
-    alt: "⌥", option: "⌥", ralt: "⌥", roption: "⌥",
-    ctrl: "⌃", control: "⌃", rctrl: "⌃",
-  };
   return (
     <div className="ml-auto flex gap-1">
-      {keys.map((k, i) => (
-        <kbd key={i}>{sym[k] ?? k.toUpperCase()}</kbd>
+      {parseHotkeyKeys(combo).map((k, i) => (
+        <kbd key={i}>{formatHotkeyKey(k)}</kbd>
       ))}
     </div>
   );

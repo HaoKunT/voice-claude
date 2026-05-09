@@ -147,7 +147,7 @@ fn default_log_level() -> String {
     "info".into()
 }
 fn default_vad_enabled() -> bool {
-    true
+    false
 }
 fn default_vad_silence_ms() -> u32 {
     1500
