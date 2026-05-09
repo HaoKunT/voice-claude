@@ -231,7 +231,11 @@ async fn run_vad(
                 speech_accum_ms = 0;
             }
         } else if above {
-            silence_accum_ms = 0;
+            // spike 惩罚而不是清零。环境噪音偶尔越阈（键盘/鼠标/椅子声），
+            // 旧逻辑会把积累的静音时间一次清 0，导致永远积不到 silence_ms。
+            // 现改成每次 above 扣 2*TICK_MS，静音积累时每 tick +TICK_MS —
+            // 偶发 spike 不致命，长时说话时会压回 0。
+            silence_accum_ms = silence_accum_ms.saturating_sub(2 * TICK_MS);
         } else {
             silence_accum_ms += TICK_MS;
             if silence_accum_ms >= silence_ms {
