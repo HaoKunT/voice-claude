@@ -29,9 +29,11 @@ export function AboutView() {
 
       <section className="card space-y-4">
         <div className="flex items-center gap-3">
-          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-accent to-brand-purple flex items-center justify-center text-white text-xl font-bold shadow-glow">
-            V
-          </div>
+          <img
+            src="/app-icon.png"
+            alt="voice-claude"
+            className="w-12 h-12 rounded-xl shadow-glow"
+          />
           <div className="flex-1">
             <div className="text-lg font-semibold text-gray-100">voice-claude</div>
             <div className="text-sm text-gray-400 font-mono flex items-center gap-2">

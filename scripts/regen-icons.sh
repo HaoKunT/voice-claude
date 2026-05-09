@@ -79,5 +79,8 @@ magick "$SOURCE" \
   -background none -gravity center -extent 44x44 \
   rust/src-tauri/icons/tray.png
 
+echo "=== [2/2c] 同步 UI 里的 app-icon.png（sidebar + 关于页展示用）==="
+cp rust/src-tauri/icons/128x128.png rust/public/app-icon.png
+
 echo ""
 echo "✓ 完成。下一步：make install 重装后看 Dock / 菜单栏 / 关于页的效果。"

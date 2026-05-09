@@ -63,9 +63,11 @@ function Shell() {
       <div className="flex-1 flex">
         <nav className="w-56 bg-bg-800/60 border-r border-white/[0.06] py-5 px-3 flex flex-col gap-0.5 backdrop-blur-heavy">
           <div className="px-3 mb-5 flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-accent to-brand-purple flex items-center justify-center text-white text-sm font-bold shadow-glow">
-              V
-            </div>
+            <img
+              src="/app-icon.png"
+              alt="voice-claude"
+              className="w-7 h-7 rounded-lg shadow-glow"
+            />
             <div>
               <div className="text-[13px] font-semibold text-gray-100">voice-claude</div>
               <div className="text-[10px] text-gray-500">按 Cmd+Shift+F5</div>
