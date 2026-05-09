@@ -95,7 +95,9 @@ jobs:
 
             完整变更日志见提交历史。
           releaseDraft: true
-          prerelease: true
+          # 不标 prerelease：否则 GitHub 的 /releases/latest/download/latest.json
+          # redirect 不会指向此版本，updater endpoint 取不到 JSON。
+          prerelease: false
           args: --target ${{ matrix.target }}
 
   publish-updater:
@@ -108,12 +110,13 @@ jobs:
         with:
           node-version: 20
       # 先把 draft release 转为 published —— 只有 published release 的 asset URL
-      # 才稳定指向 releases/download/<tag>/...，draft 期是 untagged-<hash> 随机路径
+      # 才稳定指向 releases/download/<tag>/...，draft 期是 untagged-<hash> 随机路径。
+      # --latest 强制此 release 为"latest"，updater endpoint 依赖这个 redirect。
       - name: Publish release (draft -> published)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
-        run: gh release edit "$TAG" --draft=false --prerelease -R HaoKunT/voice-claude
+        run: gh release edit "$TAG" --draft=false --latest -R HaoKunT/voice-claude
       - name: Generate latest.json and upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
