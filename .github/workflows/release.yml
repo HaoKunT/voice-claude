@@ -107,6 +107,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      # 先把 draft release 转为 published —— 只有 published release 的 asset URL
+      # 才稳定指向 releases/download/<tag>/...，draft 期是 untagged-<hash> 随机路径
+      - name: Publish release (draft -> published)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: gh release edit "$TAG" --draft=false --prerelease -R HaoKunT/voice-claude
       - name: Generate latest.json and upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

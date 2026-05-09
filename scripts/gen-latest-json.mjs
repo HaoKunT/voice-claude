@@ -35,14 +35,15 @@ function sh(cmd) {
 const assetsRaw = sh(`gh release view ${tag} -R ${REPO} --json assets,body,publishedAt`);
 const { assets, body, publishedAt } = JSON.parse(assetsRaw);
 
-// 平台匹配规则：
+// 平台匹配规则（Tauri v2）：
 //   darwin-aarch64  ← *aarch64.app.tar.gz (+ .sig)
 //   darwin-x86_64   ← *x64.app.tar.gz    (+ .sig)
-//   windows-x86_64  ← *x64-setup.nsis.zip 或 *x64_en-US.msi.zip (+ .sig)
+//   windows-x86_64  ← *x64-setup.exe (NSIS) 优先；回退 *x64_en-US.msi
 const PLATFORM_RULES = [
   { key: "darwin-aarch64", match: /aarch64\.app\.tar\.gz$/ },
   { key: "darwin-x86_64", match: /x64\.app\.tar\.gz$/ },
-  { key: "windows-x86_64", match: /(x64-setup\.nsis\.zip|x64_en-US\.msi\.zip)$/ },
+  { key: "windows-x86_64", match: /x64-setup\.exe$/ },
+  { key: "windows-x86_64", match: /x64_en-US\.msi$/, fallback: true },
 ];
 
 const tmp = mkdtempSync(path.join(tmpdir(), "updater-"));
@@ -55,6 +56,7 @@ function downloadSig(name) {
 
 const platforms = {};
 for (const rule of PLATFORM_RULES) {
+  if (platforms[rule.key]) continue; // 同一个 key 前面的规则优先
   const bundle = assets.find((a) => rule.match.test(a.name));
   if (!bundle) continue;
   const sigAsset = assets.find((a) => a.name === `${bundle.name}.sig`);
