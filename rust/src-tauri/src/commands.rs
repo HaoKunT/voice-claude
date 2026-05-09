@@ -81,7 +81,9 @@ pub fn open_logs() -> Result<(), String> {
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let name = entry.file_name();
-            if !name.to_string_lossy().starts_with("voice-claude.log") {
+            // 匹配新格式 voice-claude.YYYY-MM-DD.log 和老格式 voice-claude.log.YYYY-MM-DD，
+            // 以及首版无后缀的 voice-claude.log
+            if !name.to_string_lossy().starts_with("voice-claude") {
                 continue;
             }
             if let Ok(meta) = entry.metadata() {
