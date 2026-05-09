@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { SettingsView, SettingsSection } from "./views/SettingsView";
 import { HistoryView } from "./views/HistoryView";
 import { AboutView } from "./views/AboutView";
+import { UpdateProvider, useUpdate } from "./contexts/UpdateContext";
 
 type Route =
   | "asr"
@@ -49,8 +50,9 @@ function useHashRoute(): [Route, (r: Route) => void] {
   return [route, (r: Route) => (window.location.hash = ROUTE_HASHES[r])];
 }
 
-function App() {
+function Shell() {
   const [route, setRoute] = useHashRoute();
+  const { hasUpdate } = useUpdate();
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -73,6 +75,7 @@ function App() {
               icon={item.icon}
               label={item.label}
               active={route === item.route}
+              badge={item.route === "about" && hasUpdate}
               onClick={() => setRoute(item.route)}
             />
           ))}
@@ -89,10 +92,19 @@ function App() {
   );
 }
 
+function App() {
+  return (
+    <UpdateProvider>
+      <Shell />
+    </UpdateProvider>
+  );
+}
+
 function NavItem(props: {
   icon: string;
   label: string;
   active: boolean;
+  badge?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -102,7 +114,13 @@ function NavItem(props: {
       className={`nav-item ${props.active ? "nav-item-active" : "nav-item-inactive"}`}
     >
       <span className="w-5 text-center text-base opacity-80">{props.icon}</span>
-      {props.label}
+      <span className="flex-1 text-left">{props.label}</span>
+      {props.badge && (
+        <span
+          className="w-1.5 h-1.5 rounded-full bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.6)]"
+          aria-label="有新版本"
+        />
+      )}
     </button>
   );
 }

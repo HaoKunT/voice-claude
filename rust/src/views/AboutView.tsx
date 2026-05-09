@@ -1,8 +1,20 @@
 import { useEffect, useState } from "react";
 import { api, AppInfo } from "../api";
+import { useUpdate } from "../contexts/UpdateContext";
 
 export function AboutView() {
   const [info, setInfo] = useState<AppInfo | null>(null);
+  const {
+    hasUpdate,
+    updateInfo,
+    phase,
+    progress,
+    downloadedBytes,
+    totalBytes,
+    error,
+    downloadAndInstall,
+    relaunch,
+  } = useUpdate();
 
   useEffect(() => {
     api.getAppInfo().then(setInfo);
@@ -20,11 +32,16 @@ export function AboutView() {
           <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-accent to-brand-purple flex items-center justify-center text-white text-xl font-bold shadow-glow">
             V
           </div>
-          <div>
+          <div className="flex-1">
             <div className="text-lg font-semibold text-gray-100">voice-claude</div>
-            <div className="text-sm text-gray-400 font-mono">
-              {info ? `v${info.version}` : "…"}
-              {info?.debug && <span className="ml-2 text-amber-400">DEBUG</span>}
+            <div className="text-sm text-gray-400 font-mono flex items-center gap-2">
+              <span>{info ? `v${info.version}` : "…"}</span>
+              {info?.debug && <span className="text-amber-400">DEBUG</span>}
+              {hasUpdate && updateInfo && (
+                <span className="px-2 py-0.5 rounded-full bg-green-400/10 text-green-400 text-[11px] border border-green-400/20">
+                  有新版 v{updateInfo.availableVersion}
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -84,6 +101,60 @@ export function AboutView() {
           </a>
         </div>
       </section>
+
+      {hasUpdate && updateInfo && (
+        <section className="card space-y-3 border-green-400/30 bg-green-400/[0.02]">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="section-title !mb-0">✨ 新版本可用</div>
+              <div className="text-xs text-gray-500 mt-1 font-mono">
+                v{updateInfo.currentVersion} → v{updateInfo.availableVersion}
+                {updateInfo.pubDate && (
+                  <span className="ml-2 text-gray-600">· {formatBuildTime(updateInfo.pubDate)}</span>
+                )}
+              </div>
+            </div>
+            {phase === "idle" && (
+              <button className="btn-primary text-xs py-1.5" onClick={() => downloadAndInstall()}>
+                下载并安装
+              </button>
+            )}
+            {phase === "finished" && (
+              <button className="btn-primary text-xs py-1.5" onClick={() => relaunch()}>
+                立即重启
+              </button>
+            )}
+          </div>
+          {updateInfo.notes && (
+            <pre className="text-xs text-gray-400 bg-bg-900/60 rounded-lg p-3 whitespace-pre-wrap font-sans border border-white/5 max-h-40 overflow-y-auto">
+              {updateInfo.notes}
+            </pre>
+          )}
+          {(phase === "downloading" || phase === "installing") && (
+            <div>
+              <div className="h-1 bg-bg-900 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-accent to-brand-purple transition-all"
+                  style={{ width: `${progress * 100}%` }}
+                />
+              </div>
+              <div className="text-[11px] text-gray-500 mt-1 font-mono flex justify-between">
+                <span>
+                  {phase === "installing"
+                    ? "安装中…"
+                    : `${Math.round(progress * 100)}% · ${formatBytes(downloadedBytes)} / ${formatBytes(totalBytes)}`}
+                </span>
+              </div>
+            </div>
+          )}
+          {phase === "finished" && (
+            <div className="text-xs text-green-400">✓ 下载完成，点右侧按钮重启</div>
+          )}
+          {phase === "error" && error && (
+            <div className="text-xs text-red-400">下载失败：{error}</div>
+          )}
+        </section>
+      )}
 
       <section className="card space-y-2">
         <div className="section-title">📄 License</div>
@@ -148,4 +219,16 @@ function formatBuildTime(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+function formatBytes(n: number): string {
+  if (n <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }

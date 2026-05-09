@@ -29,9 +29,18 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "REPLACE_ME_WITH_MINISIGN_PUBLIC_KEY",
+      "endpoints": [
+        "https://github.com/HaoKunT/voice-claude/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "category": "Productivity",
     "copyright": "Copyright © 2026",
     "shortDescription": "按住热键语音输入",
