@@ -9,7 +9,11 @@
 - 新增：SenseVoice 下载地址和 SHA256 在设置页直接可见可复制；针对国内从 GitHub 下不动的场景，增加「📦 导入本地压缩包」按钮——自己用迅雷等工具下好 `.tar.bz2` 后一键导入，自动校验 SHA256 并解压
 - 改：下载进度显示字节数 + 实时速率 + 剩余时间，而不是只有百分比
 - 修复：快捷键改完后实际不生效——之前 setup 时注册一次就再也不更新。现在 `save_config` 检测到 hotkey 变了会自动 unregister 旧的、注册新的
-- 换 logo：从简陋的 V 字母渐变换成线描风的对话气泡 + 语音波形（紫/粉/蓝三色描边），叠在深色圆角方形底上；替换了全套 macOS / Windows / iOS / Android icon
+- 修复：日志级别改完不生效——tracing EnvFilter 以前是静态的，现在用 `reload::Layer` 热替换，设置页改即生效
+- 修复：日志文件名 `voice-claude.log.YYYY-MM-DD` → `voice-claude.YYYY-MM-DD.log`，`.log` 放在末尾让 macOS 能识别为文本文件直接打开；重命名历史文件保留；打开「最新日志」会扫目录找 mtime 最新的
+- 新增：日志页底部「最近日志」实时预览——最后 200 行滚动列表，按级别过滤 + 彩色显示（ERROR 红 / WARN 黄 / INFO 蓝 / DEBUG 灰）+ 自动刷新（2 秒）。不用跳 Finder 开文件就能看到应用刚做了什么
+- 换 logo：从简陋的 V 字母渐变换成线描风的对话气泡 + 语音波形（紫/粉/蓝三色描边），叠在深色圆角方形底上；替换了全套 macOS / Windows / iOS / Android icon，sidebar 和关于页的 V 字母方块也换成 app icon，系统菜单栏专用单色 template 版本单独做
+- 改：`scripts/regen-icons.sh` 一键重生 —— 换 logo 源（webp/png/svg 都认）就跑一行命令，app icon + 菜单栏 tray + UI 内 logo 全部同步
 
 ## 0.1.1
 

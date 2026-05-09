@@ -327,6 +327,7 @@ export function SettingsView({ section }: { section: SettingsSection }) {
             <button className="btn-ghost" onClick={() => api.openLogs()}>打开最新日志</button>
             <button className="btn-ghost" onClick={() => api.openLogDir()}>打开日志目录</button>
           </div>
+          <LogViewer />
         </section>
       )}
     </div>
@@ -372,6 +373,136 @@ async function handleImportCsv(setCfg: (c: Config) => void, cfg: Config) {
     void cfg;
   } catch (e) {
     alert(`导入失败：${e}`);
+  }
+}
+
+type LogLevel = "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR";
+const LEVEL_ORDER: LogLevel[] = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
+
+interface ParsedLogLine {
+  raw: string;
+  time: string;
+  level: LogLevel | null;
+  body: string;
+}
+
+function parseLogLine(raw: string): ParsedLogLine {
+  // 形如 "2026-05-09T11:31:52.172994Z  INFO voice_claude_lib::recorder: VAD: 启动 ..."
+  const m = raw.match(
+    /^(\d{4}-\d{2}-\d{2}T(\d{2}:\d{2}:\d{2})(?:\.\d+)?Z)\s+(TRACE|DEBUG|INFO|WARN|ERROR)\s+(.*)$/,
+  );
+  if (!m) return { raw, time: "", level: null, body: raw };
+  return { raw, time: m[2], level: m[3] as LogLevel, body: m[4] };
+}
+
+function LogViewer() {
+  const [lines, setLines] = useState<ParsedLogLine[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [minLevel, setMinLevel] = useState<LogLevel>("INFO");
+  const [limit] = useState(200);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const raws = await api.readRecentLogs(limit);
+      setLines(raws.map(parseLogLine));
+    } catch (e) {
+      console.warn("readRecentLogs failed:", e);
+    } finally {
+      setLoading(false);
+    }
+  }, [limit]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const t = setInterval(refresh, 2000);
+    return () => clearInterval(t);
+  }, [autoRefresh, refresh]);
+
+  const minIdx = LEVEL_ORDER.indexOf(minLevel);
+  const filtered = lines.filter((l) => {
+    if (!l.level) return true;
+    return LEVEL_ORDER.indexOf(l.level) <= minIdx;
+  });
+
+  return (
+    <div className="mt-4 pt-4 border-t border-white/5">
+      <div className="flex items-center gap-3 mb-2">
+        <div className="text-xs font-semibold text-gray-300">最近日志</div>
+        <select
+          className="text-[11px] bg-bg-900/60 border border-white/10 rounded px-2 py-1 text-gray-300 outline-none"
+          value={minLevel}
+          onChange={(e) => setMinLevel(e.target.value as LogLevel)}
+          title="最低显示级别"
+        >
+          <option value="TRACE">≥ trace</option>
+          <option value="DEBUG">≥ debug</option>
+          <option value="INFO">≥ info</option>
+          <option value="WARN">≥ warn</option>
+          <option value="ERROR">仅 error</option>
+        </select>
+        <label className="flex items-center gap-1.5 text-[11px] text-gray-400 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={autoRefresh}
+            onChange={(e) => setAutoRefresh(e.target.checked)}
+            className="accent-accent"
+          />
+          自动刷新
+        </label>
+        <span className="flex-1" />
+        <span className="text-[10px] text-gray-600 font-mono">
+          {filtered.length} / {lines.length}
+        </span>
+        <button
+          className="text-[11px] px-2 py-1 rounded bg-white/5 hover:bg-white/10 text-gray-400 hover:text-gray-200 transition disabled:opacity-50"
+          onClick={refresh}
+          disabled={loading}
+        >
+          {loading ? "读取中…" : "刷新"}
+        </button>
+      </div>
+      <div
+        className="bg-bg-900/80 border border-white/5 rounded-lg p-3 font-mono text-[11px] leading-relaxed max-h-80 overflow-y-auto overflow-x-hidden"
+        style={{ scrollbarGutter: "stable" }}
+      >
+        {filtered.length === 0 ? (
+          <div className="text-gray-600">（暂无日志）</div>
+        ) : (
+          filtered.map((l, i) => (
+            <div key={i} className="whitespace-pre-wrap break-all py-0.5">
+              {l.time && <span className="text-gray-600">{l.time}</span>}
+              {l.level && (
+                <span className={`ml-2 font-semibold ${levelColor(l.level)}`}>
+                  {l.level.padEnd(5)}
+                </span>
+              )}
+              <span className="ml-2 text-gray-300">{l.body}</span>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function levelColor(level: LogLevel): string {
+  switch (level) {
+    case "ERROR":
+      return "text-red-400";
+    case "WARN":
+      return "text-amber-400";
+    case "INFO":
+      return "text-brand-blue";
+    case "DEBUG":
+      return "text-gray-500";
+    case "TRACE":
+      return "text-gray-600";
   }
 }
 

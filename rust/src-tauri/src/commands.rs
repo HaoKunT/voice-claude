@@ -113,6 +113,55 @@ pub fn open_log_dir() -> Result<(), String> {
     open_path(&dirs::log_dir().to_string_lossy())
 }
 
+/// 读取最新日志文件的最后 limit 行，返回给前端展示。
+/// 找 mtime 最新的 voice-claude.*.log；日志没生成时返回空列表。
+#[tauri::command]
+pub fn read_recent_logs(limit: usize) -> Result<Vec<String>, String> {
+    let dir = dirs::log_dir();
+    let mut latest: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if !name.to_string_lossy().starts_with("voice-claude") {
+                continue;
+            }
+            if let Ok(meta) = entry.metadata() {
+                if let Ok(mtime) = meta.modified() {
+                    if latest.as_ref().map_or(true, |(_, t)| mtime > *t) {
+                        latest = Some((entry.path(), mtime));
+                    }
+                }
+            }
+        }
+    }
+    let Some((path, _)) = latest else {
+        return Ok(vec![]);
+    };
+    // 避免把特别大的日志全读入内存：超过 2MB 只取末尾一段
+    const MAX_READ: u64 = 2 * 1024 * 1024;
+    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    let file_len = meta.len();
+    let from = file_len.saturating_sub(MAX_READ);
+    let content = if from == 0 {
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())?
+    } else {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+        f.seek(SeekFrom::Start(from)).map_err(|e| e.to_string())?;
+        let mut buf = Vec::with_capacity(MAX_READ as usize);
+        f.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        // 丢掉第一行（可能 seek 到半个 UTF-8 字符或半行）
+        let s = String::from_utf8_lossy(&buf).into_owned();
+        match s.find('\n') {
+            Some(i) => s[i + 1..].to_string(),
+            None => s,
+        }
+    };
+    let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+    let start = lines.len().saturating_sub(limit);
+    Ok(lines[start..].to_vec())
+}
+
 #[derive(Serialize)]
 pub struct AppInfo {
     pub name: &'static str,
