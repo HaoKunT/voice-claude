@@ -74,9 +74,45 @@ pub async fn transcribe(_wav: &[u8]) -> Result<String> {
     )
 }
 
-/// 下载模型。
-/// 完整流程：GET → TeeReader 计算 SHA256 → bz2 解压 → tar 解包 → 校验 → 原子替换。
-pub async fn download_model<F: Fn(f32) + Send + 'static>(on_progress: F) -> Result<()> {
+/// 下载模型。流式拉 + 字节级进度回调 (downloaded, total)。
+/// 完整流程：GET stream → 累积到 Vec → 校验 SHA256 → 解压（install_from_bytes）。
+pub async fn download_model<F: Fn(u64, u64) + Send + 'static>(on_progress: F) -> Result<()> {
+    use anyhow::Context;
+
+    let response = reqwest::get(MODEL_URL)
+        .await
+        .context("下载 SenseVoice 模型失败")?;
+    let total = response.content_length().unwrap_or(0);
+
+    let mut buf: Vec<u8> = Vec::with_capacity(total as usize);
+    let mut stream = response.bytes_stream();
+    use futures_util::StreamExt;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("读取下载流失败")?;
+        buf.extend_from_slice(&chunk);
+        on_progress(buf.len() as u64, total);
+    }
+
+    install_from_bytes(&buf)?;
+    // 解压完成后把进度拉满（前端看到 100% 再退出下载中状态）
+    let final_size = buf.len() as u64;
+    on_progress(final_size, final_size.max(total));
+    Ok(())
+}
+
+/// 从本地已下好的 tar.bz2 文件导入模型（国内下载失败的兜底路径）。
+/// 和 download_model 共用校验 + 解压逻辑。
+pub async fn import_tarball(path: PathBuf) -> Result<()> {
+    use anyhow::Context;
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let bytes = std::fs::read(&path).with_context(|| format!("读取 {:?} 失败", path))?;
+        install_from_bytes(&bytes)
+    })
+    .await?
+}
+
+/// 校验 SHA256 → 解压 tar.bz2 到临时目录 → 原子替换到最终目录。
+fn install_from_bytes(bytes: &[u8]) -> Result<()> {
     use anyhow::{bail, Context};
     use bzip2::read::MultiBzDecoder;
     use sha2::{Digest, Sha256};
@@ -86,15 +122,9 @@ pub async fn download_model<F: Fn(f32) + Send + 'static>(on_progress: F) -> Resu
     let dest_dir = config_dir();
     fs::create_dir_all(&dest_dir).ok();
 
-    let response = reqwest::get(MODEL_URL)
-        .await
-        .context("下载 SenseVoice 模型失败")?;
-    let total = response.content_length().unwrap_or(0);
-    let bytes = response.bytes().await.context("读取下载流失败")?;
-
     let actual_sha = {
         let mut hasher = Sha256::new();
-        hasher.update(&bytes);
+        hasher.update(bytes);
         hex::encode(hasher.finalize())
     };
     if actual_sha != MODEL_SHA256 {
@@ -104,25 +134,19 @@ pub async fn download_model<F: Fn(f32) + Send + 'static>(on_progress: F) -> Resu
             actual_sha
         );
     }
-    if total > 0 {
-        on_progress(0.9);
-    }
 
-    // 解压到临时目录，校验通过后移动
     let tmp_dir = tempdir_in(&dest_dir)?;
-    let cursor = std::io::Cursor::new(bytes.as_ref());
+    let cursor = std::io::Cursor::new(bytes);
     let bz = MultiBzDecoder::new(cursor);
     let mut archive = Archive::new(bz);
     for entry in archive.entries().context("读取 tar 失败")? {
         let mut entry = entry.context("读取 tar entry 失败")?;
         let path = entry.path().context("entry path")?;
-        // 去掉顶层目录前缀
         let stripped: PathBuf = path.components().skip(1).collect();
         if stripped.as_os_str().is_empty() {
             continue;
         }
         let target = tmp_dir.join(&stripped);
-        // Zip Slip 防护
         let safe_root = fs::canonicalize(&tmp_dir).unwrap_or_else(|_| tmp_dir.clone());
         if let Ok(canonical) = fs::canonicalize(target.parent().unwrap_or(&tmp_dir)) {
             if !canonical.starts_with(&safe_root) {
@@ -144,7 +168,6 @@ pub async fn download_model<F: Fn(f32) + Send + 'static>(on_progress: F) -> Resu
     let final_dir = dest_dir.join(MODEL_DIR);
     fs::remove_dir_all(&final_dir).ok();
     fs::rename(&tmp_dir, &final_dir).context("移动模型目录失败")?;
-    on_progress(1.0);
     Ok(())
 }
 

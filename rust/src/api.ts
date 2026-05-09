@@ -53,6 +53,18 @@ export interface HistoryEntry {
   duration_ms: number;
 }
 
+export interface SenseVoiceInfo {
+  url: string;
+  sha256: string;
+  available: boolean;
+  model_dir: string;
+}
+
+export interface DownloadProgress {
+  downloaded: number;
+  total: number;
+}
+
 export interface AppInfo {
   name: string;
   version: string;
@@ -76,7 +88,10 @@ export const api = {
   openLogs: () => invoke<void>("open_logs"),
   openConfigDir: () => invoke<void>("open_config_dir"),
   isSenseVoiceAvailable: () => invoke<boolean>("is_sense_voice_available"),
+  getSenseVoiceInfo: () => invoke<SenseVoiceInfo>("get_sense_voice_info"),
   downloadSenseVoice: () => invoke<void>("download_sense_voice"),
+  importSenseVoiceTarball: (path: string) =>
+    invoke<void>("import_sense_voice_tarball", { path }),
   getAppInfo: () => invoke<AppInfo>("get_app_info"),
   exportHotwordsCsv: () => invoke<string>("export_hotwords_csv"),
   importHotwordsCsv: (csv: string, merge: boolean) =>

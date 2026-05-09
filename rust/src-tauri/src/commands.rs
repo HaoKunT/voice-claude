@@ -96,13 +96,47 @@ pub fn is_sense_voice_available() -> bool {
     local::is_available()
 }
 
+#[derive(Serialize)]
+pub struct SenseVoiceInfo {
+    pub url: String,
+    pub sha256: String,
+    pub available: bool,
+    pub model_dir: String,
+}
+
+#[tauri::command]
+pub fn get_sense_voice_info() -> SenseVoiceInfo {
+    SenseVoiceInfo {
+        url: local::MODEL_URL.into(),
+        sha256: local::MODEL_SHA256.into(),
+        available: local::is_available(),
+        model_dir: local::model_path().to_string_lossy().into_owned(),
+    }
+}
+
+#[derive(Serialize, Clone)]
+pub struct DownloadProgress {
+    pub downloaded: u64,
+    pub total: u64,
+}
+
 #[tauri::command]
 pub async fn download_sense_voice(app: AppHandle) -> Result<(), String> {
-    local::download_model(move |progress| {
-        let _ = app.emit("sense-voice-download-progress", progress);
+    local::download_model(move |downloaded, total| {
+        let _ = app.emit(
+            "sense-voice-download-progress",
+            DownloadProgress { downloaded, total },
+        );
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn import_sense_voice_tarball(path: String) -> Result<(), String> {
+    local::import_tarball(std::path::PathBuf::from(path))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 把当前热词导出为 CSV 字符串（前端用 save dialog 保存）

@@ -1,7 +1,16 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
-import { api, ASR_PROVIDERS, POLISH_MODES, Config, DeviceInfo, PolishProfile } from "../api";
+import {
+  api,
+  ASR_PROVIDERS,
+  POLISH_MODES,
+  Config,
+  DeviceInfo,
+  DownloadProgress,
+  PolishProfile,
+  SenseVoiceInfo,
+} from "../api";
 
 export type SettingsSection = "asr" | "polish" | "record" | "hotwords" | "log";
 
@@ -782,29 +791,58 @@ function KbdCombo({ combo }: { combo: string }) {
 }
 
 function LocalSenseVoicePanel() {
-  const [available, setAvailable] = useState(false);
+  const [info, setInfo] = useState<SenseVoiceInfo | null>(null);
   const [downloading, setDownloading] = useState(false);
-  const [progress, setProgress] = useState(0);
+  const [downloaded, setDownloaded] = useState(0);
+  const [total, setTotal] = useState(0);
+  // 计算速率用：上一次 tick 的 { ts, bytes }
+  const speedStateRef = useRef<{ ts: number; bytes: number } | null>(null);
+  const [speedBps, setSpeedBps] = useState(0); // bytes per second
   const [msg, setMsg] = useState("");
 
+  const refresh = useCallback(() => {
+    api.getSenseVoiceInfo().then(setInfo);
+  }, []);
+
   useEffect(() => {
-    api.isSenseVoiceAvailable().then(setAvailable);
-    const unlisten = listen<number>("sense-voice-download-progress", (e) => {
-      setProgress(e.payload);
-    });
+    refresh();
+    const unlisten = listen<DownloadProgress>(
+      "sense-voice-download-progress",
+      (e) => {
+        const { downloaded: d, total: t } = e.payload;
+        setDownloaded(d);
+        setTotal(t);
+        // 计算速率：相对上一次 tick
+        const now = Date.now();
+        const prev = speedStateRef.current;
+        if (prev) {
+          const dt = (now - prev.ts) / 1000;
+          if (dt > 0.2) {
+            const bps = (d - prev.bytes) / dt;
+            setSpeedBps(bps);
+            speedStateRef.current = { ts: now, bytes: d };
+          }
+        } else {
+          speedStateRef.current = { ts: now, bytes: d };
+        }
+      },
+    );
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, []);
+  }, [refresh]);
 
   const onDownload = async () => {
     setDownloading(true);
     setMsg("");
-    setProgress(0);
+    setDownloaded(0);
+    setTotal(0);
+    setSpeedBps(0);
+    speedStateRef.current = null;
     try {
       await api.downloadSenseVoice();
-      setAvailable(true);
       setMsg("下载完成 ✓");
+      refresh();
     } catch (e) {
       setMsg(`下载失败：${e}`);
     } finally {
@@ -812,41 +850,189 @@ function LocalSenseVoicePanel() {
     }
   };
 
+  const onImport = async () => {
+    const selected = await openDialog({
+      filters: [
+        { name: "SenseVoice 压缩包", extensions: ["bz2", "tar.bz2"] },
+        { name: "All", extensions: ["*"] },
+      ],
+      multiple: false,
+    });
+    if (!selected || typeof selected !== "string") return;
+    setDownloading(true);
+    setMsg("校验 + 解压中…");
+    try {
+      await api.importSenseVoiceTarball(selected);
+      setMsg("导入完成 ✓");
+      refresh();
+    } catch (e) {
+      setMsg(`导入失败：${e}`);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  if (!info) {
+    return <div className="text-xs text-gray-500">加载中…</div>;
+  }
+
+  const percent = total > 0 ? Math.min(100, (downloaded / total) * 100) : 0;
+  const etaSec = speedBps > 0 && total > downloaded ? (total - downloaded) / speedBps : 0;
+
   return (
     <div className="rounded-xl bg-white/[0.03] border border-white/[0.06] p-4 space-y-3">
+      {/* 状态行 */}
       <div className="flex items-center gap-3">
-        <div className={`w-2 h-2 rounded-full ${available ? "bg-green-400" : "bg-amber-400"}`} />
+        <div
+          className={`w-2 h-2 rounded-full ${
+            info.available
+              ? "bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.5)]"
+              : "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.5)]"
+          } ${downloading ? "animate-pulse" : ""}`}
+        />
         <span className="text-sm text-gray-300">
-          {available ? "模型已就绪" : "模型未下载"}
+          {downloading
+            ? "下载中…"
+            : info.available
+              ? "模型已就绪 ✓"
+              : "模型未下载"}
         </span>
-        <span className="text-xs text-gray-500 ml-auto">约 1 GB</span>
+        <span className="text-xs text-gray-500 ml-auto font-mono">
+          {total > 0
+            ? `${formatBytes(downloaded)} / ${formatBytes(total)}`
+            : "约 1 GB"}
+        </span>
       </div>
-      {downloading && (
+
+      {/* URL + SHA256 + 安装路径（可复制） */}
+      <div className="bg-bg-900/40 border border-white/[0.04] rounded-lg p-2.5 space-y-1.5">
+        <CopyRow
+          label="下载地址"
+          value={info.url}
+          displayValue={<a href={info.url} target="_blank" rel="noreferrer" className="text-brand-blue hover:underline">{info.url}</a>}
+        />
+        <CopyRow label="SHA256" value={info.sha256} />
+        {info.available && <CopyRow label="安装路径" value={info.model_dir} />}
+      </div>
+
+      {/* 下载进度 */}
+      {downloading && total > 0 && (
         <div>
           <div className="h-1 bg-bg-900 rounded-full overflow-hidden">
             <div
               className="h-full bg-gradient-to-r from-accent to-brand-purple transition-all"
-              style={{ width: `${progress * 100}%` }}
+              style={{ width: `${percent}%` }}
             />
           </div>
-          <div className="text-[11px] text-gray-500 mt-1 font-mono">
-            {Math.round(progress * 100)}%
+          <div className="flex justify-between text-[10px] text-gray-500 mt-1 font-mono">
+            <span>{percent.toFixed(0)}%</span>
+            <span>
+              {speedBps > 0 ? `${formatBytes(speedBps)}/s` : "…"}
+              {etaSec > 0 && etaSec < 3600 * 24
+                ? ` · 剩余 ${formatDuration(etaSec)}`
+                : ""}
+            </span>
           </div>
         </div>
       )}
-      <div className="flex gap-2">
+
+      {/* 操作按钮 */}
+      <div className="flex gap-2 flex-wrap">
         <button
           className="btn-primary disabled:opacity-50 text-xs py-1.5"
           disabled={downloading}
           onClick={onDownload}
         >
-          {available ? "重新下载" : "下载模型"}
+          {info.available ? "重新下载" : "下载模型"}
         </button>
-        <button className="btn-ghost text-xs py-1.5" onClick={() => api.openConfigDir()}>
-          打开模型目录
+        <button
+          className="btn-ghost text-xs py-1.5"
+          disabled={downloading}
+          onClick={onImport}
+        >
+          📦 导入本地压缩包
+        </button>
+        <button
+          className="btn-ghost text-xs py-1.5"
+          onClick={() => api.openConfigDir()}
+        >
+          📁 打开模型目录
         </button>
       </div>
       {msg && <div className="text-xs text-gray-400">{msg}</div>}
+
+      {/* 降级引导 */}
+      {!info.available && (
+        <div className="rounded-lg bg-accent/[0.06] border border-accent/20 p-3 text-[11px] text-gray-300 leading-relaxed">
+          <div className="font-medium text-gray-200">🇨🇳 国内下载不稳？</div>
+          <div className="mt-1">
+            用 <code className="px-1 rounded bg-black/30 font-mono">curl -C -</code>、迅雷等工具把上面的 <code className="px-1 rounded bg-black/30 font-mono">.tar.bz2</code> 下好，然后：
+            <ul className="mt-1 ml-4 list-disc text-gray-400">
+              <li>点「📦 导入本地压缩包」选文件 —— 自动校验 SHA256 并解压</li>
+              <li>或自己解压到「📁 模型目录」里（文件夹名保持不变）</li>
+            </ul>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function CopyRow({
+  label,
+  value,
+  displayValue,
+}: {
+  label: string;
+  value: string;
+  displayValue?: React.ReactNode;
+}) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* ignore */
+    }
+  };
+  return (
+    <div className="flex items-start gap-2 text-[11px] font-mono leading-relaxed">
+      <span className="text-gray-500 w-16 flex-shrink-0">{label}</span>
+      <span className="flex-1 text-gray-300 break-all">
+        {displayValue ?? value}
+      </span>
+      <button
+        className="flex-shrink-0 px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-gray-400 hover:bg-white/10 hover:text-gray-200 transition text-[10px]"
+        onClick={copy}
+        title="复制"
+      >
+        {copied ? "✓" : "⎘"}
+      </button>
+    </div>
+  );
+}
+
+function formatBytes(n: number): string {
+  if (n <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function formatDuration(seconds: number): string {
+  const s = Math.round(seconds);
+  if (s < 60) return `${s} 秒`;
+  const m = Math.floor(s / 60);
+  const ss = s % 60;
+  if (m < 60) return `${m} 分 ${ss.toString().padStart(2, "0")} 秒`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return `${h} 小时 ${mm} 分`;
 }
