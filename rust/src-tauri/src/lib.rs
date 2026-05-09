@@ -56,6 +56,30 @@ impl AppState {
     }
 }
 
+/// 注册全局热键。先 unregister_all 清掉旧的，再 on_shortcut 绑新的。
+/// 启动时和 save_config 里 hotkey 变更时都调用。
+pub fn register_hotkey(app: &tauri::AppHandle, hotkey_str: &str) -> anyhow::Result<()> {
+    let accel = hotkey::to_tauri_shortcut(hotkey_str)
+        .map_err(|e| anyhow::anyhow!("热键解析失败：{}", e))?;
+    let gs = app.global_shortcut();
+    // 先全部注销，避免多次注册导致的冲突或旧热键残留
+    if let Err(e) = gs.unregister_all() {
+        tracing::warn!(error = ?e, "unregister_all 失败（可能之前没有绑定），忽略");
+    }
+    let handle = app.clone();
+    gs.on_shortcut(accel.as_str(), move |_app, _shortcut, event| {
+        use tauri_plugin_global_shortcut::ShortcutState;
+        if event.state() == ShortcutState::Pressed {
+            let state = handle.state::<AppState>();
+            let cfg = state.snapshot();
+            recorder::toggle(handle.clone(), cfg);
+        }
+    })
+    .map_err(|e| anyhow::anyhow!("注册热键失败：{}", e))?;
+    tracing::info!(hotkey = %accel, "热键已注册");
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let cfg = config::Config::load();
@@ -107,27 +131,9 @@ pub fn run() {
                 use tauri::ActivationPolicy;
                 app.set_activation_policy(ActivationPolicy::Accessory);
             }
-            let handle = app.handle().clone();
-
-            // 注册全局热键
-            match hotkey::to_tauri_shortcut(&hotkey_str) {
-                Ok(accel) => {
-                    let handle2 = handle.clone();
-                    let gs = app.global_shortcut();
-                    if let Err(e) = gs.on_shortcut(accel.as_str(), move |_app, _shortcut, event| {
-                        use tauri_plugin_global_shortcut::ShortcutState;
-                        if event.state() == ShortcutState::Pressed {
-                            let state = handle2.state::<AppState>();
-                            let cfg = state.snapshot();
-                            recorder::toggle(handle2.clone(), cfg);
-                        }
-                    }) {
-                        tracing::error!(error = ?e, hotkey = %accel, "热键监听失败");
-                    } else {
-                        tracing::info!(hotkey = %accel, "热键已注册");
-                    }
-                }
-                Err(e) => tracing::error!(error = ?e, "热键解析失败"),
+            // 注册全局热键（抽成独立函数，save_config 里也会调）
+            if let Err(e) = register_hotkey(app.handle(), &hotkey_str) {
+                tracing::error!(error = ?e, "启动时注册热键失败");
             }
 
             tray::setup(app.handle())?;

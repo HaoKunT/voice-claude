@@ -25,9 +25,22 @@ pub fn get_config(state: State<'_, AppState>) -> Config {
 }
 
 #[tauri::command]
-pub fn save_config(cfg: Config, state: State<'_, AppState>) -> Result<(), String> {
+pub fn save_config(
+    cfg: Config,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let prev_hotkey = state.snapshot().hotkey.clone();
+    let new_hotkey = cfg.hotkey.clone();
     cfg.save().map_err(|e| e.to_string())?;
     state.replace(cfg);
+    // 热键变了就重新注册全局热键，否则老 accelerator 还挂着、新的没生效
+    if new_hotkey != prev_hotkey {
+        if let Err(e) = crate::register_hotkey(&app, &new_hotkey) {
+            tracing::warn!(error = ?e, "save_config 后重注册热键失败");
+            return Err(format!("热键注册失败：{}", e));
+        }
+    }
     Ok(())
 }
 
