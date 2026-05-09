@@ -221,11 +221,7 @@ async fn run_vad(
                 speech_accum_ms += TICK_MS;
                 if speech_accum_ms >= SPEECH_START_MS {
                     started_speaking = true;
-                    tracing::info!(
-                        rms = lvl,
-                        max_rms = max_observed_rms,
-                        "VAD: 检测到说话起点",
-                    );
+                    tracing::info!(rms = lvl, max_rms = max_observed_rms, "VAD: 检测到说话起点",);
                 }
             } else {
                 speech_accum_ms = 0;
@@ -239,7 +235,11 @@ async fn run_vad(
         } else {
             silence_accum_ms += TICK_MS;
             if silence_accum_ms >= silence_ms {
-                tracing::info!(silence_ms, max_rms = max_observed_rms, "VAD: 静音超时，自动停止");
+                tracing::info!(
+                    silence_ms,
+                    max_rms = max_observed_rms,
+                    "VAD: 静音超时，自动停止"
+                );
                 if let Some(tx) = recording().stop_tx.lock().take() {
                     let _ = tx.send(());
                 }

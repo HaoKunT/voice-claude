@@ -88,6 +88,13 @@ optional = true
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2" }
 objc = "0.2"
 
+[lints.rust]
+# objc 0.2 crate 的 msg_send! / class! 宏内部用了 #[cfg(feature = "cargo-clippy")]，
+# 新版 Rust 的 --check-cfg 不认这个 feature，`cargo clippy -D warnings` 下会报
+# unexpected_cfgs。给 well-known cfg 显式加上白名单就不再 warn。
+# 等 objc 升到 0.3 或迁移 objc2 后可以拆掉。
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
+
 [features]
 # 默认启用 local-asr：对齐 Go 版的 !nosherpa 发布（带离线 SenseVoice）
 default = ["custom-protocol", "local-asr"]

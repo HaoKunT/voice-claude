@@ -205,13 +205,12 @@ impl Config {
         if !self.polish_profiles.is_empty() {
             return; // 已有 profiles，无需迁移
         }
-        let api_key = if self.correct_mode == POLISH_MODE_OPENROUTER
-            && !self.openrouter_api_key.is_empty()
-        {
-            self.openrouter_api_key.clone()
-        } else {
-            self.correct_api_key.clone()
-        };
+        let api_key =
+            if self.correct_mode == POLISH_MODE_OPENROUTER && !self.openrouter_api_key.is_empty() {
+                self.openrouter_api_key.clone()
+            } else {
+                self.correct_api_key.clone()
+            };
         let profile = PolishProfile {
             id: DEFAULT_PROFILE_ID.into(),
             name: "默认".into(),

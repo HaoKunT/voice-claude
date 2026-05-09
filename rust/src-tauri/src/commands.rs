@@ -25,11 +25,7 @@ pub fn get_config(state: State<'_, AppState>) -> Config {
 }
 
 #[tauri::command]
-pub fn save_config(
-    cfg: Config,
-    state: State<'_, AppState>,
-    app: AppHandle,
-) -> Result<(), String> {
+pub fn save_config(cfg: Config, state: State<'_, AppState>, app: AppHandle) -> Result<(), String> {
     let prev = state.snapshot();
     let prev_hotkey = prev.hotkey.clone();
     let prev_log_level = prev.log_level.clone();
