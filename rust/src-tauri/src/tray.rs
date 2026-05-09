@@ -105,7 +105,8 @@ fn handle_menu_event(app: &AppHandle<Wry>, event: MenuEvent) {
         "settings" => show_main(app, None),
         "history" => show_main(app, Some("#/history")),
         "logs" => {
-            let _ = open_path(&crate::dirs::log_file_path().to_string_lossy());
+            // 统一走 commands::open_logs 的逻辑：找 mtime 最新的 log，没有就开目录
+            let _ = crate::commands::open_logs();
         }
         "config_dir" => {
             let _ = open_path(&crate::dirs::config_dir().to_string_lossy());
