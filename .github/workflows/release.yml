@@ -59,41 +59,13 @@ jobs:
           projectPath: rust
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "voice-claude ${{ github.event.inputs.tag || github.ref_name }}"
+          # 下面是 fallback 文案：publish-updater job 会跑 generate-notes
+          # 用基于 commit 的自动 changelog 覆盖 body。若那步失败，至少 release
+          # 页还有这段最简介绍可看。
           releaseBody: |
             按一下热键说话，再按一下结束，识别文字自动输入到当前焦点窗口。
 
-            ## 下载
-
-            - **macOS (Apple Silicon)**：`*.dmg` 或 `*.app.tar.gz`
-            - **Windows (x64)**：`*.msi` 或 `*-setup.exe`
-
-            > Intel Mac 需本地 `cargo build --target x86_64-apple-darwin` 构建。
-
-            ## macOS 首次使用
-
-            没有 Apple Developer 证书，macOS 会挡下 app。需要在终端运行一条命令解除隔离：
-
-            ```bash
-            # 1. 双击 .dmg，把 voice-claude 拖进 Applications
-            # 2. 终端执行（绕过 Gatekeeper）：
-            xattr -dr com.apple.quarantine /Applications/voice-claude.app
-            # 3. 启动
-            open /Applications/voice-claude.app
-            ```
-
-            启动后：
-            1. 弹麦克风权限 → 允许
-            2. 系统设置 → 隐私与安全性 → 辅助功能 → `+` → 选 voice-claude → 勾选
-            3. 菜单栏图标 → 设置 → 选 ASR 后端填 API Key（或下载本地 SenseVoice 模型）
-            4. 默认热键 `Cmd+Shift+F5`：按一下说话，再按一下结束
-
-            ## 已知限制
-
-            - Windows NSPanel 等价尚未实现，悬浮窗会抢焦点（macOS 体验完整）
-            - 非 Apple Developer 证书签名，每次重装可能需要重新授权辅助功能
-            - 本地 SenseVoice 模型约 1GB，首次下载需稳定网络
-
-            完整变更日志见提交历史。
+            > 安装方式、首次使用、已知限制（ad-hoc 签名、TCC 权限）见 [README](https://github.com/HaoKunT/voice-claude#readme)。
           releaseDraft: true
           # 不标 prerelease：否则 GitHub 的 /releases/latest/download/latest.json
           # redirect 不会指向此版本，updater endpoint 取不到 JSON。
@@ -122,3 +94,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: node scripts/gen-latest-json.mjs "$TAG"
+      # 用 GitHub 官方 API 基于 commit 生成 changelog，覆盖硬编码的介绍性文案。
+      - name: Regenerate release notes from commits
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          CHANGELOG=$(gh api repos/HaoKunT/voice-claude/releases/generate-notes \
+            -f tag_name="$TAG" -q .body)
+          BODY=$(cat <<EOF
+          按一下热键说话，再按一下结束，识别文字自动输入到当前焦点窗口。
+
+          > 安装方式、首次使用、已知限制（ad-hoc 签名、TCC 权限）见 [README](https://github.com/HaoKunT/voice-claude#readme)。
+
+          ---
+
+          $CHANGELOG
+          EOF
+          )
+          gh release edit "$TAG" -R HaoKunT/voice-claude --notes "$BODY"
