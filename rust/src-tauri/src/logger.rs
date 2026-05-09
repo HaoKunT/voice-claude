@@ -3,13 +3,19 @@
 
 use crate::dirs::log_dir;
 use std::fs;
+use std::sync::OnceLock;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{fmt, prelude::*, reload, EnvFilter, Registry};
 
 const LOG_RETENTION_DAYS: u64 = 7;
 const LOG_PREFIX: &str = "voice-claude";
 const LOG_SUFFIX: &str = "log";
+
+type FilterHandle = reload::Handle<EnvFilter, Registry>;
+
+/// 全局 reload handle：init 时存入，runtime 改日志级别时用它热替换 EnvFilter。
+static RELOAD_HANDLE: OnceLock<FilterHandle> = OnceLock::new();
 
 /// 初始化日志系统。返回的 WorkerGuard 保证日志刷盘，需要在 main 中持有。
 pub fn init(level: &str) -> WorkerGuard {
@@ -30,13 +36,30 @@ pub fn init(level: &str) -> WorkerGuard {
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(parse_level(level)));
 
+    // 用 reload::Layer 包装 EnvFilter，保存 handle 用于 runtime 热替换
+    let (filter_layer, reload_handle) = reload::Layer::new(env_filter);
+    let _ = RELOAD_HANDLE.set(reload_handle);
+
     tracing_subscriber::registry()
-        .with(env_filter)
+        .with(filter_layer)
         .with(fmt::layer().with_writer(std::io::stderr).with_ansi(true))
         .with(fmt::layer().with_writer(non_blocking).with_ansi(false))
         .init();
 
     guard
+}
+
+/// 运行时热替换日志级别（save_config 改 log_level 时调）。
+pub fn reload(level: &str) {
+    let Some(handle) = RELOAD_HANDLE.get() else {
+        return;
+    };
+    let new_filter = EnvFilter::new(parse_level(level));
+    if let Err(e) = handle.modify(|f| *f = new_filter) {
+        tracing::warn!(error = ?e, level, "reload log filter 失败");
+    } else {
+        tracing::info!(level, "日志级别已热替换");
+    }
 }
 
 /// 启动时删除 LOG_RETENTION_DAYS 天之前的日志文件。
