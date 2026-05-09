@@ -78,6 +78,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 要完整历史和 tag，给 git log / git describe 用
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -94,15 +96,24 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: node scripts/gen-latest-json.mjs "$TAG"
-      # 用 GitHub 官方 API 基于 commit 生成 changelog，覆盖硬编码的介绍性文案。
+      # 用 git log 生成 commit-based changelog，覆盖硬编码的介绍性文案。
+      # 不用 GitHub 的 generate-notes API：它只列 PR 合并来的 commit，
+      # 我们直接 push main，走不到 PR 那条路径。
       - name: Regenerate release notes from commits
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          CHANGELOG=$(gh api repos/HaoKunT/voice-claude/releases/generate-notes \
-            -f tag_name="$TAG" -q .body)
+          PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..${TAG}"
+            COMPARE_LINE="**Full Changelog**: https://github.com/HaoKunT/voice-claude/compare/${PREV_TAG}...${TAG}"
+          else
+            RANGE="$TAG"
+            COMPARE_LINE=""
+          fi
+          CHANGELOG=$(git log --pretty=format:"- %s (%h)" "$RANGE")
           BODY=$(cat <<EOF
           按一下热键说话，再按一下结束，识别文字自动输入到当前焦点窗口。
 
@@ -110,7 +121,11 @@ jobs:
 
           ---
 
+          ## What's Changed
+
           $CHANGELOG
+
+          $COMPARE_LINE
           EOF
           )
           gh release edit "$TAG" -R HaoKunT/voice-claude --notes "$BODY"
