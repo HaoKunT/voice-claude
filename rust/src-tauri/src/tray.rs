@@ -9,8 +9,10 @@ use tauri::{
     AppHandle, Manager, Wry,
 };
 
-/// 嵌入的托盘图标（32x32 模板图像）
-const TRAY_ICON_PNG: &[u8] = include_bytes!("../icons/32x32.png");
+/// 嵌入的托盘图标（专用于菜单栏：只有线条、透明底）。
+/// 不能复用 32x32.png，那张带深色 squircle 底，macOS template 模式会把
+/// 整个非透明区域染成纯白，显示成白方框。
+const TRAY_ICON_PNG: &[u8] = include_bytes!("../icons/tray.png");
 
 /// 最近识别结果显示数量
 const RECENT_COUNT: usize = 5;
