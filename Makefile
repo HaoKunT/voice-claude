@@ -6,6 +6,9 @@ APP_BUNDLE  = $(APP_NAME).app
 RUST_DIR    = rust
 LEGACY_DIR  = legacy/go
 
+# Tauri updater 签名私钥路径；可 override：KEY_FILE=/other/path make build
+KEY_FILE    ?= $(HOME)/.tauri/voice-claude.key
+
 help:
 	@echo "voice-claude 构建命令："
 	@echo ""
@@ -31,8 +34,19 @@ dev:
 	cd $(RUST_DIR) && pnpm install && pnpm tauri dev
 
 build:
-	cd $(RUST_DIR) && pnpm install && pnpm tauri build --bundles app
+	@if [ ! -f "$(KEY_FILE)" ]; then \
+		echo "⚠ 找不到 Tauri updater 签名私钥：$(KEY_FILE)"; \
+		echo "  生成方式（只需要一次，密码自己记住）："; \
+		echo "    mkdir -p $$(dirname $(KEY_FILE)) && cd $(RUST_DIR) && pnpm tauri signer generate -w $(KEY_FILE)"; \
+		echo "  然后把 $(KEY_FILE).pub 的第二行贴到 rust/src-tauri/tauri.conf.json 的 plugins.updater.pubkey"; \
+		exit 1; \
+	fi
+	cd $(RUST_DIR) && pnpm install && \
+		TAURI_SIGNING_PRIVATE_KEY="$$(cat $(KEY_FILE))" \
+		TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
+		pnpm tauri build --bundles app
 	@echo "✓ 构建完成: $(RUST_DIR)/src-tauri/target/release/bundle/macos/$(APP_BUNDLE)"
+	@echo "✓ Updater artifacts: $(RUST_DIR)/src-tauri/target/release/bundle/macos/$(APP_BUNDLE).tar.gz(.sig)"
 
 install: build
 	@BUNDLE=$$(find $(RUST_DIR)/src-tauri/target/release/bundle/macos -maxdepth 1 -name "*.app" | head -n1); \
@@ -49,7 +63,14 @@ install: build
 	echo "✓ 已安装到 /Applications/$(APP_BUNDLE)"
 
 build-win:
-	cd $(RUST_DIR) && pnpm install && pnpm tauri build --target x86_64-pc-windows-msvc --bundles msi,nsis
+	@if [ ! -f "$(KEY_FILE)" ]; then \
+		echo "⚠ 找不到 Tauri updater 签名私钥：$(KEY_FILE)"; \
+		exit 1; \
+	fi
+	cd $(RUST_DIR) && pnpm install && \
+		TAURI_SIGNING_PRIVATE_KEY="$$(cat $(KEY_FILE))" \
+		TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
+		pnpm tauri build --target x86_64-pc-windows-msvc --bundles msi,nsis
 
 test:
 	cd $(RUST_DIR) && pnpm install --frozen-lockfile
