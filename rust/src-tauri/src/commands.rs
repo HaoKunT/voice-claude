@@ -78,33 +78,28 @@ pub async fn check_ollama(url: String) -> Result<(), String> {
     correct::check_ollama(&url).await.map_err(|e| e.to_string())
 }
 
+/// 找日志目录下 mtime 最新的日志文件。
+/// 匹配新格式 `voice-claude.YYYY-MM-DD.log` + 老格式 `voice-claude.log.YYYY-MM-DD`
+/// + 首版无后缀的 `voice-claude.log`。open_logs 和 read_recent_logs 共用。
+fn find_latest_log() -> Option<std::path::PathBuf> {
+    let dir = dirs::log_dir();
+    let entries = std::fs::read_dir(&dir).ok()?;
+    entries
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("voice-claude"))
+        .filter_map(|e| {
+            let mtime = e.metadata().ok()?.modified().ok()?;
+            Some((e.path(), mtime))
+        })
+        .max_by_key(|(_, t)| *t)
+        .map(|(p, _)| p)
+}
+
 #[tauri::command]
 pub fn open_logs() -> Result<(), String> {
-    // daily rotation 后 log_file_path() 的那个无后缀文件不再被写入，
-    // 改成找日志目录下 mtime 最新的 voice-claude.log* 文件打开；
-    // 完全没日志就退化为打开目录。
-    let dir = dirs::log_dir();
-    let mut latest: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            // 匹配新格式 voice-claude.YYYY-MM-DD.log 和老格式 voice-claude.log.YYYY-MM-DD，
-            // 以及首版无后缀的 voice-claude.log
-            if !name.to_string_lossy().starts_with("voice-claude") {
-                continue;
-            }
-            if let Ok(meta) = entry.metadata() {
-                if let Ok(mtime) = meta.modified() {
-                    if latest.as_ref().map_or(true, |(_, t)| mtime > *t) {
-                        latest = Some((entry.path(), mtime));
-                    }
-                }
-            }
-        }
-    }
-    match latest {
-        Some((p, _)) => open_path(&p.to_string_lossy()),
-        None => open_path(&dir.to_string_lossy()),
+    match find_latest_log() {
+        Some(p) => open_path(&p.to_string_lossy()),
+        None => open_path(&dirs::log_dir().to_string_lossy()),
     }
 }
 
@@ -114,27 +109,9 @@ pub fn open_log_dir() -> Result<(), String> {
 }
 
 /// 读取最新日志文件的最后 limit 行，返回给前端展示。
-/// 找 mtime 最新的 voice-claude.*.log；日志没生成时返回空列表。
 #[tauri::command]
 pub fn read_recent_logs(limit: usize) -> Result<Vec<String>, String> {
-    let dir = dirs::log_dir();
-    let mut latest: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            if !name.to_string_lossy().starts_with("voice-claude") {
-                continue;
-            }
-            if let Ok(meta) = entry.metadata() {
-                if let Ok(mtime) = meta.modified() {
-                    if latest.as_ref().map_or(true, |(_, t)| mtime > *t) {
-                        latest = Some((entry.path(), mtime));
-                    }
-                }
-            }
-        }
-    }
-    let Some((path, _)) = latest else {
+    let Some(path) = find_latest_log() else {
         return Ok(vec![]);
     };
     // 避免把特别大的日志全读入内存：超过 2MB 只取末尾一段

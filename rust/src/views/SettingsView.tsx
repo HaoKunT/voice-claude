@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -395,40 +395,46 @@ function parseLogLine(raw: string): ParsedLogLine {
   return { raw, time: m[2], level: m[3] as LogLevel, body: m[4] };
 }
 
+const LOG_LIMIT = 200;
+
 function LogViewer() {
   const [lines, setLines] = useState<ParsedLogLine[]>([]);
   const [loading, setLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [minLevel, setMinLevel] = useState<LogLevel>("INFO");
-  const [limit] = useState(200);
+  // 记上一次拉到的 raw 内容，用于 change detection 避免无变化时重渲染
+  const lastSignatureRef = useRef<string>("");
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const raws = await api.readRecentLogs(limit);
-      setLines(raws.map(parseLogLine));
+      const raws = await api.readRecentLogs(LOG_LIMIT);
+      // 比较最后一行 + 长度就能判断有没有新日志，比 join 整个数组便宜
+      const sig = `${raws.length}:${raws[raws.length - 1] ?? ""}`;
+      if (sig !== lastSignatureRef.current) {
+        lastSignatureRef.current = sig;
+        setLines(raws.map(parseLogLine));
+      }
     } catch (e) {
       console.warn("readRecentLogs failed:", e);
     } finally {
       setLoading(false);
     }
-  }, [limit]);
+  }, []);
 
   useEffect(() => {
     refresh();
-  }, [refresh]);
-
-  useEffect(() => {
     if (!autoRefresh) return;
     const t = setInterval(refresh, 2000);
     return () => clearInterval(t);
   }, [autoRefresh, refresh]);
 
-  const minIdx = LEVEL_ORDER.indexOf(minLevel);
-  const filtered = lines.filter((l) => {
-    if (!l.level) return true;
-    return LEVEL_ORDER.indexOf(l.level) <= minIdx;
-  });
+  const filtered = useMemo(() => {
+    const minIdx = LEVEL_ORDER.indexOf(minLevel);
+    return lines.filter(
+      (l) => !l.level || LEVEL_ORDER.indexOf(l.level) <= minIdx,
+    );
+  }, [lines, minLevel]);
 
   return (
     <div className="mt-4 pt-4 border-t border-white/5">
