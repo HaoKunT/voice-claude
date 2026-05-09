@@ -217,3 +217,34 @@ fn open_path(path: &str) -> Result<(), String> {
     };
     cmd.map(|_| ()).map_err(|e| e.to_string())
 }
+
+/// macOS：查询辅助功能权限是否授予（ad-hoc 签名升级后此权限常会失效）。
+/// 其他平台直接返回 true。
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn check_accessibility() -> bool {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> u8;
+    }
+    unsafe { AXIsProcessTrusted() != 0 }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub fn check_accessibility() -> bool {
+    true
+}
+
+/// 跳到系统「隐私与安全性 → 辅助功能」面板。
+#[tauri::command]
+pub fn open_accessibility_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        open_path("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("仅 macOS 支持".into())
+    }
+}

@@ -59,3 +59,7 @@ pnpm typecheck
 ## 迁移进度
 
 详见 `MIGRATION_PLAN.md`。
+
+## macOS ad-hoc 签名相关限制
+
+首次安装需 `xattr -dr`、每次更新后需重新勾辅助功能权限——根因与完整解释见根目录 [`README.md` 的「已知限制」节](../README.md#已知限制macos-ad-hoc-签名)。

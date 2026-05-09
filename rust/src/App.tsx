@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { api } from "./api";
 import { SettingsView, SettingsSection } from "./views/SettingsView";
 import { HistoryView } from "./views/HistoryView";
 import { AboutView } from "./views/AboutView";
@@ -58,6 +59,7 @@ function Shell() {
     <div className="min-h-screen flex flex-col">
       {/* 顶部彩色细光条 Raycast 招牌 */}
       <div className="h-[2px] top-accent flex-shrink-0" />
+      <AccessibilityBanner />
       <div className="flex-1 flex">
         <nav className="w-56 bg-bg-800/60 border-r border-white/[0.06] py-5 px-3 flex flex-col gap-0.5 backdrop-blur-heavy">
           <div className="px-3 mb-5 flex items-center gap-2">
@@ -97,6 +99,51 @@ function App() {
     <UpdateProvider>
       <Shell />
     </UpdateProvider>
+  );
+}
+
+function AccessibilityBanner() {
+  const [granted, setGranted] = useState<boolean | null>(null);
+
+  const check = useCallback(async () => {
+    try {
+      setGranted(await api.checkAccessibility());
+    } catch {
+      setGranted(true); // 非 macOS / 命令异常，按已授权处理，不显示横条
+    }
+  }, []);
+
+  useEffect(() => {
+    check();
+    // 窗口重新 focus 时再查一次——覆盖"用户跳系统设置勾完回来" 的场景
+    const onFocus = () => check();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [check]);
+
+  if (granted !== false) return null;
+
+  const openSettings = () => api.openAccessibilitySettings();
+
+  return (
+    <div className="flex-shrink-0 bg-amber-500/15 border-b border-amber-500/30 px-4 py-2.5 flex items-center gap-3">
+      <span className="text-amber-400 text-base">⚠</span>
+      <div className="flex-1 text-xs text-amber-100 leading-snug">
+        <span className="font-medium">辅助功能权限未授权</span>
+        <span className="text-amber-200/70 ml-2">
+          —— 热键不会工作。系统设置勾完回到这个窗口，提示会自动消失。
+        </span>
+      </div>
+      <button
+        className="btn-ghost text-xs py-1 px-3 bg-amber-500/20 text-amber-100 hover:bg-amber-500/30"
+        onClick={openSettings}
+      >
+        去授权
+      </button>
+      <button className="btn-ghost text-xs py-1 px-3" onClick={check}>
+        已授权，重新检查
+      </button>
+    </div>
   );
 }
 

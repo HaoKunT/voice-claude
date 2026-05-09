@@ -60,6 +60,22 @@ make install   # 编译 + 打包 + 自动签名 + 安装到 /Applications
 2. 点图标 → **设置**，选 ASR 后端填 API Key（改完即自动保存）
 3. 默认热键 `Cmd+Shift+F5`（**按一下开始说话，再按一下结束**）
 
+## 已知限制（macOS ad-hoc 签名）
+
+项目没有 Apple Developer 证书（99 美元/年），app 走 **ad-hoc 自签**。几个由此而来的限制：
+
+1. **首次安装需手动解除隔离**：浏览器下载的 `.app` 会被 Gatekeeper 标 quarantine，跑一次：
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/voice-claude.app
+   ```
+   > 小技巧：改用 `curl -LO` 下载产物（而不是浏览器），quarantine 属性不会被打上，这一步可以省。
+
+2. **更新后需要重新勾选「辅助功能」**：macOS 的 TCC 权限绑在 code signature 的 cdhash 上。每次新版本 cdhash 都变，系统认为是"另一个" app，之前授予的**辅助功能**和可能的**麦克风**权限会失效。需要到 **系统设置 → 隐私与安全性 → 辅助功能** 重新勾选一次 voice-claude（启动 app 后，如果辅助功能未授权，主窗口顶部会有横条提示 + 一键跳转按钮）。
+
+3. **应用内自动更新**本身是能用的：启动后自动检查 GitHub Release 的 `latest.json`，有新版在「关于」页显示下载按钮，点一下就替换、重启；文件替换过程无感，**但 TCC 权限不会继承**（同上）。
+
+这些都是 macOS 系统级行为，不是 bug。根治方案是 Apple Developer + notarize，未来考虑。Windows 下的 SmartScreen 有类似 "未知发行商" 拦截，首次运行点"仍要运行"。
+
 ## ASR 后端
 
 | 后端 | 模式 | 说明 |

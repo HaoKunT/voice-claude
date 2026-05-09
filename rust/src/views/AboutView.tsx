@@ -174,6 +174,25 @@ export function AboutView() {
         </p>
       </section>
 
+      <section className="card space-y-2">
+        <div className="section-title">🔐 签名与权限</div>
+        <p className="text-xs text-gray-400 leading-relaxed">
+          本版本为 <span className="font-mono text-gray-300">ad-hoc</span> 签名（未购买 Apple Developer 证书）。
+          macOS 的系统权限绑在 code signature 指纹上，所以
+          <span className="text-amber-400">每次自动更新后，「辅助功能」与「麦克风」权限通常需要重新授权一次</span>。
+          这是 macOS 系统级限制，不是 bug。
+          {" "}
+          <a
+            href="https://github.com/HaoKunT/voice-claude#已知限制macos-ad-hoc-签名"
+            target="_blank"
+            rel="noreferrer"
+            className="text-brand-blue hover:underline"
+          >
+            详细说明
+          </a>
+        </p>
+      </section>
+
       <section className="card space-y-3">
         <div className="section-title">📦 主要依赖</div>
         <ul className="text-xs text-gray-400 space-y-1.5">
