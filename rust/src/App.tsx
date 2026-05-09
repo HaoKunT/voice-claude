@@ -7,7 +7,7 @@ import { UpdateProvider, useUpdate } from "./contexts/UpdateContext";
 
 type Route =
   | "asr"
-  | "correct"
+  | "polish"
   | "record"
   | "hotwords"
   | "log"
@@ -16,7 +16,7 @@ type Route =
 
 const ROUTE_HASHES: Record<Route, string> = {
   asr: "#/",
-  correct: "#/correct",
+  polish: "#/polish",
   record: "#/record",
   hotwords: "#/hotwords",
   log: "#/log",
@@ -26,7 +26,7 @@ const ROUTE_HASHES: Record<Route, string> = {
 
 const NAV_ITEMS: { route: Route; icon: string; label: string }[] = [
   { route: "asr", icon: "🎙", label: "语音识别" },
-  { route: "correct", icon: "🧠", label: "AI 纠错" },
+  { route: "polish", icon: "🧠", label: "AI 润色" },
   { route: "record", icon: "🎤", label: "录音参数" },
   { route: "hotwords", icon: "📝", label: "热词替换" },
   { route: "log", icon: "📋", label: "日志" },

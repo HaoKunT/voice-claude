@@ -13,10 +13,50 @@ pub const ASR_PROVIDER_VOLC: &str = "volc";
 pub const ASR_PROVIDER_OPENROUTER: &str = "openrouter";
 pub const ASR_PROVIDER_LOCAL: &str = "local";
 
-pub const CORRECT_MODE_OFF: &str = "off";
-pub const CORRECT_MODE_OLLAMA: &str = "ollama";
-pub const CORRECT_MODE_OPENROUTER: &str = "openrouter";
-pub const CORRECT_MODE_CLOUD: &str = "cloud";
+pub const POLISH_MODE_OFF: &str = "off";
+pub const POLISH_MODE_OLLAMA: &str = "ollama";
+pub const POLISH_MODE_OPENROUTER: &str = "openrouter";
+pub const POLISH_MODE_CLOUD: &str = "cloud";
+
+pub const DEFAULT_PROFILE_ID: &str = "default";
+pub const DEFAULT_POLISH_PROMPT: &str =
+    "你是一个语音识别润色助手。用户通过语音输入文字，可能有同音字错误、漏字、多字等问题。
+请只纠正明显的语音识别错误，不要改变用户的意思，不要添加或删除内容。
+如果原文没有明显错误，直接返回原文。
+只输出润色后的文本，不要解释。
+
+原文：{text}";
+
+/// 单个 AI 润色 profile：一套完整的后端配置 + prompt 模板。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolishProfile {
+    pub id: String,
+    pub name: String,
+    #[serde(default = "default_polish_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_polish_prompt")]
+    pub prompt: String,
+}
+
+impl PolishProfile {
+    pub fn default_named(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            mode: default_polish_mode(),
+            url: default_correct_url(),
+            model: default_correct_model(),
+            api_key: String::new(),
+            prompt: default_polish_prompt(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -38,7 +78,9 @@ pub struct Config {
     pub volc_access_token: String,
     #[serde(default = "default_volc_resource_id")]
     pub volc_resource_id: String,
-    #[serde(default = "default_correct_mode")]
+    // 下面 correct_* 是 0.1.1 及之前的字段，保留以便首次启动时迁移到 polish_profiles；
+    // 迁移完成后新版写回的 config 里它们会是 default 值，仅作向后兼容占位。
+    #[serde(default = "default_polish_mode")]
     pub correct_mode: String,
     #[serde(default = "default_correct_url")]
     pub correct_url: String,
@@ -46,6 +88,11 @@ pub struct Config {
     pub correct_model: String,
     #[serde(default)]
     pub correct_api_key: String,
+    // 0.1.2+：多 profile 的真源
+    #[serde(default)]
+    pub polish_profiles: Vec<PolishProfile>,
+    #[serde(default = "default_active_profile_id")]
+    pub active_profile_id: String,
     #[serde(default = "default_hotkey")]
     pub hotkey: String,
     #[serde(default = "default_gain")]
@@ -72,8 +119,14 @@ fn default_asr_provider() -> String {
 fn default_volc_resource_id() -> String {
     "volc.seedasr.sauc.duration".into()
 }
-fn default_correct_mode() -> String {
-    CORRECT_MODE_OFF.into()
+fn default_polish_mode() -> String {
+    POLISH_MODE_OFF.into()
+}
+fn default_polish_prompt() -> String {
+    DEFAULT_POLISH_PROMPT.into()
+}
+fn default_active_profile_id() -> String {
+    DEFAULT_PROFILE_ID.into()
 }
 fn default_correct_url() -> String {
     "http://localhost:11434/api/generate".into()
@@ -115,10 +168,12 @@ impl Default for Config {
             volc_app_key: String::new(),
             volc_access_token: String::new(),
             volc_resource_id: default_volc_resource_id(),
-            correct_mode: default_correct_mode(),
+            correct_mode: default_polish_mode(),
             correct_url: default_correct_url(),
             correct_model: default_correct_model(),
             correct_api_key: String::new(),
+            polish_profiles: vec![PolishProfile::default_named(DEFAULT_PROFILE_ID, "默认")],
+            active_profile_id: default_active_profile_id(),
             hotkey: default_hotkey(),
             gain: default_gain(),
             device_name: String::new(),
@@ -134,12 +189,61 @@ impl Default for Config {
 
 impl Config {
     /// 从磁盘加载配置；文件不存在或解析失败时返回默认值。
+    /// 加载后自动跑老字段 → polish_profiles 的迁移。
     pub fn load() -> Self {
         let path = config_path();
-        match fs::read_to_string(&path) {
+        let mut cfg: Self = match fs::read_to_string(&path) {
             Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
             Err(_) => Self::default(),
+        };
+        cfg.migrate_polish_profiles();
+        cfg
+    }
+
+    /// 首次升级到多 profile 版本时，把老的 correct_* 字段迁成一个「默认」profile。
+    fn migrate_polish_profiles(&mut self) {
+        if !self.polish_profiles.is_empty() {
+            return; // 已有 profiles，无需迁移
         }
+        let api_key = if self.correct_mode == POLISH_MODE_OPENROUTER
+            && !self.openrouter_api_key.is_empty()
+        {
+            self.openrouter_api_key.clone()
+        } else {
+            self.correct_api_key.clone()
+        };
+        let profile = PolishProfile {
+            id: DEFAULT_PROFILE_ID.into(),
+            name: "默认".into(),
+            mode: if self.correct_mode.is_empty() {
+                POLISH_MODE_OFF.into()
+            } else {
+                self.correct_mode.clone()
+            },
+            url: if self.correct_url.is_empty() {
+                default_correct_url()
+            } else {
+                self.correct_url.clone()
+            },
+            model: if self.correct_model.is_empty() {
+                default_correct_model()
+            } else {
+                self.correct_model.clone()
+            },
+            api_key,
+            prompt: DEFAULT_POLISH_PROMPT.into(),
+        };
+        self.polish_profiles = vec![profile];
+        self.active_profile_id = DEFAULT_PROFILE_ID.into();
+    }
+
+    /// 返回当前活跃 profile；若 active_profile_id 找不到，回退到第一个。
+    pub fn active_profile(&self) -> &PolishProfile {
+        self.polish_profiles
+            .iter()
+            .find(|p| p.id == self.active_profile_id)
+            .or_else(|| self.polish_profiles.first())
+            .expect("polish_profiles 至少应有一个 profile")
     }
 
     /// 写入磁盘（pretty JSON，权限 0o600）。

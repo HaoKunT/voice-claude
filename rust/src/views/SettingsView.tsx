@@ -1,15 +1,18 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
-import { api, ASR_PROVIDERS, CORRECT_MODES, Config, DeviceInfo } from "../api";
+import { api, ASR_PROVIDERS, POLISH_MODES, Config, DeviceInfo, PolishProfile } from "../api";
 
-export type SettingsSection = "asr" | "correct" | "record" | "hotwords" | "log";
+export type SettingsSection = "asr" | "polish" | "record" | "hotwords" | "log";
 
 const SECTION_META: Record<SettingsSection, { title: string; subtitle: string }> = {
   asr: { title: "语音识别", subtitle: "识别后端与对应的密钥" },
-  correct: { title: "AI 纠错", subtitle: "识别后可选的文本纠错" },
+  polish: {
+    title: "AI 润色",
+    subtitle: "识别完成后交给 LLM 按你的 prompt 再润一遍；可建多个 profile 按场景切换",
+  },
   record: { title: "录音参数", subtitle: "麦克风、快捷键与增益" },
-  hotwords: { title: "热词替换", subtitle: "识别后自动替换（AI 纠错之后执行）" },
+  hotwords: { title: "热词替换", subtitle: "识别后自动替换（AI 润色之后执行）" },
   log: { title: "日志", subtitle: "日志级别与文件位置" },
 };
 
@@ -133,35 +136,8 @@ export function SettingsView({ section }: { section: SettingsSection }) {
         </section>
       )}
 
-      {section === "correct" && (
-        <section className="card space-y-3.5">
-          <Field label="纠错模式">
-            <select
-              className="input"
-              value={cfg.correct_mode}
-              onChange={(e) => update("correct_mode", e.target.value)}
-            >
-              {CORRECT_MODES.map((m) => (
-                <option key={m.value} value={m.value}>{m.label}</option>
-              ))}
-            </select>
-          </Field>
-          {cfg.correct_mode !== "off" && (
-            <>
-              <TextField label="API 地址" value={cfg.correct_url} onChange={(v) => update("correct_url", v)} />
-              <TextField label="模型名称" value={cfg.correct_model} onChange={(v) => update("correct_model", v)} />
-              <TextField label="API Key" value={cfg.correct_api_key} onChange={(v) => update("correct_api_key", v)} password />
-              <Field label="超时（秒）">
-                <input
-                  type="number"
-                  className="input"
-                  value={cfg.correct_timeout}
-                  onChange={(e) => update("correct_timeout", parseInt(e.target.value) || 10)}
-                />
-              </Field>
-            </>
-          )}
-        </section>
+      {section === "polish" && (
+        <PolishSection cfg={cfg} setCfg={setCfg} />
       )}
 
       {section === "record" && (
@@ -388,6 +364,318 @@ async function handleImportCsv(setCfg: (c: Config) => void, cfg: Config) {
   } catch (e) {
     alert(`导入失败：${e}`);
   }
+}
+
+function PolishSection({
+  cfg,
+  setCfg,
+}: {
+  cfg: Config;
+  setCfg: (c: Config) => void;
+}) {
+  const [expanded, setExpanded] = useState<Set<string>>(
+    () => new Set([cfg.active_profile_id]),
+  );
+  const profiles = cfg.polish_profiles;
+  const multi = profiles.length > 1;
+
+  const replaceProfiles = (next: PolishProfile[], nextActive?: string) => {
+    setCfg({
+      ...cfg,
+      polish_profiles: next,
+      active_profile_id: nextActive ?? cfg.active_profile_id,
+    });
+  };
+
+  const updateProfile = (id: string, patch: Partial<PolishProfile>) => {
+    replaceProfiles(profiles.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  };
+
+  const addProfile = () => {
+    const id = cryptoId();
+    const newProfile: PolishProfile = {
+      id,
+      name: "新 Profile",
+      mode: "off",
+      url: "http://localhost:11434/api/generate",
+      model: "qwen2.5:3b",
+      api_key: "",
+      prompt: "润色以下文字，保留原意：\n\n{text}",
+    };
+    replaceProfiles([...profiles, newProfile]);
+    setExpanded((s) => new Set(s).add(id));
+  };
+
+  const duplicateProfile = (id: string) => {
+    const src = profiles.find((p) => p.id === id);
+    if (!src) return;
+    const newId = cryptoId();
+    const copy: PolishProfile = { ...src, id: newId, name: `${src.name} · 副本` };
+    const idx = profiles.findIndex((p) => p.id === id);
+    const next = [...profiles.slice(0, idx + 1), copy, ...profiles.slice(idx + 1)];
+    replaceProfiles(next);
+    setExpanded((s) => new Set(s).add(newId));
+  };
+
+  const removeProfile = (id: string) => {
+    if (profiles.length <= 1) return; // 至少保留 1 个
+    const next = profiles.filter((p) => p.id !== id);
+    const nextActive =
+      cfg.active_profile_id === id ? next[0].id : cfg.active_profile_id;
+    replaceProfiles(next, nextActive);
+  };
+
+  const toggleExpanded = (id: string) => {
+    setExpanded((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  };
+
+  return (
+    <>
+      {multi && (
+        <section className="card">
+          <div className="flex items-center gap-3">
+            <label className="label !mb-0 min-w-24">当前 Profile</label>
+            <select
+              className="input flex-1"
+              value={cfg.active_profile_id}
+              onChange={(e) =>
+                setCfg({ ...cfg, active_profile_id: e.target.value })
+              }
+            >
+              {profiles.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </div>
+          <p className="text-[11px] text-gray-500 mt-2">
+            或从菜单栏托盘图标里快速切换（无需打开设置）
+          </p>
+        </section>
+      )}
+
+      <section className="card space-y-3">
+        <div className="section-title">📚 Profiles</div>
+        {profiles.map((profile) => (
+          <ProfileCard
+            key={profile.id}
+            profile={profile}
+            active={profile.id === cfg.active_profile_id}
+            expanded={expanded.has(profile.id)}
+            canDelete={profiles.length > 1}
+            onToggleExpanded={() => toggleExpanded(profile.id)}
+            onSetActive={() =>
+              setCfg({ ...cfg, active_profile_id: profile.id })
+            }
+            onChange={(patch) => updateProfile(profile.id, patch)}
+            onDuplicate={() => duplicateProfile(profile.id)}
+            onDelete={() => removeProfile(profile.id)}
+          />
+        ))}
+        <button
+          className="w-full py-2.5 rounded-xl bg-white/[0.03] border border-dashed border-white/10 text-gray-400 hover:bg-white/[0.05] hover:text-gray-200 hover:border-white/20 transition text-sm"
+          onClick={addProfile}
+        >
+          ＋ 添加 Profile
+        </button>
+      </section>
+
+      <section className="card">
+        <Field label="请求超时（秒）">
+          <input
+            type="number"
+            className="input"
+            value={cfg.correct_timeout}
+            onChange={(e) =>
+              setCfg({
+                ...cfg,
+                correct_timeout: parseInt(e.target.value) || 10,
+              })
+            }
+          />
+          <p className="text-[11px] text-gray-500 mt-1">
+            所有 profile 共享；超过这个时间 LLM 没返回就使用原文
+          </p>
+        </Field>
+      </section>
+    </>
+  );
+}
+
+function ProfileCard({
+  profile,
+  active,
+  expanded,
+  canDelete,
+  onToggleExpanded,
+  onSetActive,
+  onChange,
+  onDuplicate,
+  onDelete,
+}: {
+  profile: PolishProfile;
+  active: boolean;
+  expanded: boolean;
+  canDelete: boolean;
+  onToggleExpanded: () => void;
+  onSetActive: () => void;
+  onChange: (patch: Partial<PolishProfile>) => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+}) {
+  const modelHint =
+    profile.mode === "off"
+      ? "—"
+      : `${profile.mode}/${profile.model || "(未设)"}`;
+
+  return (
+    <div
+      className={
+        "rounded-xl border transition " +
+        (active
+          ? "border-green-400/40 bg-green-400/[0.03]"
+          : "border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12]")
+      }
+    >
+      <div
+        className="flex items-center gap-2 px-3.5 py-2.5 cursor-pointer"
+        onClick={onToggleExpanded}
+      >
+        <span className="text-sm text-gray-100 font-medium">{profile.name}</span>
+        {active && (
+          <span className="px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-green-400/10 text-green-400 border border-green-400/25">
+            活跃
+          </span>
+        )}
+        <span className="flex-1" />
+        <span className="text-[11px] text-gray-500 font-mono px-1.5 py-0.5 rounded bg-white/5">
+          {modelHint}
+        </span>
+        {!active && (
+          <button
+            title="设为活跃"
+            className="w-7 h-7 rounded-md text-gray-500 hover:bg-white/[0.06] hover:text-gray-200 flex items-center justify-center transition text-xs"
+            onClick={(e) => {
+              e.stopPropagation();
+              onSetActive();
+            }}
+          >
+            ○
+          </button>
+        )}
+        <button
+          title="展开 / 折叠"
+          className="icon-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleExpanded();
+          }}
+        >
+          {expanded ? "▼" : "▸"}
+        </button>
+        <button
+          title="复制"
+          className="icon-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDuplicate();
+          }}
+        >
+          ⎘
+        </button>
+        <button
+          title={canDelete ? "删除" : "至少保留一个 profile"}
+          className={
+            "w-7 h-7 rounded-md flex items-center justify-center transition text-xs " +
+            (canDelete
+              ? "text-gray-500 hover:bg-red-500/15 hover:text-red-400"
+              : "text-gray-700 cursor-not-allowed opacity-40")
+          }
+          disabled={!canDelete}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!canDelete) return;
+            if (confirm(`删除 profile「${profile.name}」？`)) onDelete();
+          }}
+        >
+          ✕
+        </button>
+      </div>
+      {expanded && (
+        <div className="px-3.5 pb-3.5 border-t border-white/5 pt-3 space-y-3">
+          <Field label="名称">
+            <input
+              className="input"
+              value={profile.name}
+              onChange={(e) => onChange({ name: e.target.value })}
+            />
+          </Field>
+          <Field label="润色后端">
+            <select
+              className="input"
+              value={profile.mode}
+              onChange={(e) => onChange({ mode: e.target.value })}
+            >
+              {POLISH_MODES.map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+            </select>
+          </Field>
+          {profile.mode !== "off" && (
+            <>
+              <TextField
+                label={profile.mode === "ollama" ? "Ollama API 地址" : "API 地址"}
+                value={profile.url}
+                onChange={(v) => onChange({ url: v })}
+              />
+              <TextField
+                label="模型"
+                value={profile.model}
+                onChange={(v) => onChange({ model: v })}
+              />
+              <TextField
+                label="API Key"
+                value={profile.api_key}
+                onChange={(v) => onChange({ api_key: v })}
+                password
+              />
+              <Field
+                label={
+                  <>
+                    <span>Prompt 模板</span>
+                    <span className="ml-auto text-[11px] text-gray-500 font-mono">
+                      {"{text}"} = 识别原文
+                    </span>
+                  </>
+                }
+              >
+                <textarea
+                  className="input font-mono text-[12px] leading-relaxed"
+                  rows={5}
+                  value={profile.prompt}
+                  onChange={(e) => onChange({ prompt: e.target.value })}
+                  placeholder="把下面这段语音识别结果润色为 ...：\n\n{text}"
+                />
+              </Field>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function cryptoId(): string {
+  // 浏览器原生 UUID → 取头 8 位够用
+  const u =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2);
+  return u.replace(/-/g, "").slice(0, 8);
 }
 
 function SaveIndicator({ state, errMsg }: { state: "idle" | "saving" | "saved" | "error"; errMsg: string }) {

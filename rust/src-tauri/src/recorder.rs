@@ -138,15 +138,16 @@ async fn run(
     }
     tracing::info!(text = %raw_text, "识别结果");
 
-    let corrected = match correct::correct(&raw_text, &cfg).await {
+    let profile = cfg.active_profile();
+    let corrected = match correct::correct(&raw_text, profile, cfg.correct_timeout_secs()).await {
         Ok(c) => c,
         Err(e) => {
-            tracing::warn!(error = ?e, "纠错失败，使用原文");
+            tracing::warn!(error = ?e, profile = %profile.name, "润色失败，使用原文");
             raw_text.clone()
         }
     };
     if corrected != raw_text {
-        tracing::info!(text = %corrected, "纠错结果");
+        tracing::info!(text = %corrected, profile = %profile.name, "润色结果");
     }
 
     let final_text = hotwords::apply(&corrected, &cfg.hotwords);

@@ -1,18 +1,12 @@
-//! AI 纠错：对 ASR 识别文本做后处理。
-//! 对应 Go 版的 correct.go。
+//! AI 润色：按当前活跃 profile 对 ASR 识别文本做后处理。
+//! 0.1.2 起接入多 profile，每个 profile 是一套完整的 (mode, url, model, api_key, prompt)。
 
 use crate::config::{
-    Config, CORRECT_MODE_CLOUD, CORRECT_MODE_OFF, CORRECT_MODE_OLLAMA, CORRECT_MODE_OPENROUTER,
+    PolishProfile, POLISH_MODE_CLOUD, POLISH_MODE_OFF, POLISH_MODE_OLLAMA, POLISH_MODE_OPENROUTER,
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-
-const CORRECTION_PROMPT: &str =
-    "你是一个语音识别纠错助手。用户通过语音输入文字，可能有同音字错误、漏字、多字等问题。
-请只纠正明显的语音识别错误，不要改变用户的意思，不要添加或删除内容。
-如果原文没有明显错误，直接返回原文。
-只输出纠正后的文本，不要解释。";
 
 const MAX_BODY_BYTES: usize = 64 * 1024;
 
@@ -46,106 +40,106 @@ struct OpenAIMessageOwned {
     content: String,
 }
 
-/// 主入口：按 cfg.correct_mode 分派。
-pub async fn correct(text: &str, cfg: &Config) -> Result<String> {
-    match cfg.correct_mode.as_str() {
-        CORRECT_MODE_OFF | "" => Ok(text.to_string()),
-        CORRECT_MODE_OLLAMA => correct_ollama(text, cfg).await,
-        CORRECT_MODE_OPENROUTER => correct_openrouter(text, cfg).await,
-        CORRECT_MODE_CLOUD => correct_cloud(text, cfg).await,
+/// 主入口：按 profile.mode 分派。
+/// profile.prompt 里的 `{text}` 会被替换为识别原文；没有占位符时把原文 append 到末尾。
+pub async fn correct(text: &str, profile: &PolishProfile, timeout_secs: u64) -> Result<String> {
+    match profile.mode.as_str() {
+        POLISH_MODE_OFF | "" => Ok(text.to_string()),
+        POLISH_MODE_OLLAMA => call_ollama(text, profile, timeout_secs).await,
+        POLISH_MODE_OPENROUTER => {
+            call_openai_compatible(
+                text,
+                profile,
+                "https://openrouter.ai/api/v1/chat/completions",
+                timeout_secs,
+            )
+            .await
+        }
+        POLISH_MODE_CLOUD => call_cloud(text, profile, timeout_secs).await,
         _ => Ok(text.to_string()),
     }
 }
 
-async fn correct_openrouter(text: &str, cfg: &Config) -> Result<String> {
-    if cfg.openrouter_api_key.is_empty() {
-        anyhow::bail!("请配置 OpenRouter API Key");
-    }
-    let model = if cfg.correct_model.is_empty() {
-        "qwen/qwen3-8b"
+/// 把 prompt 模板里的 {text} 占位符替换为实际文本；若模板里没占位符，把原文追加到末尾。
+fn render_prompt(profile: &PolishProfile, text: &str) -> (String, String) {
+    // 返回 (system, user)：我们把整段 prompt（替换后）作为 user，system 留空 —— 简化且更可控
+    // 也可以拆分 system / user，但多数用户不关心，放一起更直白
+    let body = if profile.prompt.contains("{text}") {
+        profile.prompt.replace("{text}", text)
     } else {
-        &cfg.correct_model
+        format!("{}\n\n原文：{}", profile.prompt, text)
     };
+    (String::new(), body)
+}
 
+async fn call_openai_compatible(
+    text: &str,
+    profile: &PolishProfile,
+    url: &str,
+    timeout_secs: u64,
+) -> Result<String> {
+    if profile.api_key.is_empty() {
+        anyhow::bail!("profile 「{}」缺少 API Key", profile.name);
+    }
+    let (_system, user) = render_prompt(profile, text);
     let body = OpenAIRequest {
-        model,
-        messages: vec![
-            OpenAIMessage {
-                role: "system",
-                content: CORRECTION_PROMPT,
-            },
-            OpenAIMessage {
-                role: "user",
-                content: text,
-            },
-        ],
+        model: &profile.model,
+        messages: vec![OpenAIMessage {
+            role: "user",
+            content: &user,
+        }],
     };
 
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(cfg.correct_timeout_secs()))
+        .timeout(Duration::from_secs(timeout_secs))
         .build()?;
     let resp = client
-        .post("https://openrouter.ai/api/v1/chat/completions")
-        .bearer_auth(&cfg.openrouter_api_key)
+        .post(url)
+        .bearer_auth(&profile.api_key)
         .json(&body)
         .send()
         .await
-        .context("call openrouter")?;
-
-    let status = resp.status();
-    let text_body = truncate_body(resp.text().await.unwrap_or_default());
-    if !status.is_success() {
-        anyhow::bail!("openrouter API {}: {}", status, text_body);
-    }
-    let parsed: OpenAIResponse = serde_json::from_str(&text_body)?;
-    Ok(parsed
-        .choices
-        .first()
-        .map(|c| c.message.content.trim().to_string())
-        .unwrap_or_else(|| text.to_string()))
+        .context("call openai compatible")?;
+    parse_openai_response(resp, text).await
 }
 
-async fn correct_cloud(text: &str, cfg: &Config) -> Result<String> {
-    let url = if cfg.correct_url.ends_with("/chat/completions") {
-        cfg.correct_url.clone()
+async fn call_cloud(text: &str, profile: &PolishProfile, timeout_secs: u64) -> Result<String> {
+    let url = if profile.url.ends_with("/chat/completions") {
+        profile.url.clone()
     } else {
-        format!(
-            "{}/v1/chat/completions",
-            cfg.correct_url.trim_end_matches('/')
-        )
+        format!("{}/v1/chat/completions", profile.url.trim_end_matches('/'))
     };
+    let (_system, user) = render_prompt(profile, text);
     let body = OpenAIRequest {
-        model: &cfg.correct_model,
-        messages: vec![
-            OpenAIMessage {
-                role: "system",
-                content: CORRECTION_PROMPT,
-            },
-            OpenAIMessage {
-                role: "user",
-                content: text,
-            },
-        ],
+        model: &profile.model,
+        messages: vec![OpenAIMessage {
+            role: "user",
+            content: &user,
+        }],
     };
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(cfg.correct_timeout_secs()))
+        .timeout(Duration::from_secs(timeout_secs))
         .build()?;
     let mut req = client.post(&url).json(&body);
-    if !cfg.correct_api_key.is_empty() {
-        req = req.bearer_auth(&cfg.correct_api_key);
+    if !profile.api_key.is_empty() {
+        req = req.bearer_auth(&profile.api_key);
     }
     let resp = req.send().await.context("call cloud endpoint")?;
+    parse_openai_response(resp, text).await
+}
+
+async fn parse_openai_response(resp: reqwest::Response, fallback: &str) -> Result<String> {
     let status = resp.status();
     let text_body = truncate_body(resp.text().await.unwrap_or_default());
     if !status.is_success() {
-        anyhow::bail!("cloud API {}: {}", status, text_body);
+        anyhow::bail!("API {}: {}", status, text_body);
     }
     let parsed: OpenAIResponse = serde_json::from_str(&text_body)?;
     Ok(parsed
         .choices
         .first()
         .map(|c| c.message.content.trim().to_string())
-        .unwrap_or_else(|| text.to_string()))
+        .unwrap_or_else(|| fallback.to_string()))
 }
 
 #[derive(Serialize)]
@@ -161,17 +155,18 @@ struct OllamaResponse {
     response: String,
 }
 
-async fn correct_ollama(text: &str, cfg: &Config) -> Result<String> {
+async fn call_ollama(text: &str, profile: &PolishProfile, timeout_secs: u64) -> Result<String> {
+    let (_system, user) = render_prompt(profile, text);
     let req = OllamaRequest {
-        model: &cfg.correct_model,
-        prompt: format!("{}\n\n原文：{}", CORRECTION_PROMPT, text),
+        model: &profile.model,
+        prompt: user,
         stream: false,
     };
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(cfg.correct_timeout_secs()))
+        .timeout(Duration::from_secs(timeout_secs))
         .build()?;
     let resp = client
-        .post(&cfg.correct_url)
+        .post(&profile.url)
         .json(&req)
         .send()
         .await
@@ -217,30 +212,45 @@ fn truncate_body(s: String) -> String {
 mod tests {
     use super::*;
 
+    fn off_profile() -> PolishProfile {
+        let mut p = PolishProfile::default_named("test", "test");
+        p.mode = "off".into();
+        p
+    }
+
     #[tokio::test]
     async fn off_mode_returns_original() {
-        let cfg = Config {
-            correct_mode: "off".into(),
-            ..Config::default()
-        };
-        assert_eq!(correct("hello", &cfg).await.unwrap(), "hello");
+        assert_eq!(correct("hello", &off_profile(), 10).await.unwrap(), "hello");
     }
 
     #[tokio::test]
     async fn empty_mode_returns_original() {
-        let cfg = Config {
-            correct_mode: String::new(),
-            ..Config::default()
-        };
-        assert_eq!(correct("hello", &cfg).await.unwrap(), "hello");
+        let mut p = off_profile();
+        p.mode = String::new();
+        assert_eq!(correct("hello", &p, 10).await.unwrap(), "hello");
     }
 
     #[tokio::test]
     async fn unknown_mode_returns_original() {
-        let cfg = Config {
-            correct_mode: "unknown".into(),
-            ..Config::default()
-        };
-        assert_eq!(correct("hello", &cfg).await.unwrap(), "hello");
+        let mut p = off_profile();
+        p.mode = "unknown".into();
+        assert_eq!(correct("hello", &p, 10).await.unwrap(), "hello");
+    }
+
+    #[test]
+    fn render_prompt_substitutes_placeholder() {
+        let mut p = off_profile();
+        p.prompt = "润色：{text}".into();
+        let (_, user) = render_prompt(&p, "hello");
+        assert_eq!(user, "润色：hello");
+    }
+
+    #[test]
+    fn render_prompt_appends_when_no_placeholder() {
+        let mut p = off_profile();
+        p.prompt = "请润色".into();
+        let (_, user) = render_prompt(&p, "hello");
+        assert!(user.contains("请润色"));
+        assert!(user.contains("原文：hello"));
     }
 }

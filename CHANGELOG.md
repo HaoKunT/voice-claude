@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- 新增：VAD 静音自动停止录音——检测到说话起点后，连续静音超过阈值就自动结束，不用再按一次热键；录音参数页可开关 + 调静音时长（0.5–5.0 秒）和音量触发阈值
+- 改：原「AI 纠错」改名为「AI 润色」，支持多个 profile（每个 profile 一套完整的后端 + 模型 + API Key + prompt 模板）；按场景切换，比如润色 / 改邮件风格 / 翻译等
+- 自动迁移：首次启动时把老的 `correct_*` 字段搬进一个名为「默认」的 profile，用户无感升级
+- Prompt 模板支持 `{text}` 占位符，替换为识别原文；没有占位符则把原文追加到末尾
+
 ## 0.1.1
 
 - 新增：应用内自动更新（Tauri updater + GitHub Release `latest.json`）——启动 1 秒后自动检查，有新版在关于页显示下载按钮，点一下自动下载并重启；ad-hoc 签名下 reqwest 下载的新 app 不带 quarantine，重启无感

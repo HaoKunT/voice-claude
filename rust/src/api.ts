@@ -1,6 +1,16 @@
 // Tauri IPC 调用封装。
 import { invoke } from "@tauri-apps/api/core";
 
+export interface PolishProfile {
+  id: string;
+  name: string;
+  mode: string;
+  url: string;
+  model: string;
+  api_key: string;
+  prompt: string;
+}
+
 export interface Config {
   asr_provider: string;
   asr_api_key: string;
@@ -11,10 +21,14 @@ export interface Config {
   volc_app_key: string;
   volc_access_token: string;
   volc_resource_id: string;
+  // 老的 correct_* 字段：后端迁移到 polish_profiles 后不再由前端直接编辑，
+  // 但保留在接口里以便 save 时原样回写（向后兼容）
   correct_mode: string;
   correct_url: string;
   correct_model: string;
   correct_api_key: string;
+  polish_profiles: PolishProfile[];
+  active_profile_id: string;
   hotkey: string;
   gain: number;
   device_name: string;
@@ -79,8 +93,8 @@ export const ASR_PROVIDERS = [
   { value: "local", label: "本地 SenseVoice（离线 / 隐私）" },
 ];
 
-export const CORRECT_MODES = [
-  { value: "off", label: "关闭" },
+export const POLISH_MODES = [
+  { value: "off", label: "关闭（原文直出）" },
   { value: "ollama", label: "Ollama 本地" },
   { value: "openrouter", label: "OpenRouter 云端" },
   { value: "cloud", label: "兼容 OpenAI API 的云端" },
