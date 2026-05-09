@@ -73,7 +73,35 @@ pub async fn check_ollama(url: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn open_logs() -> Result<(), String> {
-    open_path(&dirs::log_file_path().to_string_lossy())
+    // daily rotation 后 log_file_path() 的那个无后缀文件不再被写入，
+    // 改成找日志目录下 mtime 最新的 voice-claude.log* 文件打开；
+    // 完全没日志就退化为打开目录。
+    let dir = dirs::log_dir();
+    let mut latest: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if !name.to_string_lossy().starts_with("voice-claude.log") {
+                continue;
+            }
+            if let Ok(meta) = entry.metadata() {
+                if let Ok(mtime) = meta.modified() {
+                    if latest.as_ref().map_or(true, |(_, t)| mtime > *t) {
+                        latest = Some((entry.path(), mtime));
+                    }
+                }
+            }
+        }
+    }
+    match latest {
+        Some((p, _)) => open_path(&p.to_string_lossy()),
+        None => open_path(&dir.to_string_lossy()),
+    }
+}
+
+#[tauri::command]
+pub fn open_log_dir() -> Result<(), String> {
+    open_path(&dirs::log_dir().to_string_lossy())
 }
 
 #[derive(Serialize)]

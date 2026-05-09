@@ -86,6 +86,7 @@ export const api = {
   clearHistory: () => invoke<void>("clear_history"),
   checkOllama: (url: string) => invoke<void>("check_ollama", { url }),
   openLogs: () => invoke<void>("open_logs"),
+  openLogDir: () => invoke<void>("open_log_dir"),
   openConfigDir: () => invoke<void>("open_config_dir"),
   isSenseVoiceAvailable: () => invoke<boolean>("is_sense_voice_available"),
   getSenseVoiceInfo: () => invoke<SenseVoiceInfo>("get_sense_voice_info"),

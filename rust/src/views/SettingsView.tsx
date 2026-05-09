@@ -324,8 +324,8 @@ export function SettingsView({ section }: { section: SettingsSection }) {
             </select>
           </Field>
           <div className="flex gap-2 mt-3">
-            <button className="btn-ghost" onClick={() => api.openLogs()}>打开日志文件</button>
-            <button className="btn-ghost" onClick={() => api.openConfigDir()}>打开配置目录</button>
+            <button className="btn-ghost" onClick={() => api.openLogs()}>打开最新日志</button>
+            <button className="btn-ghost" onClick={() => api.openLogDir()}>打开日志目录</button>
           </div>
         </section>
       )}

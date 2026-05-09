@@ -153,6 +153,7 @@ pub fn run() {
             commands::clear_history,
             commands::check_ollama,
             commands::open_logs,
+            commands::open_log_dir,
             commands::open_config_dir,
             commands::is_sense_voice_available,
             commands::get_sense_voice_info,
