@@ -199,6 +199,90 @@ export function SettingsView({ section }: { section: SettingsSection }) {
               <span>1×</span><span>5×</span><span>10×</span>
             </div>
           </Field>
+
+          <div className="pt-3 border-t border-white/5 space-y-3.5">
+            <Field
+              label={
+                <>
+                  <span>静音自动停止（VAD）</span>
+                  <label className="ml-auto flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={cfg.vad_enabled}
+                      onChange={(e) => update("vad_enabled", e.target.checked)}
+                      className="accent-accent"
+                    />
+                    {cfg.vad_enabled ? "开启" : "关闭"}
+                  </label>
+                </>
+              }
+            >
+              <p className="text-[11px] text-gray-500 leading-relaxed mt-0.5">
+                检测到你开口后，连续静音超过下方时长就自动结束录音，不用再按一次热键。关了就回到"两次热键"手动模式。
+              </p>
+            </Field>
+
+            {cfg.vad_enabled && (
+              <>
+                <Field
+                  label={
+                    <>
+                      <span>静音时长阈值</span>
+                      <span className="ml-auto font-mono text-accent">
+                        {(cfg.vad_silence_ms / 1000).toFixed(1)} 秒
+                      </span>
+                    </>
+                  }
+                >
+                  <input
+                    type="range"
+                    min={500}
+                    max={5000}
+                    step={100}
+                    value={cfg.vad_silence_ms}
+                    onChange={(e) => update("vad_silence_ms", parseInt(e.target.value))}
+                    className="w-full accent-accent"
+                  />
+                  <div className="flex justify-between text-[10px] text-gray-600 mt-1 font-mono">
+                    <span>0.5s（反应快）</span>
+                    <span>1.5s</span>
+                    <span>5.0s（更包容）</span>
+                  </div>
+                </Field>
+
+                <Field
+                  label={
+                    <>
+                      <span>音量触发阈值</span>
+                      <span className="ml-auto font-mono text-accent">
+                        {cfg.vad_threshold.toFixed(3)}
+                      </span>
+                    </>
+                  }
+                >
+                  <input
+                    type="range"
+                    min={5}
+                    max={50}
+                    step={1}
+                    value={Math.round(cfg.vad_threshold * 1000)}
+                    onChange={(e) =>
+                      update("vad_threshold", parseInt(e.target.value) / 1000)
+                    }
+                    className="w-full accent-accent"
+                  />
+                  <div className="flex justify-between text-[10px] text-gray-600 mt-1 font-mono">
+                    <span>0.005（安静环境）</span>
+                    <span>0.015</span>
+                    <span>0.050（嘈杂环境）</span>
+                  </div>
+                  <p className="text-[11px] text-gray-500 leading-relaxed mt-1.5">
+                    如果在吵的环境里 VAD 不停，调高；如果说话不够响被误判为静音提前停了，调低。
+                  </p>
+                </Field>
+              </>
+            )}
+          </div>
         </section>
       )}
 

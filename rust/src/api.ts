@@ -21,6 +21,9 @@ export interface Config {
   correct_timeout: number;
   log_level: string;
   hotwords: Record<string, string>;
+  vad_enabled: boolean;
+  vad_silence_ms: number;
+  vad_threshold: number;
 }
 
 export interface DeviceInfo {
