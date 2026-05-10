@@ -1,9 +1,34 @@
-const SYMBOLS: Record<string, string> = {
+const IS_MAC =
+  typeof navigator !== "undefined" && /mac|iphone|ipad|ipod/i.test(navigator.platform);
+
+const SYMBOLS_MAC: Record<string, string> = {
   cmd: "⌘", command: "⌘", rcmd: "⌘", rcommand: "⌘",
   shift: "⇧", rshift: "⇧",
   alt: "⌥", option: "⌥", ralt: "⌥", roption: "⌥",
   ctrl: "⌃", control: "⌃", rctrl: "⌃",
+  space: "Space",
+  enter: "Enter", return: "Enter",
+  tab: "Tab",
+  esc: "Esc", escape: "Esc",
+  delete: "Delete",
+  backspace: "Backspace",
 };
+
+const SYMBOLS_WIN: Record<string, string> = {
+  cmd: "Ctrl", command: "Ctrl", rcmd: "Ctrl", rcommand: "Ctrl",
+  ctrl: "Ctrl", control: "Ctrl", rctrl: "Ctrl",
+  alt: "Alt", option: "Alt", ralt: "Alt", roption: "Alt",
+  shift: "Shift", rshift: "Shift",
+  win: "Win", super: "Win", meta: "Win",
+  space: "Space",
+  enter: "Enter", return: "Enter",
+  tab: "Tab",
+  esc: "Esc", escape: "Esc",
+  delete: "Delete",
+  backspace: "Backspace",
+};
+
+const SYMBOLS: Record<string, string> = IS_MAC ? SYMBOLS_MAC : SYMBOLS_WIN;
 
 export function parseHotkeyKeys(combo: string): string[] {
   return combo

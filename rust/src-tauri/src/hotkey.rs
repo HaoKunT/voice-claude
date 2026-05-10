@@ -10,6 +10,7 @@ use anyhow::{bail, Result};
 /// - ctrl / rctrl → Control
 /// - option / alt / ralt / roption → Alt
 /// - shift / rshift → Shift
+/// - win / super / meta → Super（Windows 键 / Super 键）
 /// - 主键（a-z, 0-9, f1-f24, space/tab/...）保持字母并首字母大写
 pub fn to_tauri_shortcut(input: &str) -> Result<String> {
     let parts: Vec<&str> = input.trim().split('+').map(str::trim).collect();
@@ -27,6 +28,7 @@ pub fn to_tauri_shortcut(input: &str) -> Result<String> {
             "ctrl" | "control" | "rctrl" => push_unique(&mut mods, "Control"),
             "option" | "alt" | "ralt" | "roption" => push_unique(&mut mods, "Alt"),
             "shift" | "rshift" => push_unique(&mut mods, "Shift"),
+            "win" | "super" | "meta" => push_unique(&mut mods, "Super"),
             other => {
                 if other.is_empty() {
                     bail!("热键段为空");
@@ -37,6 +39,12 @@ pub fn to_tauri_shortcut(input: &str) -> Result<String> {
     }
 
     let key = key.ok_or_else(|| anyhow::anyhow!("需要一个主键（如 space、a-z）"))?;
+    #[cfg(target_os = "windows")]
+    {
+        if mods.contains(&"Super") && key == "Space" {
+            bail!("win+space 是 Windows 系统保留快捷键（输入法/语言切换），无法注册");
+        }
+    }
     mods.push(&key);
     Ok(mods.join("+"))
 }
@@ -107,6 +115,14 @@ mod tests {
         assert_eq!(
             to_tauri_shortcut("rcmd+rshift+a").unwrap(),
             "CommandOrControl+Shift+A"
+        );
+    }
+
+    #[test]
+    fn parses_super_combo() {
+        assert_eq!(
+            to_tauri_shortcut("win+shift+f5").unwrap(),
+            "Super+Shift+F5"
         );
     }
 

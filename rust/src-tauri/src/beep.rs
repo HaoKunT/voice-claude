@@ -32,12 +32,16 @@ fn play_sound(which: Sound) {
 
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
         let ps = match which {
             Sound::Start => "[System.Media.SystemSounds]::Asterisk.Play()",
             Sound::Stop => "[System.Media.SystemSounds]::Beep.Play()",
         };
         let _ = Command::new("powershell")
-            .args(["-NoProfile", "-Command", ps])
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", ps])
+            .creation_flags(CREATE_NO_WINDOW)
             .spawn();
     }
 

@@ -135,6 +135,8 @@ fn default_correct_model() -> String {
     "qwen2.5:3b".into()
 }
 fn default_hotkey() -> String {
+    #[cfg(target_os = "windows")]
+    return "ctrl+shift+f5".into();
     "cmd+shift+f5".into()
 }
 fn default_gain() -> u8 {

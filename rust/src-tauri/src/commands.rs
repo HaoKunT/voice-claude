@@ -31,8 +31,6 @@ pub fn save_config(cfg: Config, state: State<'_, AppState>, app: AppHandle) -> R
     let prev_log_level = prev.log_level.clone();
     let new_hotkey = cfg.hotkey.clone();
     let new_log_level = cfg.log_level.clone();
-    cfg.save().map_err(|e| e.to_string())?;
-    state.replace(cfg);
     // 热键变了就重新注册全局热键，否则老 accelerator 还挂着、新的没生效
     if new_hotkey != prev_hotkey {
         if let Err(e) = crate::register_hotkey(&app, &new_hotkey) {
@@ -40,6 +38,13 @@ pub fn save_config(cfg: Config, state: State<'_, AppState>, app: AppHandle) -> R
             return Err(format!("热键注册失败：{}", e));
         }
     }
+    if let Err(e) = cfg.save() {
+        if new_hotkey != prev_hotkey {
+            let _ = crate::register_hotkey(&app, &prev_hotkey);
+        }
+        return Err(e.to_string());
+    }
+    state.replace(cfg);
     // 日志级别变了就热替换 tracing EnvFilter
     if new_log_level != prev_log_level {
         crate::logger::reload(&new_log_level);

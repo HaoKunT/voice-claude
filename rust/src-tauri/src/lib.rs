@@ -38,12 +38,14 @@ use tauri_plugin_global_shortcut::GlobalShortcutExt;
 /// 应用状态：配置 + 运行时可变数据。
 pub struct AppState {
     pub config: Mutex<Arc<config::Config>>,
+    pub registered_hotkey: Mutex<Option<String>>,
 }
 
 impl AppState {
     pub fn new(cfg: config::Config) -> Self {
         Self {
             config: Mutex::new(Arc::new(cfg)),
+            registered_hotkey: Mutex::new(None),
         }
     }
 
@@ -62,10 +64,6 @@ pub fn register_hotkey(app: &tauri::AppHandle, hotkey_str: &str) -> anyhow::Resu
     let accel = hotkey::to_tauri_shortcut(hotkey_str)
         .map_err(|e| anyhow::anyhow!("热键解析失败：{}", e))?;
     let gs = app.global_shortcut();
-    // 先全部注销，避免多次注册导致的冲突或旧热键残留
-    if let Err(e) = gs.unregister_all() {
-        tracing::warn!(error = ?e, "unregister_all 失败（可能之前没有绑定），忽略");
-    }
     let handle = app.clone();
     gs.on_shortcut(accel.as_str(), move |_app, _shortcut, event| {
         use tauri_plugin_global_shortcut::ShortcutState;
@@ -76,6 +74,16 @@ pub fn register_hotkey(app: &tauri::AppHandle, hotkey_str: &str) -> anyhow::Resu
         }
     })
     .map_err(|e| anyhow::anyhow!("注册热键失败：{}", e))?;
+    let state = app.state::<AppState>();
+    let prev = state.registered_hotkey.lock().clone();
+    if let Some(prev) = prev {
+        if prev != accel {
+            if let Err(e) = gs.unregister(prev.as_str()) {
+                tracing::warn!(error = ?e, "注销旧热键失败，忽略");
+            }
+        }
+    }
+    *state.registered_hotkey.lock() = Some(accel.clone());
     tracing::info!(hotkey = %accel, "热键已注册");
     Ok(())
 }
