@@ -13,16 +13,30 @@ const SMOOTH = 0.65;
 const canvas = document.getElementById("wave") as HTMLCanvasElement;
 const ctx = canvas.getContext("2d")!;
 
-const dpr = window.devicePixelRatio || 2;
-canvas.width = canvas.clientWidth * dpr;
-canvas.height = canvas.clientHeight * dpr;
-ctx.scale(dpr, dpr);
+/// 同步 canvas backing store 尺寸到 CSS 尺寸。必须在 layout 完成后调。
+/// 之前 module load 时直接读 clientWidth，新 DOM（多嵌套一层 recording-view）
+/// 有时 layout 还没算完导致尺寸为 0，render 全画到空 canvas 上波形不见。
+function resizeCanvasIfNeeded() {
+  const cw = canvas.clientWidth;
+  const ch = canvas.clientHeight;
+  if (cw === 0 || ch === 0) return;
+  const dpr = window.devicePixelRatio || 2;
+  const wantedW = cw * dpr;
+  const wantedH = ch * dpr;
+  if (canvas.width === wantedW && canvas.height === wantedH) return;
+  canvas.width = wantedW;
+  canvas.height = wantedH;
+  ctx.resetTransform();
+  ctx.scale(dpr, dpr);
+}
 
 // ==== 波形渲染 ====
 
 function render() {
+  resizeCanvasIfNeeded();
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
+  if (w === 0 || h === 0) return;
   ctx.clearRect(0, 0, w, h);
 
   const totalW = BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP;
