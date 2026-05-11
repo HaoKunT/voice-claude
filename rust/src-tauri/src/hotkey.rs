@@ -120,10 +120,7 @@ mod tests {
 
     #[test]
     fn parses_super_combo() {
-        assert_eq!(
-            to_tauri_shortcut("win+shift+f5").unwrap(),
-            "Super+Shift+F5"
-        );
+        assert_eq!(to_tauri_shortcut("win+shift+f5").unwrap(), "Super+Shift+F5");
     }
 
     #[test]
