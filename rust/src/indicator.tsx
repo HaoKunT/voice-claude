@@ -3,6 +3,18 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { parseHotkeyKeys, formatHotkeyKey } from "./lib/hotkey";
 
+// 临时 debug：在悬浮窗左上显示"模块加载 / 最近事件 / 当前 view"，
+// 方便线上环境（release 无 devtools）确认 JS 跑到哪
+const debugEl = document.createElement("div");
+debugEl.style.cssText =
+  "position:fixed;top:4px;left:8px;font-size:9px;color:rgba(255,255,255,0.4);font-family:ui-monospace,monospace;z-index:999;pointer-events:none;line-height:1.3;";
+document.body.appendChild(debugEl);
+const dbgState = { loaded: new Date().toLocaleTimeString(), lastEvent: "-", view: "-" };
+function paintDebug() {
+  debugEl.textContent = `loaded ${dbgState.loaded}\nevent  ${dbgState.lastEvent}\nview   ${dbgState.view}`;
+}
+paintDebug();
+
 const BAR_COUNT = 40;
 const BAR_WIDTH = 6;
 const BAR_GAP = 10;
@@ -107,6 +119,8 @@ function showView(which: "recording" | "processing" | "result") {
   recordingViewEl.hidden = which !== "recording";
   processingViewEl.hidden = which !== "processing";
   resultViewEl.hidden = which !== "result";
+  dbgState.view = which;
+  paintDebug();
 }
 
 function renderHotkeyHint(hotkey: string) {
@@ -183,6 +197,8 @@ interface RecordingStartedPayload {
 }
 
 listen<RecordingStartedPayload>("recording-started", (e) => {
+  dbgState.lastEvent = `started @ ${new Date().toLocaleTimeString()}`;
+  paintDebug();
   showView("recording");
   startTimer();
   statusTextEl.textContent = "录音中";
@@ -193,6 +209,8 @@ listen<RecordingStartedPayload>("recording-started", (e) => {
 });
 
 listen("recording-stopped", () => {
+  dbgState.lastEvent = `stopped @ ${new Date().toLocaleTimeString()}`;
+  paintDebug();
   stopTimer();
   // 录音结束 → 进入润色 / 处理中态；input 模式下很快就会被 hide 一闪而过
   // panel 模式下会等 asr-final-text 到达再切 result
@@ -200,6 +218,8 @@ listen("recording-stopped", () => {
 });
 
 listen<string>("asr-final-text", (e) => {
+  dbgState.lastEvent = `final @ ${new Date().toLocaleTimeString()}`;
+  paintDebug();
   resultTextEl.value = e.payload ?? "";
   showView("result");
   copyBtn.textContent = "📋 复制";
