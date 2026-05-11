@@ -12,6 +12,7 @@ import {
   SenseVoiceInfo,
 } from "../api";
 import { parseHotkeyKeys, formatHotkeyKey, validateHotkey } from "../lib/hotkey";
+import { PROMPT_TEMPLATES, PromptTemplate } from "../lib/promptTemplates";
 
 export type SettingsSection = "asr" | "polish" | "record" | "hotwords" | "log";
 
@@ -537,6 +538,7 @@ function PolishSection({
   const [expanded, setExpanded] = useState<Set<string>>(
     () => new Set([cfg.active_profile_id]),
   );
+  const [showTemplates, setShowTemplates] = useState(false);
   const profiles = cfg.polish_profiles;
   const multi = profiles.length > 1;
 
@@ -565,6 +567,23 @@ function PolishSection({
     };
     replaceProfiles([...profiles, newProfile]);
     setExpanded((s) => new Set(s).add(id));
+    setShowTemplates(false);
+  };
+
+  const addFromTemplate = (t: PromptTemplate) => {
+    const id = cryptoId();
+    const newProfile: PolishProfile = {
+      id,
+      name: t.name,
+      mode: t.mode,
+      url: t.mode === "ollama" ? "http://localhost:11434/api/generate" : "",
+      model: "",
+      api_key: "",
+      prompt: t.prompt,
+    };
+    replaceProfiles([...profiles, newProfile]);
+    setExpanded((s) => new Set(s).add(id));
+    setShowTemplates(false);
   };
 
   const duplicateProfile = (id: string) => {
@@ -637,12 +656,41 @@ function PolishSection({
             onDelete={() => removeProfile(profile.id)}
           />
         ))}
-        <button
-          className="w-full py-2.5 rounded-xl bg-white/[0.03] border border-dashed border-white/10 text-gray-400 hover:bg-white/[0.05] hover:text-gray-200 hover:border-white/20 transition text-sm"
-          onClick={addProfile}
-        >
-          ＋ 添加 Profile
-        </button>
+        <div className="flex gap-2">
+          <button
+            className="flex-1 py-2.5 rounded-xl bg-white/[0.03] border border-dashed border-white/10 text-gray-400 hover:bg-white/[0.05] hover:text-gray-200 hover:border-white/20 transition text-sm"
+            onClick={addProfile}
+          >
+            ＋ 空白 Profile
+          </button>
+          <button
+            className={
+              "flex-1 py-2.5 rounded-xl border transition text-sm " +
+              (showTemplates
+                ? "bg-accent/10 border-accent/30 text-accent"
+                : "bg-white/[0.03] border-dashed border-white/10 text-gray-400 hover:bg-white/[0.05] hover:text-gray-200 hover:border-white/20")
+            }
+            onClick={() => setShowTemplates((s) => !s)}
+          >
+            📋 从模板{showTemplates ? " ▲" : " ▼"}
+          </button>
+        </div>
+        {showTemplates && (
+          <div className="grid gap-2 mt-2">
+            {PROMPT_TEMPLATES.map((t) => (
+              <button
+                key={t.id}
+                className="text-left p-3 rounded-lg bg-white/[0.02] hover:bg-white/[0.06] border border-white/[0.06] hover:border-white/[0.15] transition"
+                onClick={() => addFromTemplate(t)}
+              >
+                <div className="text-sm font-medium text-gray-100">{t.name}</div>
+                <div className="text-[11px] text-gray-500 mt-0.5 leading-relaxed">
+                  {t.description}
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="card">
