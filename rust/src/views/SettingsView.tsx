@@ -5,6 +5,7 @@ import {
   api,
   ASR_PROVIDERS,
   POLISH_MODES,
+  OUTPUT_MODES,
   Config,
   DeviceInfo,
   DownloadProgress,
@@ -186,6 +187,24 @@ export function SettingsView({ section }: { section: SettingsSection }) {
                 </p>
               ) : null;
             })()}
+          </Field>
+          <Field label="输出方式">
+            <select
+              className="input"
+              value={cfg.output_mode}
+              onChange={(e) => update("output_mode", e.target.value)}
+            >
+              {OUTPUT_MODES.map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+            </select>
+            <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+              {cfg.output_mode === "panel"
+                ? "识别结果会停留在悬浮窗里，手动点复制；适合想先看一眼再决定粘贴位置的场景。"
+                : cfg.output_mode === "clipboard"
+                  ? "识别结果写进剪贴板，自己 Cmd+V 粘贴；某些键盘模拟失灵的 app 可以用这个。"
+                  : "自动模拟键盘输入到当前焦点窗口，最省事（默认）。"}
+            </p>
           </Field>
           <Field label={<><span>信号增益</span><span className="ml-auto font-mono text-accent">{cfg.gain}×</span></>}>
             <input

@@ -33,15 +33,20 @@ fn recording() -> &'static RecordingState {
 }
 
 /// Drop guard：任何路径（正常返回 / ? / panic）结束 run 函数时，
-/// 停止音量推送 + 关闭悬浮 indicator。
+/// 停止音量推送 + 关闭悬浮 indicator（除非 keep_indicator 设为 true）。
 struct RecordingGuard {
     app: AppHandle,
     level_stop: Arc<AtomicBool>,
+    /// panel 输出模式下，成功识别后把它 store(true)，guard drop 时就不 hide 悬浮窗
+    keep_indicator: Arc<AtomicBool>,
 }
 
 impl Drop for RecordingGuard {
     fn drop(&mut self) {
         self.level_stop.store(true, Ordering::Relaxed);
+        if self.keep_indicator.load(Ordering::Relaxed) {
+            return;
+        }
         let hide_app = self.app.clone();
         let _ = self.app.run_on_main_thread(move || {
             crate::indicator::hide(&hide_app);
@@ -49,8 +54,16 @@ impl Drop for RecordingGuard {
     }
 }
 
-fn scopeguard(app: AppHandle, level_stop: Arc<AtomicBool>) -> RecordingGuard {
-    RecordingGuard { app, level_stop }
+fn scopeguard(
+    app: AppHandle,
+    level_stop: Arc<AtomicBool>,
+    keep_indicator: Arc<AtomicBool>,
+) -> RecordingGuard {
+    RecordingGuard {
+        app,
+        level_stop,
+        keep_indicator,
+    }
 }
 
 /// 切换录音状态：首次调用开始，再次调用停止。
@@ -96,7 +109,12 @@ async fn run(
 
     // guard：无论正常 / 提前 return / panic，都关闭 indicator + stop level task
     let level_stop = Arc::new(AtomicBool::new(false));
-    let _guard = scopeguard(app.clone(), Arc::clone(&level_stop));
+    let keep_indicator = Arc::new(AtomicBool::new(false));
+    let _guard = scopeguard(
+        app.clone(),
+        Arc::clone(&level_stop),
+        Arc::clone(&keep_indicator),
+    );
 
     let rec = Arc::new(Recorder::new(cfg.gain, &cfg.device_name));
 
@@ -164,9 +182,29 @@ async fn run(
         let _ = crate::tray::refresh(&refresh_app);
     });
 
-    tracing::info!(text = %final_text, "输入文字");
-    if let Err(e) = input::type_text(&final_text) {
-        tracing::error!(error = ?e, "键盘输入失败");
+    use crate::config::{OUTPUT_MODE_CLIPBOARD, OUTPUT_MODE_PANEL};
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    match cfg.output_mode.as_str() {
+        OUTPUT_MODE_PANEL => {
+            tracing::info!(text = %final_text, "panel 输出：结果显示在悬浮窗");
+            keep_indicator.store(true, Ordering::Relaxed);
+            let _ = app.emit("asr-final-text", final_text.clone());
+        }
+        OUTPUT_MODE_CLIPBOARD => {
+            tracing::info!(text = %final_text, "剪贴板输出");
+            if let Err(e) = app.clipboard().write_text(final_text.clone()) {
+                tracing::warn!(error = ?e, "剪贴板写入失败，fallback 键盘输入");
+                if let Err(e2) = input::type_text(&final_text) {
+                    tracing::error!(error = ?e2, "键盘输入也失败");
+                }
+            }
+        }
+        _ => {
+            tracing::info!(text = %final_text, "键盘输入");
+            if let Err(e) = input::type_text(&final_text) {
+                tracing::error!(error = ?e, "键盘输入失败");
+            }
+        }
     }
     Ok(())
 }

@@ -18,6 +18,10 @@ pub const POLISH_MODE_OLLAMA: &str = "ollama";
 pub const POLISH_MODE_OPENROUTER: &str = "openrouter";
 pub const POLISH_MODE_CLOUD: &str = "cloud";
 
+pub const OUTPUT_MODE_INPUT: &str = "input";
+pub const OUTPUT_MODE_CLIPBOARD: &str = "clipboard";
+pub const OUTPUT_MODE_PANEL: &str = "panel";
+
 pub const DEFAULT_PROFILE_ID: &str = "default";
 pub const DEFAULT_POLISH_PROMPT: &str =
     "你是一个语音识别润色助手。用户通过语音输入文字，可能有同音字错误、漏字、多字等问题。
@@ -111,6 +115,8 @@ pub struct Config {
     pub vad_silence_ms: u32,
     #[serde(default = "default_vad_threshold")]
     pub vad_threshold: f32,
+    #[serde(default = "default_output_mode")]
+    pub output_mode: String,
 }
 
 fn default_asr_provider() -> String {
@@ -157,6 +163,9 @@ fn default_vad_silence_ms() -> u32 {
 fn default_vad_threshold() -> f32 {
     0.015
 }
+fn default_output_mode() -> String {
+    OUTPUT_MODE_INPUT.into()
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -185,6 +194,7 @@ impl Default for Config {
             vad_enabled: default_vad_enabled(),
             vad_silence_ms: default_vad_silence_ms(),
             vad_threshold: default_vad_threshold(),
+            output_mode: default_output_mode(),
         }
     }
 }

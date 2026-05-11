@@ -38,6 +38,7 @@ export interface Config {
   vad_enabled: boolean;
   vad_silence_ms: number;
   vad_threshold: number;
+  output_mode: string;
 }
 
 export interface DeviceInfo {
@@ -115,4 +116,10 @@ export const POLISH_MODES = [
   { value: "ollama", label: "Ollama 本地" },
   { value: "openrouter", label: "OpenRouter 云端" },
   { value: "cloud", label: "兼容 OpenAI API 的云端" },
+];
+
+export const OUTPUT_MODES = [
+  { value: "input", label: "自动输入到当前焦点窗口（默认）" },
+  { value: "clipboard", label: "复制到剪贴板，用户自己粘贴" },
+  { value: "panel", label: "显示在悬浮窗，手动点复制" },
 ];

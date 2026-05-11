@@ -134,20 +134,76 @@
         font-size: 9px;
         color: rgba(220, 220, 230, 1);
       }
+
+      /* 识别结果态（panel output mode 用） */
+      .result-text {
+        max-width: 460px;
+        max-height: 60px;
+        overflow-y: auto;
+        font-size: 14px;
+        line-height: 1.5;
+        color: rgba(230, 230, 240, 0.95);
+        padding: 4px 8px;
+        text-align: left;
+      }
+      .result-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 4px;
+      }
+      .result-actions button {
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 6px;
+        padding: 5px 14px;
+        color: rgba(220, 220, 230, 0.95);
+        font-family: inherit;
+        font-size: 12px;
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+      .result-actions button:hover {
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .result-actions .btn-primary {
+        background: linear-gradient(135deg, #9b87f5, #b490ff);
+        border-color: transparent;
+        color: white;
+      }
+      .result-actions .btn-primary:hover {
+        opacity: 0.9;
+      }
+      .result-actions .copied {
+        background: rgba(74, 222, 128, 0.15) !important;
+        border-color: rgba(74, 222, 128, 0.4) !important;
+        color: rgb(134, 239, 172) !important;
+      }
     </style>
   </head>
   <body>
     <div class="panel">
-      <canvas id="wave" width="920" height="120"></canvas>
-      <div class="partial empty" id="partial">等待语音…</div>
-      <div class="bottom">
-        <div class="status">
-          <span class="pulse"></span>
-          <span id="status-text">录音中</span>
-          <span class="timer" id="timer">00:00</span>
+      <!-- 录音 / 处理中态 -->
+      <div id="recording-view">
+        <canvas id="wave" width="920" height="120"></canvas>
+        <div class="partial empty" id="partial">等待语音…</div>
+        <div class="bottom">
+          <div class="status">
+            <span class="pulse"></span>
+            <span id="status-text">录音中</span>
+            <span class="timer" id="timer">00:00</span>
+          </div>
+          <div style="opacity: 0.8">
+            再按 <kbd id="kbd-1">⌘</kbd><kbd id="kbd-2">⇧</kbd><kbd id="kbd-3">F5</kbd> 结束
+          </div>
         </div>
-        <div style="opacity: 0.8">
-          再按 <kbd id="kbd-1">⌘</kbd><kbd id="kbd-2">⇧</kbd><kbd id="kbd-3">F5</kbd> 结束
+      </div>
+
+      <!-- 已识别态（panel output mode 用），默认隐藏 -->
+      <div id="result-view" hidden>
+        <div class="result-text" id="result-text"></div>
+        <div class="result-actions">
+          <button id="result-copy" class="btn-primary">📋 复制</button>
+          <button id="result-close">✕ 关闭</button>
         </div>
       </div>
     </div>

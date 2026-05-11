@@ -162,6 +162,7 @@ pub fn run() {
             commands::check_ollama,
             commands::open_logs,
             commands::open_log_dir,
+            commands::close_indicator,
             commands::read_recent_logs,
             commands::open_config_dir,
             commands::is_sense_voice_available,

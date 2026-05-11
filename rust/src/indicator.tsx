@@ -1,5 +1,6 @@
 // 录音指示器：Raycast 风格波形 + 实时识别文字 + 录音计时
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 
 const BAR_COUNT = 40;
 const BAR_WIDTH = 6;
@@ -74,6 +75,25 @@ function raycastColor(pos: number, level: number): { r: number; g: number; b: nu
 const timerEl = document.getElementById("timer") as HTMLElement;
 const statusTextEl = document.getElementById("status-text") as HTMLElement;
 const partialEl = document.getElementById("partial") as HTMLElement;
+const recordingViewEl = document.getElementById("recording-view") as HTMLElement;
+const resultViewEl = document.getElementById("result-view") as HTMLElement;
+const resultTextEl = document.getElementById("result-text") as HTMLElement;
+const copyBtn = document.getElementById("result-copy") as HTMLButtonElement;
+const closeBtn = document.getElementById("result-close") as HTMLButtonElement;
+
+copyBtn.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(resultTextEl.textContent ?? "");
+    copyBtn.textContent = "✓ 已复制";
+    copyBtn.classList.add("copied");
+  } catch (e) {
+    copyBtn.textContent = "复制失败";
+  }
+});
+
+closeBtn.addEventListener("click", () => {
+  invoke("close_indicator").catch(() => {});
+});
 
 let startedAt = 0;
 let timerHandle: number | null = null;
@@ -122,6 +142,9 @@ listen<string>("asr-partial", (e) => {
 });
 
 listen("recording-started", () => {
+  // 切回录音态（清掉上次的 result-view）
+  recordingViewEl.hidden = false;
+  resultViewEl.hidden = true;
   startTimer();
   statusTextEl.textContent = "录音中";
   partialEl.textContent = "等待语音…";
@@ -131,7 +154,18 @@ listen("recording-started", () => {
 
 listen("recording-stopped", () => {
   stopTimer();
-  statusTextEl.textContent = "已停止";
+  statusTextEl.textContent = "处理中…";
+});
+
+// panel output mode：识别 + 润色 + 热词完成后，切到"已识别态"
+listen<string>("asr-final-text", (e) => {
+  const text = e.payload ?? "";
+  resultTextEl.textContent = text;
+  recordingViewEl.hidden = true;
+  resultViewEl.hidden = false;
+  // 复位复制按钮
+  copyBtn.textContent = "📋 复制";
+  copyBtn.classList.remove("copied");
 });
 
 // 页面加载时假设已经进入录音（悬浮窗只在录音时显示）

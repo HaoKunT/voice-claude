@@ -111,6 +111,16 @@ pub fn open_log_dir() -> Result<(), String> {
     open_path(&dirs::log_dir().to_string_lossy())
 }
 
+/// panel 输出模式下，悬浮窗里的 ✕ 按钮点击后调这个关窗口。
+#[tauri::command]
+pub fn close_indicator(app: AppHandle) -> Result<(), String> {
+    let app_for_hide = app.clone();
+    app.run_on_main_thread(move || {
+        crate::indicator::hide(&app_for_hide);
+    })
+    .map_err(|e| e.to_string())
+}
+
 /// 读取最新日志文件的最后 limit 行，返回给前端展示。
 #[tauri::command]
 pub fn read_recent_logs(limit: usize) -> Result<Vec<String>, String> {
