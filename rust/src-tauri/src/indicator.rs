@@ -14,7 +14,9 @@ use tauri::{AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuild
 
 const LABEL: &str = "indicator";
 const W: f64 = 520.0;
-const H: f64 = 140.0;
+// 180 足以在 panel 输出模式下容纳 textarea(40-80) + 按钮栏(~32) + padding；
+// 录音态下用 flex justify-center 居中显示波形+计时器，上下留白无碍
+const H: f64 = 180.0;
 
 /// macOS 的 NSWindowStyleMask 常量
 #[cfg(target_os = "macos")]
