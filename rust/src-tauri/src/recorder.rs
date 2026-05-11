@@ -289,9 +289,7 @@ async fn run_vad(
                     max_rms = max_observed_rms,
                     "VAD: 静音超时，自动停止"
                 );
-                if let Some(tx) = recording().stop_tx.lock().take() {
-                    let _ = tx.send(());
-                }
+                stop();
                 return;
             }
         }

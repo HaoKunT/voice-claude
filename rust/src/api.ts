@@ -116,15 +116,37 @@ export const ASR_PROVIDERS = [
   { value: "local", label: "本地 SenseVoice（离线 / 隐私）" },
 ];
 
+// 和 Rust config.rs 里 POLISH_MODE_* / OUTPUT_MODE_* 常量保持一致
+export const POLISH_MODE_OFF = "off";
+export const POLISH_MODE_OLLAMA = "ollama";
+export const POLISH_MODE_OPENROUTER = "openrouter";
+export const POLISH_MODE_CLOUD = "cloud";
+
 export const POLISH_MODES = [
-  { value: "off", label: "关闭（原文直出）" },
-  { value: "ollama", label: "Ollama 本地" },
-  { value: "openrouter", label: "OpenRouter 云端" },
-  { value: "cloud", label: "兼容 OpenAI API 的云端" },
+  { value: POLISH_MODE_OFF, label: "关闭（原文直出）" },
+  { value: POLISH_MODE_OLLAMA, label: "Ollama 本地" },
+  { value: POLISH_MODE_OPENROUTER, label: "OpenRouter 云端" },
+  { value: POLISH_MODE_CLOUD, label: "兼容 OpenAI API 的云端" },
 ];
 
+export const OUTPUT_MODE_INPUT = "input";
+export const OUTPUT_MODE_CLIPBOARD = "clipboard";
+export const OUTPUT_MODE_PANEL = "panel";
+
 export const OUTPUT_MODES = [
-  { value: "input", label: "自动输入到当前焦点窗口（默认）" },
-  { value: "clipboard", label: "复制到剪贴板，用户自己粘贴" },
-  { value: "panel", label: "显示在悬浮窗，手动点复制" },
+  {
+    value: OUTPUT_MODE_INPUT,
+    label: "自动输入到当前焦点窗口（默认）",
+    description: "自动模拟键盘输入到当前焦点窗口，最省事（默认）。",
+  },
+  {
+    value: OUTPUT_MODE_CLIPBOARD,
+    label: "复制到剪贴板，用户自己粘贴",
+    description: "识别结果写进剪贴板，自己 Cmd+V 粘贴；某些键盘模拟失灵的 app 可以用这个。",
+  },
+  {
+    value: OUTPUT_MODE_PANEL,
+    label: "显示在悬浮窗，手动点复制",
+    description: "识别结果会停留在悬浮窗里，手动点复制；适合想先看一眼再决定粘贴位置的场景。",
+  },
 ];

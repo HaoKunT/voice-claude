@@ -55,6 +55,24 @@ const MODIFIERS = new Set([
   "win", "super", "meta",
 ]);
 
+/// 把 KeyboardEvent.code 转成 Rust hotkey.rs 认识的主键字符串：
+/// KeyA → "a"、Digit1 → "1"、F5 → "f5"、Space → "space"、Enter → "enter" 等。
+/// 比直接用 e.key 稳定——不受 shift 大小写、输入法、AltGr 影响。
+export function keyCodeToName(code: string, fallback: string): string {
+  if (code.startsWith("Key")) return code.slice(3).toLowerCase();
+  if (code.startsWith("Digit")) return code.slice(5);
+  if (/^F\d{1,2}$/.test(code)) return code.toLowerCase();
+  const SPECIAL: Record<string, string> = {
+    Space: "space",
+    Enter: "enter",
+    Tab: "tab",
+    Backspace: "backspace",
+    Delete: "delete",
+    Escape: "esc",
+  };
+  return SPECIAL[code] ?? fallback.toLowerCase();
+}
+
 /// 前端实时校验，和 Rust hotkey::to_tauri_shortcut 的核心约束对齐：
 /// - 至少有 2 段（mod+key）
 /// - 至少有一个非 modifier 的主键

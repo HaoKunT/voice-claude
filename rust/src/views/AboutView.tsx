@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, AppInfo } from "../api";
+import { saveTextToFile, readTextFromFile } from "../lib/fileDialogHelpers";
 import { useUpdate } from "../contexts/UpdateContext";
 
 export function AboutView() {
@@ -228,17 +228,15 @@ export function AboutView() {
   );
 }
 
+const JSON_FILTERS = [{ name: "JSON", extensions: ["json"] }];
+
 async function handleExportConfig() {
   try {
     const json = await api.exportConfig();
-    const path = await saveDialog({
-      defaultPath: `voice-claude-config-${new Date().toISOString().slice(0, 10)}.json`,
-      filters: [{ name: "JSON", extensions: ["json"] }],
-    });
-    if (!path) return;
-    const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-    await writeTextFile(path, json);
-    alert("配置已导出 ✓");
+    const defaultName = `voice-claude-config-${new Date().toISOString().slice(0, 10)}.json`;
+    if (await saveTextToFile(json, defaultName, JSON_FILTERS)) {
+      alert("配置已导出 ✓");
+    }
   } catch (e) {
     alert(`导出失败：${e}`);
   }
@@ -246,11 +244,8 @@ async function handleExportConfig() {
 
 async function handleImportConfig() {
   try {
-    const selected = await openDialog({
-      filters: [{ name: "JSON", extensions: ["json"] }],
-      multiple: false,
-    });
-    if (!selected || typeof selected !== "string") return;
+    const json = await readTextFromFile(JSON_FILTERS);
+    if (json === null) return;
     if (
       !confirm(
         "导入会覆盖当前全部配置（profile / 热词 / 快捷键 / API Key 等）。\n\n继续？",
@@ -258,8 +253,6 @@ async function handleImportConfig() {
     ) {
       return;
     }
-    const { readTextFile } = await import("@tauri-apps/plugin-fs");
-    const json = await readTextFile(selected);
     await api.importConfig(json);
     alert("配置已导入 ✓\n\n建议关闭应用重新打开，确保所有窗口状态同步。");
   } catch (e) {

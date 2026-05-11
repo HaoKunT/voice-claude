@@ -142,7 +142,6 @@ listen<string>("asr-partial", (e) => {
 });
 
 listen("recording-started", () => {
-  // 切回录音态（清掉上次的 result-view）
   recordingViewEl.hidden = false;
   resultViewEl.hidden = true;
   startTimer();
@@ -157,13 +156,11 @@ listen("recording-stopped", () => {
   statusTextEl.textContent = "处理中…";
 });
 
-// panel output mode：识别 + 润色 + 热词完成后，切到"已识别态"
 listen<string>("asr-final-text", (e) => {
   const text = e.payload ?? "";
   resultTextEl.textContent = text;
   recordingViewEl.hidden = true;
   resultViewEl.hidden = false;
-  // 复位复制按钮
   copyBtn.textContent = "📋 复制";
   copyBtn.classList.remove("copied");
 });

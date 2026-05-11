@@ -118,20 +118,26 @@ pub fn export_config(state: State<'_, AppState>) -> Result<String, String> {
     serde_json::to_string_pretty(&*cfg).map_err(|e| e.to_string())
 }
 
-/// 从 JSON 字符串导入整个 config：反序列化 + save + 替换 AppState +
-/// 重注册 hotkey + reload log。失败时保持现状。
+/// 从 JSON 字符串导入整个 config。顺序：
+///   1. 反序列化 + 预校验 hotkey 字符串（不实注册，避免后面 save 失败时热键已改）
+///   2. save 到磁盘（可能 IO 失败）
+///   3. register_hotkey（真正注册系统热键）
+///   4. replace AppState + reload log + 广播
+/// 任一步骤失败前都没改状态，失败后磁盘/内存/系统热键保持一致。
 #[tauri::command]
 pub fn import_config(
     json: String,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let new_cfg: Config = serde_json::from_str(&json)
-        .map_err(|e| format!("JSON 解析失败：{}", e))?;
-    // 先做一次热键可注册性校验，避免导入后热键失效
+    let new_cfg: Config =
+        serde_json::from_str(&json).map_err(|e| format!("JSON 解析失败：{}", e))?;
+    // 预校验 hotkey 语法（Rust hotkey::to_tauri_shortcut），先不注册
+    crate::hotkey::to_tauri_shortcut(&new_cfg.hotkey)
+        .map_err(|e| format!("导入的热键无效：{}", e))?;
+    new_cfg.save().map_err(|e| e.to_string())?;
     crate::register_hotkey(&app, &new_cfg.hotkey)
         .map_err(|e| format!("导入的热键注册失败：{}", e))?;
-    new_cfg.save().map_err(|e| e.to_string())?;
     let new_log_level = new_cfg.log_level.clone();
     state.replace(new_cfg);
     crate::logger::reload(&new_log_level);
@@ -142,11 +148,15 @@ pub fn import_config(
 /// 录入新快捷键前暂停系统级热键。否则用户按当前热键时会触发录音，
 /// webview 拿不到 keydown 事件。
 #[tauri::command]
-pub fn suspend_hotkey(app: AppHandle) -> Result<(), String> {
+pub fn suspend_hotkey(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
     app.global_shortcut()
         .unregister_all()
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // 同步清 AppState.registered_hotkey，否则 resume 时 register_hotkey 会
+    // 错以为还有旧的 accel 需要 unregister，产生多余 warn 日志
+    *state.registered_hotkey.lock() = None;
+    Ok(())
 }
 
 /// 录入取消后把系统热键恢复成当前 config 里的 hotkey。

@@ -1,6 +1,8 @@
 // AI 润色 profile 的内置模板。新建 profile 时可从这里选一个预填 prompt/mode。
 // 每条 template 只定 name / description / mode / prompt；url / model / api_key 留空让用户填。
 
+import { POLISH_MODE_OLLAMA } from "../api";
+
 export interface PromptTemplate {
   id: string;
   name: string;
@@ -62,28 +64,28 @@ export const PROMPT_TEMPLATES: PromptTemplate[] = [
     id: "claude-code",
     name: "Claude Code 指令",
     description: "纠错 + 去口头禅 + 保留代码标识符原样，专为给 Claude Code 下达编程任务优化",
-    mode: "ollama",
+    mode: POLISH_MODE_OLLAMA,
     prompt: CLAUDE_CODE_PROMPT,
   },
   {
     id: "fix-only",
     name: "只纠错，不改写",
     description: "只修同音字/漏字/多字，保留原意和用语",
-    mode: "ollama",
+    mode: POLISH_MODE_OLLAMA,
     prompt: FIX_ONLY_PROMPT,
   },
   {
     id: "colloquial-to-written",
     name: "口语 → 规范书面中文",
     description: "去掉「嗯啊然后」等口头禅，变通顺的书面语；适合写文档 / 邮件 / 报告",
-    mode: "ollama",
+    mode: POLISH_MODE_OLLAMA,
     prompt: COLLOQUIAL_TO_WRITTEN_PROMPT,
   },
   {
     id: "zh-to-en",
     name: "中译英",
     description: "中文说、英文出——先纠错中文，再翻译成自然英文",
-    mode: "ollama",
+    mode: POLISH_MODE_OLLAMA,
     prompt: ZH_TO_EN_PROMPT,
   },
 ];

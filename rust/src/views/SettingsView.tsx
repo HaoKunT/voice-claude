@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   api,
   ASR_PROVIDERS,
@@ -12,7 +12,13 @@ import {
   PolishProfile,
   SenseVoiceInfo,
 } from "../api";
-import { parseHotkeyKeys, formatHotkeyKey, validateHotkey } from "../lib/hotkey";
+import {
+  parseHotkeyKeys,
+  formatHotkeyKey,
+  keyCodeToName,
+  validateHotkey,
+} from "../lib/hotkey";
+import { saveTextToFile, readTextFromFile } from "../lib/fileDialogHelpers";
 import { PROMPT_TEMPLATES, PromptTemplate } from "../lib/promptTemplates";
 
 export type SettingsSection = "asr" | "polish" | "record" | "hotwords" | "log";
@@ -219,11 +225,7 @@ export function SettingsView({ section }: { section: SettingsSection }) {
               ))}
             </select>
             <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
-              {cfg.output_mode === "panel"
-                ? "识别结果会停留在悬浮窗里，手动点复制；适合想先看一眼再决定粘贴位置的场景。"
-                : cfg.output_mode === "clipboard"
-                  ? "识别结果写进剪贴板，自己 Cmd+V 粘贴；某些键盘模拟失灵的 app 可以用这个。"
-                  : "自动模拟键盘输入到当前焦点窗口，最省事（默认）。"}
+              {OUTPUT_MODES.find((m) => m.value === cfg.output_mode)?.description}
             </p>
           </Field>
           <Field label={<><span>信号增益</span><span className="ml-auto font-mono text-accent">{cfg.gain}×</span></>}>
@@ -389,43 +391,29 @@ export function SettingsView({ section }: { section: SettingsSection }) {
   );
 }
 
+const CSV_FILTERS = [{ name: "CSV", extensions: ["csv"] }];
+
 async function handleExportCsv() {
   try {
     const csv = await api.exportHotwordsCsv();
-    const path = await saveDialog({
-      defaultPath: `voice-claude-hotwords-${new Date().toISOString().slice(0, 10)}.csv`,
-      filters: [{ name: "CSV", extensions: ["csv"] }],
-    });
-    if (!path) return;
-    // 用 Rust 写文件（前端直接写有权限问题）
-    const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-    await writeTextFile(path, csv);
+    const defaultName = `voice-claude-hotwords-${new Date().toISOString().slice(0, 10)}.csv`;
+    await saveTextToFile(csv, defaultName, CSV_FILTERS);
   } catch (e) {
     alert(`导出失败：${e}`);
   }
 }
 
-async function handleImportCsv(setCfg: (c: Config) => void, cfg: Config) {
+async function handleImportCsv(setCfg: (c: Config) => void, _cfg: Config) {
   try {
-    const selected = await openDialog({
-      filters: [{ name: "CSV", extensions: ["csv"] }],
-      multiple: false,
-    });
-    if (!selected || typeof selected !== "string") return;
-
+    const csv = await readTextFromFile(CSV_FILTERS);
+    if (csv === null) return;
     const merge = confirm(
       "选择「确定」合并到现有热词\n选择「取消」用 CSV 完全替换现有热词",
     );
-
-    const { readTextFile } = await import("@tauri-apps/plugin-fs");
-    const csv = await readTextFile(selected);
     const added = await api.importHotwordsCsv(csv, merge);
     alert(`已导入 ${added} 条热词`);
-    // 刷新
     const latest = await api.getConfig();
     setCfg(latest);
-    // cfg 引用保持一致（防止 useEffect 自动保存覆盖）
-    void cfg;
   } catch (e) {
     alert(`导入失败：${e}`);
   }
@@ -931,10 +919,13 @@ function HotkeyRecorder({
   onChange: (v: string) => void;
 }) {
   const [capturing, setCapturing] = useState(false);
+  // 用 ref 捕获最新的 onChange，让 effect 的 dep 只跟 capturing 变化；否则父组件
+  // 每次 render 新建的 onChange 引用会触发 effect teardown + setup（频繁 suspend/resume）
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
 
   useEffect(() => {
     if (!capturing) return;
-    let cancelled = false;
     api.suspendHotkey().catch(() => {});
 
     const handler = (e: KeyboardEvent) => {
@@ -945,39 +936,24 @@ function HotkeyRecorder({
         return;
       }
       // 单按修饰键时等用户继续按主键
-      const isOnlyModifier = ["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(e.key);
-      if (isOnlyModifier) return;
+      if (["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(e.key)) return;
 
       const mods: string[] = [];
       if (e.metaKey) mods.push("cmd");
       if (e.ctrlKey) mods.push("ctrl");
       if (e.altKey) mods.push("alt");
       if (e.shiftKey) mods.push("shift");
-
-      // e.code 比 e.key 稳定（不受 shift 大小写影响，不受输入法影响）
-      const code = e.code;
-      let main = "";
-      if (code.startsWith("Key")) main = code.slice(3).toLowerCase();
-      else if (code.startsWith("Digit")) main = code.slice(5);
-      else if (/^F\d{1,2}$/.test(code)) main = code.toLowerCase();
-      else if (code === "Space") main = "space";
-      else if (code === "Enter") main = "enter";
-      else if (code === "Tab") main = "tab";
-      else if (code === "Backspace") main = "backspace";
-      else if (code === "Delete") main = "delete";
-      else main = e.key.toLowerCase();
-
+      const main = keyCodeToName(e.code, e.key);
       if (mods.length === 0 || !main) return;
-      onChange([...mods, main].join("+"));
+      onChangeRef.current([...mods, main].join("+"));
       setCapturing(false);
     };
     window.addEventListener("keydown", handler, true);
     return () => {
-      cancelled;
       window.removeEventListener("keydown", handler, true);
       api.resumeHotkey().catch(() => {});
     };
-  }, [capturing, onChange]);
+  }, [capturing]);
 
   return (
     <div className="flex gap-2">
