@@ -135,6 +135,14 @@
         color: rgba(220, 220, 230, 1);
       }
 
+      /* ID 选择器的 display:flex 特异性高于 UA 的 [hidden]{display:none}，
+         必须加 [hidden] override 让 hidden 属性在 flex 容器上也生效 */
+      #recording-view[hidden],
+      #processing-view[hidden],
+      #result-view[hidden] {
+        display: none;
+      }
+
       /* 识别结果态（panel output mode 用）—— 可编辑 textarea */
       #result-view {
         display: flex;
