@@ -88,11 +88,14 @@ pub fn start(app: AppHandle, cfg: Arc<crate::config::Config>) {
 
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
+        // run 内部成功路径会在 ASR 完成后自行 emit "recording-stopped"，
+        // 这里只在失败路径补发一次（保证 indicator state 机最终能离开
+        // recording view；紧接着 guard drop 会 hide 窗口）
         if let Err(e) = run(app_handle.clone(), cfg, stop_rx).await {
             tracing::error!(error = ?e, "录音流程失败");
+            let _ = app_handle.emit("recording-stopped", ());
         }
         recording().active.store(false, Ordering::Relaxed);
-        let _ = app_handle.emit("recording-stopped", ());
     });
 }
 
@@ -168,6 +171,11 @@ async fn run(
     } else {
         run_batch(&rec, &cfg, stop_rx).await?
     };
+
+    // 录音 + ASR 已结束，进入后处理（润色 / 热词）阶段；panel 模式下
+    // 悬浮窗切到 processing view。必须在 asr-final-text 之前发，否则 event
+    // 顺序错位会让用户看到悬浮窗最终停在 processing（而不是 result）
+    let _ = app.emit("recording-stopped", ());
 
     // guard drop 时自动做：level_stop + hide indicator
 
