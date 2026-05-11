@@ -1,6 +1,7 @@
-// 录音指示器：Raycast 风格波形 + 实时识别文字 + 录音计时
+// 录音指示器：Raycast 风格波形 + 实时识别文字 + 录音计时 + 结果编辑
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { parseHotkeyKeys, formatHotkeyKey } from "./lib/hotkey";
 
 const BAR_COUNT = 40;
 const BAR_WIDTH = 6;
@@ -76,17 +77,34 @@ const timerEl = document.getElementById("timer") as HTMLElement;
 const statusTextEl = document.getElementById("status-text") as HTMLElement;
 const partialEl = document.getElementById("partial") as HTMLElement;
 const recordingViewEl = document.getElementById("recording-view") as HTMLElement;
+const processingViewEl = document.getElementById("processing-view") as HTMLElement;
 const resultViewEl = document.getElementById("result-view") as HTMLElement;
-const resultTextEl = document.getElementById("result-text") as HTMLElement;
+const resultTextEl = document.getElementById("result-text") as HTMLTextAreaElement;
+const hotkeyHintEl = document.getElementById("hotkey-hint") as HTMLElement;
 const copyBtn = document.getElementById("result-copy") as HTMLButtonElement;
 const closeBtn = document.getElementById("result-close") as HTMLButtonElement;
 
+function showView(which: "recording" | "processing" | "result") {
+  recordingViewEl.hidden = which !== "recording";
+  processingViewEl.hidden = which !== "processing";
+  resultViewEl.hidden = which !== "result";
+}
+
+function renderHotkeyHint(hotkey: string) {
+  hotkeyHintEl.innerHTML = "";
+  for (const k of parseHotkeyKeys(hotkey)) {
+    const kbd = document.createElement("kbd");
+    kbd.textContent = formatHotkeyKey(k);
+    hotkeyHintEl.appendChild(kbd);
+  }
+}
+
 copyBtn.addEventListener("click", async () => {
   try {
-    await navigator.clipboard.writeText(resultTextEl.textContent ?? "");
+    await navigator.clipboard.writeText(resultTextEl.value);
     copyBtn.textContent = "✓ 已复制";
     copyBtn.classList.add("copied");
-  } catch (e) {
+  } catch {
     copyBtn.textContent = "复制失败";
   }
 });
@@ -141,26 +159,30 @@ listen<string>("asr-partial", (e) => {
   }
 });
 
-listen("recording-started", () => {
-  recordingViewEl.hidden = false;
-  resultViewEl.hidden = true;
+interface RecordingStartedPayload {
+  hotkey: string;
+}
+
+listen<RecordingStartedPayload>("recording-started", (e) => {
+  showView("recording");
   startTimer();
   statusTextEl.textContent = "录音中";
   partialEl.textContent = "等待语音…";
   partialEl.classList.add("empty");
   timerEl.style.color = "";
+  renderHotkeyHint(e.payload?.hotkey ?? "cmd+shift+f5");
 });
 
 listen("recording-stopped", () => {
   stopTimer();
-  statusTextEl.textContent = "处理中…";
+  // 录音结束 → 进入润色 / 处理中态；input 模式下很快就会被 hide 一闪而过
+  // panel 模式下会等 asr-final-text 到达再切 result
+  showView("processing");
 });
 
 listen<string>("asr-final-text", (e) => {
-  const text = e.payload ?? "";
-  resultTextEl.textContent = text;
-  recordingViewEl.hidden = true;
-  resultViewEl.hidden = false;
+  resultTextEl.value = e.payload ?? "";
+  showView("result");
   copyBtn.textContent = "📋 复制";
   copyBtn.classList.remove("copied");
 });

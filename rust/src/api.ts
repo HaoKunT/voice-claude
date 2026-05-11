@@ -140,13 +140,8 @@ export const OUTPUT_MODES = [
     description: "自动模拟键盘输入到当前焦点窗口，最省事（默认）。",
   },
   {
-    value: OUTPUT_MODE_CLIPBOARD,
-    label: "复制到剪贴板，用户自己粘贴",
-    description: "识别结果写进剪贴板，自己 Cmd+V 粘贴；某些键盘模拟失灵的 app 可以用这个。",
-  },
-  {
     value: OUTPUT_MODE_PANEL,
-    label: "显示在悬浮窗，手动点复制",
-    description: "识别结果会停留在悬浮窗里，手动点复制；适合想先看一眼再决定粘贴位置的场景。",
+    label: "显示在悬浮窗，手动编辑 / 复制",
+    description: "识别结果停留在悬浮窗里，文字可再编辑；点「复制」后自己粘贴到目标位置。",
   },
 ];

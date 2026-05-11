@@ -17,6 +17,7 @@ import {
   formatHotkeyKey,
   keyCodeToName,
   validateHotkey,
+  IS_MAC,
 } from "../lib/hotkey";
 import { saveTextToFile, readTextFromFile } from "../lib/fileDialogHelpers";
 import { PROMPT_TEMPLATES, PromptTemplate } from "../lib/promptTemplates";
@@ -939,9 +940,9 @@ function HotkeyRecorder({
       if (["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(e.key)) return;
 
       const mods: string[] = [];
-      if (e.metaKey) mods.push("cmd");
+      if (e.metaKey) mods.push(IS_MAC ? "cmd" : "win");
       if (e.ctrlKey) mods.push("ctrl");
-      if (e.altKey) mods.push("alt");
+      if (e.altKey) mods.push(IS_MAC ? "option" : "alt");
       if (e.shiftKey) mods.push("shift");
       const main = keyCodeToName(e.code, e.key);
       if (mods.length === 0 || !main) return;

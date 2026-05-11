@@ -135,16 +135,50 @@
         color: rgba(220, 220, 230, 1);
       }
 
-      /* 识别结果态（panel output mode 用） */
+      /* 识别结果态（panel output mode 用）—— 可编辑 textarea */
       .result-text {
-        max-width: 460px;
-        max-height: 60px;
-        overflow-y: auto;
-        font-size: 14px;
+        width: 440px;
+        min-height: 40px;
+        max-height: 80px;
+        resize: none;
+        background: rgba(0, 0, 0, 0.3);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 13px;
         line-height: 1.5;
         color: rgba(230, 230, 240, 0.95);
-        padding: 4px 8px;
-        text-align: left;
+        font-family: inherit;
+        outline: none;
+        box-sizing: border-box;
+        transition: border-color 0.15s;
+      }
+      .result-text:focus {
+        border-color: rgba(155, 135, 245, 0.5);
+      }
+
+      /* 润色中态 —— spinner + 文字 */
+      #processing-view {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        padding: 20px 0;
+      }
+      .spinner {
+        width: 26px;
+        height: 26px;
+        border: 3px solid rgba(255, 255, 255, 0.08);
+        border-top-color: #b490ff;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      .processing-text {
+        font-size: 13px;
+        color: rgba(220, 220, 230, 0.85);
       }
       .result-actions {
         display: flex;
@@ -182,7 +216,7 @@
   </head>
   <body>
     <div class="panel">
-      <!-- 录音 / 处理中态 -->
+      <!-- 录音态 -->
       <div id="recording-view">
         <canvas id="wave" width="920" height="120"></canvas>
         <div class="partial empty" id="partial">等待语音…</div>
@@ -193,14 +227,20 @@
             <span class="timer" id="timer">00:00</span>
           </div>
           <div style="opacity: 0.8">
-            再按 <kbd id="kbd-1">⌘</kbd><kbd id="kbd-2">⇧</kbd><kbd id="kbd-3">F5</kbd> 结束
+            再按 <span id="hotkey-hint"></span> 结束
           </div>
         </div>
       </div>
 
+      <!-- 润色 / 处理中态，默认隐藏 -->
+      <div id="processing-view" hidden>
+        <div class="spinner"></div>
+        <div class="processing-text" id="processing-text">正在润色…</div>
+      </div>
+
       <!-- 已识别态（panel output mode 用），默认隐藏 -->
       <div id="result-view" hidden>
-        <div class="result-text" id="result-text"></div>
+        <textarea class="result-text" id="result-text" spellcheck="false"></textarea>
         <div class="result-actions">
           <button id="result-copy" class="btn-primary">📋 复制</button>
           <button id="result-close">✕ 关闭</button>

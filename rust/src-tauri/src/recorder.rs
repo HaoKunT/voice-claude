@@ -110,7 +110,17 @@ async fn run(
     tracing::info!("开始录音");
     let started_at = std::time::Instant::now();
 
-    let _ = app.emit("recording-started", ());
+    // 带上当前热键，让悬浮窗底部"再按 xxx 结束"提示跟着 config 动态渲染
+    #[derive(serde::Serialize, Clone)]
+    struct RecordingStartedPayload<'a> {
+        hotkey: &'a str,
+    }
+    let _ = app.emit(
+        "recording-started",
+        RecordingStartedPayload {
+            hotkey: &cfg.hotkey,
+        },
+    );
     crate::beep::start();
     // indicator 窗口创建 + tauri-nspanel to_panel() 必须在主线程，不能在 worker
     let show_app = app.clone();

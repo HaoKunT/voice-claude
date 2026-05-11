@@ -1,4 +1,4 @@
-const IS_MAC =
+export const IS_MAC =
   typeof navigator !== "undefined" && /mac|iphone|ipad|ipod/i.test(navigator.platform);
 
 const SYMBOLS_MAC: Record<string, string> = {
