@@ -111,6 +111,24 @@ pub fn open_log_dir() -> Result<(), String> {
     open_path(&dirs::log_dir().to_string_lossy())
 }
 
+/// 录入新快捷键前暂停系统级热键。否则用户按当前热键时会触发录音，
+/// webview 拿不到 keydown 事件。
+#[tauri::command]
+pub fn suspend_hotkey(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|e| e.to_string())
+}
+
+/// 录入取消后把系统热键恢复成当前 config 里的 hotkey。
+/// 录入成功后 save_config 会自己 re-register 新的，这个 command 可不调。
+#[tauri::command]
+pub fn resume_hotkey(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let cfg = state.snapshot();
+    crate::register_hotkey(&app, &cfg.hotkey).map_err(|e| e.to_string())
+}
+
 /// panel 输出模式下，悬浮窗里的 ✕ 按钮点击后调这个关窗口。
 #[tauri::command]
 pub fn close_indicator(app: AppHandle) -> Result<(), String> {

@@ -173,11 +173,9 @@ export function SettingsView({ section }: { section: SettingsSection }) {
             </select>
           </Field>
           <Field label={<><span>快捷键</span><KbdCombo combo={cfg.hotkey} /></>}>
-            <input
-              className="input font-mono"
+            <HotkeyRecorder
               value={cfg.hotkey}
-              onChange={(e) => update("hotkey", e.target.value)}
-              placeholder="cmd+shift+f5"
+              onChange={(v) => update("hotkey", v)}
             />
             {(() => {
               const err = validateHotkey(cfg.hotkey);
@@ -893,6 +891,95 @@ function ProfileCard({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * 快捷键输入：保留手打 input，旁边加一个「⌨ 录入」按钮。
+ * 点录入进入 capturing：suspend 系统 hotkey，监听 keydown，按下目标组合键
+ * 后生成 "cmd+shift+f5" 格式字符串填入，save_config 会自动 re-register。
+ * ESC 取消并 resume 原热键。
+ */
+function HotkeyRecorder({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [capturing, setCapturing] = useState(false);
+
+  useEffect(() => {
+    if (!capturing) return;
+    let cancelled = false;
+    api.suspendHotkey().catch(() => {});
+
+    const handler = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        setCapturing(false);
+        return;
+      }
+      // 单按修饰键时等用户继续按主键
+      const isOnlyModifier = ["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(e.key);
+      if (isOnlyModifier) return;
+
+      const mods: string[] = [];
+      if (e.metaKey) mods.push("cmd");
+      if (e.ctrlKey) mods.push("ctrl");
+      if (e.altKey) mods.push("alt");
+      if (e.shiftKey) mods.push("shift");
+
+      // e.code 比 e.key 稳定（不受 shift 大小写影响，不受输入法影响）
+      const code = e.code;
+      let main = "";
+      if (code.startsWith("Key")) main = code.slice(3).toLowerCase();
+      else if (code.startsWith("Digit")) main = code.slice(5);
+      else if (/^F\d{1,2}$/.test(code)) main = code.toLowerCase();
+      else if (code === "Space") main = "space";
+      else if (code === "Enter") main = "enter";
+      else if (code === "Tab") main = "tab";
+      else if (code === "Backspace") main = "backspace";
+      else if (code === "Delete") main = "delete";
+      else main = e.key.toLowerCase();
+
+      if (mods.length === 0 || !main) return;
+      onChange([...mods, main].join("+"));
+      setCapturing(false);
+    };
+    window.addEventListener("keydown", handler, true);
+    return () => {
+      cancelled;
+      window.removeEventListener("keydown", handler, true);
+      api.resumeHotkey().catch(() => {});
+    };
+  }, [capturing, onChange]);
+
+  return (
+    <div className="flex gap-2">
+      <input
+        className={
+          "input font-mono flex-1 " +
+          (capturing ? "!bg-accent/10 !border-accent/40" : "")
+        }
+        value={capturing ? "按下目标组合键…（ESC 取消）" : value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="cmd+shift+f5"
+        readOnly={capturing}
+      />
+      <button
+        className={
+          "px-3 rounded-lg text-xs font-medium transition " +
+          (capturing
+            ? "bg-red-500/20 border border-red-500/40 text-red-300 hover:bg-red-500/30"
+            : "bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10")
+        }
+        onClick={() => setCapturing((s) => !s)}
+      >
+        {capturing ? "取消" : "⌨ 录入"}
+      </button>
     </div>
   );
 }
