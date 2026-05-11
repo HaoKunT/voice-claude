@@ -1,2 +1,8 @@
+# 单仓项目，没有子 workspace 成员；但 pnpm 9 遇到 workspace 文件必须要求
+# packages 字段，缺了会 `ERROR packages field missing or empty` 直接 fail CI。
+packages: []
+
+# pnpm 10+ 的「approve builds」配置（pnpm 9 会忽略）——放过 esbuild 的
+# build script，避免 pnpm install 时提示 "Ignored build scripts"。
 allowBuilds:
   esbuild: true

@@ -30,7 +30,7 @@
 set -euo pipefail
 
 SOURCE="${1:-logo.webp}"
-APP_LOGO_SIZE="${APP_LOGO_SIZE:-780}"
+APP_LOGO_SIZE="${APP_LOGO_SIZE:-720}"
 BG_COLOR="${BG_COLOR:-#1c1c26}"
 CORNER_R="${CORNER_R:-180}"
 TRAY_SIZE="${TRAY_SIZE:-40}"

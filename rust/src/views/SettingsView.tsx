@@ -11,7 +11,7 @@ import {
   PolishProfile,
   SenseVoiceInfo,
 } from "../api";
-import { parseHotkeyKeys, formatHotkeyKey } from "../lib/hotkey";
+import { parseHotkeyKeys, formatHotkeyKey, validateHotkey } from "../lib/hotkey";
 
 export type SettingsSection = "asr" | "polish" | "record" | "hotwords" | "log";
 
@@ -85,6 +85,12 @@ export function SettingsView({ section }: { section: SettingsSection }) {
         </div>
         <SaveIndicator state={saveState} errMsg={errMsg} />
       </div>
+      {saveState === "error" && errMsg && (
+        <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-[12px] text-red-300 leading-relaxed">
+          <div className="font-medium text-red-400 mb-0.5">保存失败</div>
+          <div className="break-all">{errMsg}</div>
+        </div>
+      )}
 
       {section === "asr" && (
         <section className="card space-y-3.5">
@@ -171,6 +177,14 @@ export function SettingsView({ section }: { section: SettingsSection }) {
               onChange={(e) => update("hotkey", e.target.value)}
               placeholder="cmd+shift+f5"
             />
+            {(() => {
+              const err = validateHotkey(cfg.hotkey);
+              return err ? (
+                <p className="text-[11px] text-amber-400 mt-1.5 leading-relaxed">
+                  ⚠ {err}（不会保存成功）
+                </p>
+              ) : null;
+            })()}
           </Field>
           <Field label={<><span>信号增益</span><span className="ml-auto font-mono text-accent">{cfg.gain}×</span></>}>
             <input

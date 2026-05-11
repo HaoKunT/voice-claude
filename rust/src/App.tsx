@@ -147,9 +147,10 @@ function AccessibilityBanner() {
     <div className="flex-shrink-0 bg-amber-500/15 border-b border-amber-500/30 px-4 py-2.5 flex items-center gap-3">
       <span className="text-amber-400 text-base">⚠</span>
       <div className="flex-1 text-xs text-amber-100 leading-snug">
-        <span className="font-medium">辅助功能权限未授权</span>
+        <span className="font-medium">辅助功能权限未生效</span>
         <span className="text-amber-200/70 ml-2">
-          —— 热键不会工作。系统设置勾完回到这个窗口，提示会自动消失。
+          —— 热键不会工作。如果系统设置里 voice-claude 看起来已经勾选，那是升级后 macOS 缓存了旧签名：
+          <b className="text-amber-100">先取消勾选、再重新勾选</b>一次即可。
         </span>
       </div>
       <button
