@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, AppInfo } from "../api";
 import { useUpdate } from "../contexts/UpdateContext";
 
@@ -177,6 +178,21 @@ export function AboutView() {
       </section>
 
       <section className="card space-y-2">
+        <div className="section-title">🔄 配置备份</div>
+        <p className="text-xs text-gray-400 leading-relaxed">
+          把全部设置（profile / 热词 / 快捷键 / ASR API Key 等）导出为 JSON，换机器 / 备份 / 分享配置时用；导入会覆盖当前全部配置。
+        </p>
+        <div className="flex gap-2 mt-2">
+          <button className="btn-ghost text-xs py-1.5" onClick={() => handleExportConfig()}>
+            📤 导出当前配置
+          </button>
+          <button className="btn-ghost text-xs py-1.5" onClick={() => handleImportConfig()}>
+            📥 导入配置
+          </button>
+        </div>
+      </section>
+
+      <section className="card space-y-2">
         <div className="section-title">🔐 签名与权限</div>
         <p className="text-xs text-gray-400 leading-relaxed">
           本版本为 <span className="font-mono text-gray-300">ad-hoc</span> 签名（未购买 Apple Developer 证书）。
@@ -210,6 +226,45 @@ export function AboutView() {
       </section>
     </div>
   );
+}
+
+async function handleExportConfig() {
+  try {
+    const json = await api.exportConfig();
+    const path = await saveDialog({
+      defaultPath: `voice-claude-config-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (!path) return;
+    const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+    await writeTextFile(path, json);
+    alert("配置已导出 ✓");
+  } catch (e) {
+    alert(`导出失败：${e}`);
+  }
+}
+
+async function handleImportConfig() {
+  try {
+    const selected = await openDialog({
+      filters: [{ name: "JSON", extensions: ["json"] }],
+      multiple: false,
+    });
+    if (!selected || typeof selected !== "string") return;
+    if (
+      !confirm(
+        "导入会覆盖当前全部配置（profile / 热词 / 快捷键 / API Key 等）。\n\n继续？",
+      )
+    ) {
+      return;
+    }
+    const { readTextFile } = await import("@tauri-apps/plugin-fs");
+    const json = await readTextFile(selected);
+    await api.importConfig(json);
+    alert("配置已导入 ✓\n\n建议关闭应用重新打开，确保所有窗口状态同步。");
+  } catch (e) {
+    alert(`导入失败：${e}`);
+  }
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {

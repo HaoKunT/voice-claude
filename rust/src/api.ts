@@ -102,6 +102,8 @@ export const api = {
   exportHotwordsCsv: () => invoke<string>("export_hotwords_csv"),
   importHotwordsCsv: (csv: string, merge: boolean) =>
     invoke<number>("import_hotwords_csv", { csv, merge }),
+  exportConfig: () => invoke<string>("export_config"),
+  importConfig: (json: string) => invoke<void>("import_config", { json }),
   checkAccessibility: () => invoke<boolean>("check_accessibility"),
   openAccessibilitySettings: () => invoke<void>("open_accessibility_settings"),
 };

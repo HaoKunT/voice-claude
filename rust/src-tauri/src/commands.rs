@@ -111,6 +111,34 @@ pub fn open_log_dir() -> Result<(), String> {
     open_path(&dirs::log_dir().to_string_lossy())
 }
 
+/// 导出整个 config.json 内容作为字符串（前端负责写盘）。
+#[tauri::command]
+pub fn export_config(state: State<'_, AppState>) -> Result<String, String> {
+    let cfg = state.snapshot();
+    serde_json::to_string_pretty(&*cfg).map_err(|e| e.to_string())
+}
+
+/// 从 JSON 字符串导入整个 config：反序列化 + save + 替换 AppState +
+/// 重注册 hotkey + reload log。失败时保持现状。
+#[tauri::command]
+pub fn import_config(
+    json: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let new_cfg: Config = serde_json::from_str(&json)
+        .map_err(|e| format!("JSON 解析失败：{}", e))?;
+    // 先做一次热键可注册性校验，避免导入后热键失效
+    crate::register_hotkey(&app, &new_cfg.hotkey)
+        .map_err(|e| format!("导入的热键注册失败：{}", e))?;
+    new_cfg.save().map_err(|e| e.to_string())?;
+    let new_log_level = new_cfg.log_level.clone();
+    state.replace(new_cfg);
+    crate::logger::reload(&new_log_level);
+    let _ = app.emit("config-updated", ());
+    Ok(())
+}
+
 /// 录入新快捷键前暂停系统级热键。否则用户按当前热键时会触发录音，
 /// webview 拿不到 keydown 事件。
 #[tauri::command]

@@ -185,6 +185,8 @@ pub fn run() {
             commands::get_app_info,
             commands::export_hotwords_csv,
             commands::import_hotwords_csv,
+            commands::export_config,
+            commands::import_config,
             commands::check_accessibility,
             commands::open_accessibility_settings,
         ])
