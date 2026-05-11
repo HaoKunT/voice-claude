@@ -67,10 +67,21 @@ pub fn register_hotkey(app: &tauri::AppHandle, hotkey_str: &str) -> anyhow::Resu
     let handle = app.clone();
     gs.on_shortcut(accel.as_str(), move |_app, _shortcut, event| {
         use tauri_plugin_global_shortcut::ShortcutState;
-        if event.state() == ShortcutState::Pressed {
-            let state = handle.state::<AppState>();
-            let cfg = state.snapshot();
-            recorder::toggle(handle.clone(), cfg);
+        let state = handle.state::<AppState>();
+        let cfg = state.snapshot();
+        match event.state() {
+            ShortcutState::Pressed => {
+                if cfg.push_to_talk {
+                    recorder::start(handle.clone(), cfg);
+                } else {
+                    recorder::toggle(handle.clone(), cfg);
+                }
+            }
+            ShortcutState::Released => {
+                if cfg.push_to_talk {
+                    recorder::stop();
+                }
+            }
         }
     })
     .map_err(|e| anyhow::anyhow!("注册热键失败：{}", e))?;

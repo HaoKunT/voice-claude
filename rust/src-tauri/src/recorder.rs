@@ -66,17 +66,22 @@ fn scopeguard(
     }
 }
 
-/// 切换录音状态：首次调用开始，再次调用停止。
+/// 切换录音状态（toggle 模式）：首次调用开始，再次调用停止。
 pub fn toggle(app: AppHandle, cfg: Arc<crate::config::Config>) {
+    if recording().active.load(Ordering::Relaxed) {
+        stop();
+    } else {
+        start(app, cfg);
+    }
+}
+
+/// 开始录音；若已在录音则 no-op。push-to-talk 按下时调。
+pub fn start(app: AppHandle, cfg: Arc<crate::config::Config>) {
     let rec_state = recording();
     if rec_state.active.load(Ordering::Relaxed) {
-        // 正在录音，第二次按热键 → 停止
-        let had_tx = rec_state.stop_tx.lock().take().map(|tx| tx.send(()));
-        tracing::info!(send_result = ?had_tx, "toggle: 请求停止录音");
         return;
     }
-
-    tracing::info!("toggle: 请求开始录音");
+    tracing::info!("recorder: 请求开始录音");
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     *rec_state.stop_tx.lock() = Some(stop_tx);
     rec_state.active.store(true, Ordering::Relaxed);
@@ -89,6 +94,12 @@ pub fn toggle(app: AppHandle, cfg: Arc<crate::config::Config>) {
         recording().active.store(false, Ordering::Relaxed);
         let _ = app_handle.emit("recording-stopped", ());
     });
+}
+
+/// 停止当前录音；若未在录音则 no-op。push-to-talk 松开时调，VAD / toggle 也用。
+pub fn stop() {
+    let had_tx = recording().stop_tx.lock().take().map(|tx| tx.send(()));
+    tracing::info!(send_result = ?had_tx, "recorder: 请求停止录音");
 }
 
 async fn run(

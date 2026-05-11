@@ -39,6 +39,7 @@ export interface Config {
   vad_silence_ms: number;
   vad_threshold: number;
   output_mode: string;
+  push_to_talk: boolean;
 }
 
 export interface DeviceInfo {

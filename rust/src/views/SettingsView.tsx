@@ -186,6 +186,28 @@ export function SettingsView({ section }: { section: SettingsSection }) {
               ) : null;
             })()}
           </Field>
+          <Field
+            label={
+              <>
+                <span>触发方式</span>
+                <label className="ml-auto flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={cfg.push_to_talk}
+                    onChange={(e) => update("push_to_talk", e.target.checked)}
+                    className="accent-accent"
+                  />
+                  按住说话
+                </label>
+              </>
+            }
+          >
+            <p className="text-[11px] text-gray-500 leading-relaxed mt-0.5">
+              {cfg.push_to_talk
+                ? "按住快捷键录音，松开自动停止——适合短句和明确边界的场景（按组合键时松开任一键都算松开）"
+                : "按一下开始、再按一下结束（默认）——适合长句、讲一段话的场景"}
+            </p>
+          </Field>
           <Field label="输出方式">
             <select
               className="input"

@@ -117,6 +117,8 @@ pub struct Config {
     pub vad_threshold: f32,
     #[serde(default = "default_output_mode")]
     pub output_mode: String,
+    #[serde(default)]
+    pub push_to_talk: bool,
 }
 
 fn default_asr_provider() -> String {
@@ -195,6 +197,7 @@ impl Default for Config {
             vad_silence_ms: default_vad_silence_ms(),
             vad_threshold: default_vad_threshold(),
             output_mode: default_output_mode(),
+            push_to_talk: false,
         }
     }
 }
