@@ -18,6 +18,8 @@ export interface Config {
   xfyun_access_key_id: string;
   xfyun_access_key_secret: string;
   openrouter_api_key: string;
+  openrouter_model: string;
+  openrouter_language: string;
   volc_app_key: string;
   volc_access_token: string;
   volc_resource_id: string;

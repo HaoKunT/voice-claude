@@ -154,7 +154,55 @@ export function SettingsView({ section }: { section: SettingsSection }) {
           )}
 
           {cfg.asr_provider === "openrouter" && (
-            <TextField label="OpenRouter API Key" value={cfg.openrouter_api_key} onChange={(v) => update("openrouter_api_key", v)} password />
+            <>
+              <TextField label="OpenRouter API Key" value={cfg.openrouter_api_key} onChange={(v) => update("openrouter_api_key", v)} password />
+              <Field label="模型">
+                <input
+                  className="input"
+                  value={cfg.openrouter_model}
+                  onChange={(e) => update("openrouter_model", e.target.value)}
+                  placeholder="openai/whisper-large-v3-turbo"
+                />
+                <div className="flex gap-1.5 mt-1.5 flex-wrap">
+                  {[
+                    "openai/whisper-large-v3-turbo",
+                    "openai/gpt-4o-mini-transcribe",
+                    "openai/gpt-4o-transcribe",
+                  ].map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      className="btn-ghost !py-0.5 !px-2 text-[11px] font-mono"
+                      onClick={() => update("openrouter_model", m)}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-gray-500 leading-relaxed mt-1">
+                  填 OpenRouter 模型 slug。whisper-large-v3-turbo 便宜($0.04/小时);
+                  gpt-4o-mini-transcribe / gpt-4o-transcribe 对气声 / 低 SNR 语音
+                  更鲁棒。未支持的模型 OpenRouter 会返回 400。
+                </p>
+              </Field>
+              <Field label="强制语言">
+                <select
+                  className="input"
+                  value={cfg.openrouter_language}
+                  onChange={(e) => update("openrouter_language", e.target.value)}
+                >
+                  <option value="zh">zh - 中文(推荐)</option>
+                  <option value="en">en - English</option>
+                  <option value="ja">ja - 日本語</option>
+                  <option value="ko">ko - 한국어</option>
+                  <option value="">auto - 服务端自动(不稳定,易误判)</option>
+                </select>
+                <p className="text-[11px] text-gray-500 leading-relaxed mt-1">
+                  Whisper 对气声的自动语言判定不稳定,常把中文气声识别成韩语。
+                  强制指定一门语言跳过 auto-detect 识别更准。
+                </p>
+              </Field>
+            </>
           )}
 
           {cfg.asr_provider === "local" && <LocalSenseVoicePanel />}

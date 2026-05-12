@@ -76,6 +76,17 @@ pub struct Config {
     pub xfyun_access_secret: String,
     #[serde(default)]
     pub openrouter_api_key: String,
+    /// OpenRouter ASR 模型 slug。常用:
+    ///   openai/whisper-large-v3-turbo(默认,便宜)
+    ///   openai/gpt-4o-mini-transcribe(新,对非标准语音更鲁棒)
+    ///   openai/gpt-4o-transcribe(最好)
+    #[serde(default = "default_openrouter_model")]
+    pub openrouter_model: String,
+    /// OpenRouter ASR 强制 language ISO-639-1 代码,空字符串=服务端自动判定。
+    /// Whisper 对气声/耳语的自动判定不稳定(常误识韩语/日语),用户主要说中文
+    /// 时强烈建议填 "zh"。
+    #[serde(default = "default_openrouter_language")]
+    pub openrouter_language: String,
     #[serde(default)]
     pub volc_app_key: String,
     #[serde(default)]
@@ -175,6 +186,12 @@ fn default_output_mode() -> String {
 fn default_voice_enhance() -> bool {
     true
 }
+fn default_openrouter_model() -> String {
+    "openai/whisper-large-v3-turbo".into()
+}
+fn default_openrouter_language() -> String {
+    "zh".into()
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -185,6 +202,8 @@ impl Default for Config {
             xfyun_access_key_id: String::new(),
             xfyun_access_secret: String::new(),
             openrouter_api_key: String::new(),
+            openrouter_model: default_openrouter_model(),
+            openrouter_language: default_openrouter_language(),
             volc_app_key: String::new(),
             volc_access_token: String::new(),
             volc_resource_id: default_volc_resource_id(),

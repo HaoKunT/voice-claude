@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/audio/transcriptions";
-const MODEL: &str = "openai/whisper-large-v3-turbo";
+const DEFAULT_MODEL: &str = "openai/whisper-large-v3-turbo";
 
 #[derive(Serialize)]
 struct InputAudio<'a> {
@@ -24,6 +24,10 @@ struct InputAudio<'a> {
 struct TranscribeRequest<'a> {
     model: &'a str,
     input_audio: InputAudio<'a>,
+    /// 强制 language(ISO-639-1,如 "zh")。Whisper 对气声自动判定不稳定,
+    /// 经常把中文气声识别成韩语;空字符串跳过本字段走服务端 auto。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    language: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -38,13 +42,28 @@ pub async fn transcribe(cfg: &Config, wav: &[u8]) -> Result<String> {
     }
 
     let wav_b64 = base64::engine::general_purpose::STANDARD.encode(wav);
+    let model = if cfg.openrouter_model.trim().is_empty() {
+        DEFAULT_MODEL
+    } else {
+        cfg.openrouter_model.trim()
+    };
+    let language = {
+        let lang = cfg.openrouter_language.trim();
+        if lang.is_empty() {
+            None
+        } else {
+            Some(lang)
+        }
+    };
     let body = TranscribeRequest {
-        model: MODEL,
+        model,
         input_audio: InputAudio {
             data: &wav_b64,
             format: "wav",
         },
+        language,
     };
+    tracing::info!(model, language = ?language, "openrouter ASR 请求");
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
