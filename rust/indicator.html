@@ -138,38 +138,8 @@
       /* ID 选择器的 display:flex 特异性高于 UA 的 [hidden]{display:none}，
          必须加 [hidden] override 让 hidden 属性在 flex 容器上也生效 */
       #recording-view[hidden],
-      #processing-view[hidden],
-      #result-view[hidden] {
+      #processing-view[hidden] {
         display: none;
-      }
-
-      /* 识别结果态（panel output mode 用）—— 可编辑 textarea */
-      #result-view {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 10px;
-        width: 100%;
-      }
-      .result-text {
-        width: 440px;
-        min-height: 40px;
-        max-height: 80px;
-        resize: none;
-        background: rgba(0, 0, 0, 0.3);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 8px;
-        padding: 8px 10px;
-        font-size: 13px;
-        line-height: 1.5;
-        color: rgba(230, 230, 240, 0.95);
-        font-family: inherit;
-        outline: none;
-        box-sizing: border-box;
-        transition: border-color 0.15s;
-      }
-      .result-text:focus {
-        border-color: rgba(155, 135, 245, 0.5);
       }
 
       /* 润色中态 —— spinner + 文字 */
@@ -195,38 +165,6 @@
         font-size: 13px;
         color: rgba(220, 220, 230, 0.85);
       }
-      .result-actions {
-        display: flex;
-        gap: 8px;
-        margin-top: 4px;
-      }
-      .result-actions button {
-        background: rgba(255, 255, 255, 0.06);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 6px;
-        padding: 5px 14px;
-        color: rgba(220, 220, 230, 0.95);
-        font-family: inherit;
-        font-size: 12px;
-        cursor: pointer;
-        transition: all 0.15s;
-      }
-      .result-actions button:hover {
-        background: rgba(255, 255, 255, 0.12);
-      }
-      .result-actions .btn-primary {
-        background: linear-gradient(135deg, #9b87f5, #b490ff);
-        border-color: transparent;
-        color: white;
-      }
-      .result-actions .btn-primary:hover {
-        opacity: 0.9;
-      }
-      .result-actions .copied {
-        background: rgba(74, 222, 128, 0.15) !important;
-        border-color: rgba(74, 222, 128, 0.4) !important;
-        color: rgb(134, 239, 172) !important;
-      }
     </style>
   </head>
   <body>
@@ -251,15 +189,6 @@
       <div id="processing-view" hidden>
         <div class="spinner"></div>
         <div class="processing-text" id="processing-text">正在处理…</div>
-      </div>
-
-      <!-- 已识别态（panel output mode 用），默认隐藏 -->
-      <div id="result-view" hidden>
-        <textarea class="result-text" id="result-text" spellcheck="false"></textarea>
-        <div class="result-actions">
-          <button id="result-copy" class="btn-primary">📋 复制</button>
-          <button id="result-close">✕ 关闭</button>
-        </div>
       </div>
     </div>
     <script type="module" src="/src/indicator.tsx"></script>

@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "主窗口 + 录音指示器需要的能力",
-  "windows": ["main", "indicator"],
+  "windows": ["main", "indicator", "result"],
   "permissions": [
     "core:default",
     "core:tray:default",

@@ -28,6 +28,7 @@ pub mod indicator;
 pub mod input;
 pub mod logger;
 pub mod recorder;
+pub mod result;
 pub mod tray;
 
 use parking_lot::Mutex;
@@ -161,6 +162,10 @@ pub fn run() {
             // 后续录音只 show/hide，永远不再重新创建窗口，避免 WebView 初始化期间抢焦点。
             indicator::prebuild(app.handle());
 
+            // 预创建 result 普通窗口：panel 输出模式下展示识别结果给用户编辑。
+            // 必须是普通 WebviewWindow（非 NSPanel），否则 IME 候选窗挂不上。
+            result::prebuild(app.handle());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -174,6 +179,7 @@ pub fn run() {
             commands::open_logs,
             commands::open_log_dir,
             commands::close_indicator,
+            commands::close_result_window,
             commands::suspend_hotkey,
             commands::resume_hotkey,
             commands::read_recent_logs,

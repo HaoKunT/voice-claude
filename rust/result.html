@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>voice-claude 识别结果</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        overflow: hidden;
+        font-family:
+          -apple-system,
+          BlinkMacSystemFont,
+          "SF Pro Text",
+          system-ui,
+          sans-serif;
+        font-feature-settings: "ss01";
+        letter-spacing: -0.01em;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .panel {
+        position: fixed;
+        inset: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 10px;
+        padding: 16px 0;
+        border-radius: 22px;
+        background:
+          radial-gradient(120% 120% at 50% 0%, rgba(155, 135, 245, 0.12) 0%, transparent 60%),
+          radial-gradient(120% 120% at 50% 100%, rgba(255, 92, 92, 0.08) 0%, transparent 60%),
+          linear-gradient(180deg, rgba(22, 22, 28, 0.92) 0%, rgba(15, 15, 20, 0.92) 100%);
+        box-shadow:
+          0 0 0 1px rgba(255, 255, 255, 0.06) inset,
+          0 0 0 1px rgba(0, 0, 0, 0.4),
+          0 20px 60px rgba(0, 0, 0, 0.5),
+          0 0 40px rgba(155, 135, 245, 0.15);
+        color: rgba(230, 230, 240, 1);
+        overflow: hidden;
+      }
+
+      .panel::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 1.5px;
+        background: linear-gradient(
+          90deg,
+          transparent 0%,
+          rgba(155, 135, 245, 0.8) 20%,
+          rgba(255, 92, 92, 0.8) 50%,
+          rgba(125, 211, 252, 0.8) 80%,
+          transparent 100%
+        );
+      }
+
+      .result-text {
+        width: 440px;
+        min-height: 56px;
+        max-height: 120px;
+        resize: none;
+        background: rgba(0, 0, 0, 0.3);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 13px;
+        line-height: 1.5;
+        color: rgba(230, 230, 240, 0.95);
+        font-family: inherit;
+        outline: none;
+        box-sizing: border-box;
+        transition: border-color 0.15s;
+      }
+      .result-text:focus {
+        border-color: rgba(155, 135, 245, 0.5);
+      }
+
+      .result-actions {
+        display: flex;
+        gap: 8px;
+      }
+      .result-actions button {
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 6px;
+        padding: 5px 14px;
+        color: rgba(220, 220, 230, 0.95);
+        font-family: inherit;
+        font-size: 12px;
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+      .result-actions button:hover {
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .result-actions .btn-primary {
+        background: linear-gradient(135deg, #9b87f5, #b490ff);
+        border-color: transparent;
+        color: white;
+      }
+      .result-actions .btn-primary:hover {
+        opacity: 0.9;
+      }
+      .result-actions .copied {
+        background: rgba(74, 222, 128, 0.15) !important;
+        border-color: rgba(74, 222, 128, 0.4) !important;
+        color: rgb(134, 239, 172) !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <textarea class="result-text" id="result-text" spellcheck="false"></textarea>
+      <div class="result-actions">
+        <button id="result-copy" class="btn-primary">📋 复制</button>
+        <button id="result-close">✕ 关闭</button>
+      </div>
+    </div>
+    <script type="module" src="/src/result.tsx"></script>
+  </body>
+</html>

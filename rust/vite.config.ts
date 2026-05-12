@@ -28,6 +28,7 @@ export default defineConfig(async () => ({
       input: {
         main: resolve(__dirname, "index.html"),
         indicator: resolve(__dirname, "indicator.html"),
+        result: resolve(__dirname, "result.html"),
       },
     },
   },

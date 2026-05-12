@@ -1,6 +1,6 @@
-// 录音指示器：Raycast 风格波形 + 实时识别文字 + 录音计时 + 结果编辑
+// 录音指示器：Raycast 风格波形 + 实时识别文字 + 录音计时。
+// panel 输出模式的识别结果展示/编辑由独立的 result 窗口负责（见 result.tsx）。
 import { listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
 import { parseHotkeyKeys, formatHotkeyKey } from "./lib/hotkey";
 
 const BAR_COUNT = 40;
@@ -92,16 +92,11 @@ const statusTextEl = document.getElementById("status-text") as HTMLElement;
 const partialEl = document.getElementById("partial") as HTMLElement;
 const recordingViewEl = document.getElementById("recording-view") as HTMLElement;
 const processingViewEl = document.getElementById("processing-view") as HTMLElement;
-const resultViewEl = document.getElementById("result-view") as HTMLElement;
-const resultTextEl = document.getElementById("result-text") as HTMLTextAreaElement;
 const hotkeyHintEl = document.getElementById("hotkey-hint") as HTMLElement;
-const copyBtn = document.getElementById("result-copy") as HTMLButtonElement;
-const closeBtn = document.getElementById("result-close") as HTMLButtonElement;
 
-function showView(which: "recording" | "processing" | "result") {
+function showView(which: "recording" | "processing") {
   recordingViewEl.hidden = which !== "recording";
   processingViewEl.hidden = which !== "processing";
-  resultViewEl.hidden = which !== "result";
 }
 
 function renderHotkeyHint(hotkey: string) {
@@ -112,20 +107,6 @@ function renderHotkeyHint(hotkey: string) {
     hotkeyHintEl.appendChild(kbd);
   }
 }
-
-copyBtn.addEventListener("click", async () => {
-  try {
-    await navigator.clipboard.writeText(resultTextEl.value);
-    copyBtn.textContent = "✓ 已复制";
-    copyBtn.classList.add("copied");
-  } catch {
-    copyBtn.textContent = "复制失败";
-  }
-});
-
-closeBtn.addEventListener("click", () => {
-  invoke("close_indicator").catch(() => {});
-});
 
 let startedAt = 0;
 let timerHandle: number | null = null;
@@ -189,16 +170,9 @@ listen<RecordingStartedPayload>("recording-started", (e) => {
 
 listen("recording-stopped", () => {
   stopTimer();
-  // 录音结束 → 进入润色 / 处理中态；input 模式下很快就会被 hide 一闪而过
-  // panel 模式下会等 asr-final-text 到达再切 result
+  // 录音结束 → 进入润色 / 处理中态；input 模式下很快就会被 hide 一闪而过。
+  // panel 模式下 indicator 也会 hide，结果文字会被单独的 result 窗口接手展示。
   showView("processing");
-});
-
-listen<string>("asr-final-text", (e) => {
-  resultTextEl.value = e.payload ?? "";
-  showView("result");
-  copyBtn.textContent = "📋 复制";
-  copyBtn.classList.remove("copied");
 });
 
 // 页面加载时假设已经进入录音（悬浮窗只在录音时显示）
