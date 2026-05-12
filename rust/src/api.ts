@@ -40,6 +40,7 @@ export interface Config {
   vad_threshold: number;
   output_mode: string;
   push_to_talk: boolean;
+  voice_enhance: boolean;
 }
 
 export interface DeviceInfo {

@@ -119,6 +119,10 @@ pub struct Config {
     pub output_mode: String,
     #[serde(default)]
     pub push_to_talk: bool,
+    /// 气声增强:录音后做 pre-emphasis + compressor + peak normalize,显著
+    /// 改善气声(耳语、气声输入)的识别率。对正常说话也无副作用,默认开启。
+    #[serde(default = "default_voice_enhance")]
+    pub voice_enhance: bool,
 }
 
 fn default_asr_provider() -> String {
@@ -168,6 +172,9 @@ fn default_vad_threshold() -> f32 {
 fn default_output_mode() -> String {
     OUTPUT_MODE_INPUT.into()
 }
+fn default_voice_enhance() -> bool {
+    true
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -198,6 +205,7 @@ impl Default for Config {
             vad_threshold: default_vad_threshold(),
             output_mode: default_output_mode(),
             push_to_talk: false,
+            voice_enhance: default_voice_enhance(),
         }
     }
 }

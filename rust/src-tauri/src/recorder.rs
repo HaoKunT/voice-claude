@@ -159,7 +159,7 @@ async fn run(
     let level_stop = Arc::new(AtomicBool::new(false));
     let _guard = scopeguard(app.clone(), Arc::clone(&level_stop));
 
-    let rec = Arc::new(Recorder::new(cfg.gain, &cfg.device_name));
+    let rec = Arc::new(Recorder::new(cfg.gain, &cfg.device_name, cfg.voice_enhance));
 
     // 启动音量推送任务：30fps emit audio-level 给波形悬浮窗
     let level_rec = Arc::clone(&rec);
@@ -464,7 +464,7 @@ async fn run_batch(
         return Ok((reason, String::new(), 0));
     }
 
-    let wav = to_wav(&pcm);
+    let wav = to_wav(&pcm, cfg.voice_enhance);
     if wav.len() < 100 {
         tracing::warn!(wav_bytes = wav.len(), "未录到声音");
         return Ok((reason, String::new(), 0));

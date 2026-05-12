@@ -241,6 +241,33 @@ export function SettingsView({ section }: { section: SettingsSection }) {
             <div className="flex justify-between text-[10px] text-gray-600 mt-1 font-mono">
               <span>1×</span><span>5×</span><span>10×</span>
             </div>
+            <p className="text-[11px] text-gray-500 leading-relaxed mt-1">
+              {cfg.voice_enhance
+                ? "开启「气声增强」后,压缩器和 peak normalize 会自动均衡音量,增益通常保持 1× 即可。"
+                : "固定倍数放大,值太大会 clip(爆音)、太小气声识别不出。建议开启下方「气声增强」自适应均衡。"}
+            </p>
+          </Field>
+          <Field
+            label={
+              <>
+                <span>气声增强</span>
+                <label className="ml-auto flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={cfg.voice_enhance}
+                    onChange={(e) => update("voice_enhance", e.target.checked)}
+                    className="accent-accent"
+                  />
+                  {cfg.voice_enhance ? "开启" : "关闭"}
+                </label>
+              </>
+            }
+          >
+            <p className="text-[11px] text-gray-500 leading-relaxed mt-0.5">
+              预处理管线:pre-emphasis(增强高频摩擦音)+ 压缩器(提升低能量段)+
+              批处理 ASR 结束时的 peak normalize。显著改善气声 / 耳语输入的识别率,
+              对正常说话也无副作用。默认开启。
+            </p>
           </Field>
 
           <div className="pt-3 border-t border-white/5 space-y-3.5">

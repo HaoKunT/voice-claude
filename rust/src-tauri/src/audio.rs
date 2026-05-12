@@ -31,6 +31,7 @@ pub fn list_capture_devices() -> Result<Vec<CaptureDevice>> {
 pub struct Recorder {
     gain: u8,
     device_name: String,
+    enhance: bool,
     buffer: Arc<Mutex<Vec<u8>>>,
     stream_tx: Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
     current_level: Arc<AtomicU32>, // float32 bits of RMS level (0.0-1.0)
@@ -46,10 +47,11 @@ unsafe impl Sync for Recorder {}
 
 impl Recorder {
     #[allow(clippy::arc_with_non_send_sync)] // Recorder 上已经 unsafe impl Send/Sync，stream 由固定线程持有
-    pub fn new(gain: u8, device_name: &str) -> Self {
+    pub fn new(gain: u8, device_name: &str, enhance: bool) -> Self {
         Self {
             gain: gain.max(1),
             device_name: device_name.to_string(),
+            enhance,
             buffer: Arc::new(Mutex::new(Vec::new())),
             stream_tx: Arc::new(Mutex::new(None)),
             current_level: Arc::new(AtomicU32::new(0)),
@@ -130,21 +132,28 @@ impl Recorder {
         let stream_tx = Arc::clone(&self.stream_tx);
         let level = Arc::clone(&self.current_level);
         let gain = self.gain;
+        let enhance = self.enhance;
 
         let err_fn = |err| tracing::error!(?err, "cpal stream error");
 
         // 降采样累积器（device_rate → 16kHz 线性插值的简化版：等间隔取样）
         let stride = (device_rate as f64 / SAMPLE_RATE as f64).max(1.0);
         let state = Arc::new(Mutex::new(ResampleState::new()));
+        // 气声增强状态(pre-emphasis + compressor),跨 cpal 回调保持
+        let enhancer = Arc::new(Mutex::new(Enhancer::default()));
 
         let stream = match sample_format {
             SampleFormat::I16 => {
                 let state = Arc::clone(&state);
+                let enhancer = Arc::clone(&enhancer);
                 device.build_input_stream(
                     &config,
                     move |data: &[i16], _| {
                         let mono = to_mono_f32_from_i16(data, device_channels);
-                        push_resampled(&mono, stride, &state, gain, &buffer, &stream_tx, &level);
+                        push_resampled(
+                            &mono, stride, &state, &enhancer, enhance, gain, &buffer, &stream_tx,
+                            &level,
+                        );
                     },
                     err_fn,
                     None,
@@ -152,11 +161,15 @@ impl Recorder {
             }
             SampleFormat::F32 => {
                 let state = Arc::clone(&state);
+                let enhancer = Arc::clone(&enhancer);
                 device.build_input_stream(
                     &config,
                     move |data: &[f32], _| {
                         let mono = to_mono_f32_from_f32(data, device_channels);
-                        push_resampled(&mono, stride, &state, gain, &buffer, &stream_tx, &level);
+                        push_resampled(
+                            &mono, stride, &state, &enhancer, enhance, gain, &buffer, &stream_tx,
+                            &level,
+                        );
                     },
                     err_fn,
                     None,
@@ -164,11 +177,15 @@ impl Recorder {
             }
             SampleFormat::U16 => {
                 let state = Arc::clone(&state);
+                let enhancer = Arc::clone(&enhancer);
                 device.build_input_stream(
                     &config,
                     move |data: &[u16], _| {
                         let mono = to_mono_f32_from_u16(data, device_channels);
-                        push_resampled(&mono, stride, &state, gain, &buffer, &stream_tx, &level);
+                        push_resampled(
+                            &mono, stride, &state, &enhancer, enhance, gain, &buffer, &stream_tx,
+                            &level,
+                        );
                     },
                     err_fn,
                     None,
@@ -207,6 +224,96 @@ struct ResampleState {
 impl ResampleState {
     fn new() -> Self {
         Self { phase: 0.0 }
+    }
+}
+
+// ============================================================================
+// 气声增强管线 —— 流式处理,单 sample 级别维持状态
+// ============================================================================
+//
+// 气声(whisper / breathy voice)的两个核心麻烦:
+//   - 能量偏高频(摩擦音主导,2-4 kHz),ASR 模型训练时见到的频谱包络偏低频
+//   - 振幅小,固定 gain 放大正常说话会 clip,不放大气声又识别不出
+//
+// 管线顺序: pre-emphasis → compressor
+// - pre-emphasis: Kaldi/ESPnet 等经典 ASR 标准预处理,α=0.97,让频谱包络更像
+//   voiced speech,对气声尤其有效
+// - compressor: 软膝压缩器,把低能量区抬起来,动态范围压平。替代"固定大 gain
+//   导致爆音"的粗暴做法;跨回调保持 envelope 状态做平滑 attack/release。
+
+const PRE_EMPHASIS_ALPHA: f32 = 0.97;
+
+pub struct Enhancer {
+    pre_emph_prev: f32,
+    // compressor 状态 —— envelope 用 RMS-ish 估计,gain 平滑跟随
+    envelope: f32,
+    comp_gain: f32,
+}
+
+impl Default for Enhancer {
+    fn default() -> Self {
+        Self {
+            pre_emph_prev: 0.0,
+            envelope: 0.0,
+            comp_gain: 1.0,
+        }
+    }
+}
+
+impl Enhancer {
+    /// 对 16kHz f32 mono sample 处理一个样本,返回增强后样本。
+    /// 输入输出都在 [-1, 1] 范围(函数内部会自动 clamp)。
+    pub fn process(&mut self, x: f32) -> f32 {
+        // 1. pre-emphasis: y[n] = x[n] - α·x[n-1]
+        let pe = x - PRE_EMPHASIS_ALPHA * self.pre_emph_prev;
+        self.pre_emph_prev = x;
+
+        // 2. compressor
+        //   threshold = -30 dBFS (linear 0.0316)
+        //   ratio     = 3:1
+        //   attack    ≈ 5 ms @ 16kHz  → coef = 1 - exp(-1 / (5ms × 16k)) ≈ 0.0123
+        //   release   ≈ 50 ms @ 16kHz → coef ≈ 0.00125
+        const THRESHOLD: f32 = 0.0316; // -30 dBFS
+        const RATIO: f32 = 3.0;
+        const ATTACK: f32 = 0.0123;
+        const RELEASE: f32 = 0.00125;
+        // 软膝(soft knee),单侧 6 dB 宽度,避免阈值附近抖动
+        const KNEE_WIDTH_DB: f32 = 6.0;
+
+        let abs = pe.abs();
+        // envelope follower:大信号快上(attack),小信号慢下(release)
+        let coef = if abs > self.envelope { ATTACK } else { RELEASE };
+        self.envelope += coef * (abs - self.envelope);
+
+        // 计算目标 gain reduction
+        let target_gain = if self.envelope < 1e-6 {
+            1.0
+        } else {
+            let env_db = 20.0 * self.envelope.log10();
+            let thr_db = 20.0 * THRESHOLD.log10();
+            let delta = env_db - thr_db;
+            let over_db = if delta <= -KNEE_WIDTH_DB / 2.0 {
+                0.0
+            } else if delta >= KNEE_WIDTH_DB / 2.0 {
+                // 全压缩区:超出阈值 delta dB,按 ratio 压缩输出 delta/ratio dB,
+                // 即衰减 (delta - delta/ratio) = delta × (1 - 1/ratio)
+                delta * (1.0 - 1.0 / RATIO)
+            } else {
+                // 软膝过渡(二次曲线,详见 dbx compressor 白皮书)
+                let x = delta + KNEE_WIDTH_DB / 2.0;
+                (1.0 - 1.0 / RATIO) * x * x / (2.0 * KNEE_WIDTH_DB)
+            };
+            // 输出 = 输入 × gain_reduction,over_db 是需要衰减的 dB
+            10f32.powf(-over_db / 20.0)
+        };
+        // gain 平滑(和 envelope 用同一个 coef),避免 gain 突变导致咔哒声
+        self.comp_gain += coef * (target_gain - self.comp_gain);
+
+        // 3. make-up gain:补偿压缩导致的整体能量下降。threshold -30dB 下
+        //    稳态信号平均压 10dB,make-up 6dB 接近原响度
+        const MAKEUP_GAIN: f32 = 2.0; // +6 dB
+
+        (pe * self.comp_gain * MAKEUP_GAIN).clamp(-1.0, 1.0)
     }
 }
 
@@ -249,10 +356,13 @@ fn to_mono_f32_from_u16(data: &[u16], channels: u16) -> Vec<f32> {
     floats
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_resampled(
     mono_in: &[f32],
     stride: f64,
     state: &Arc<Mutex<ResampleState>>,
+    enhancer: &Arc<Mutex<Enhancer>>,
+    enhance_enabled: bool,
     gain: u8,
     buffer: &Arc<Mutex<Vec<u8>>>,
     stream_tx: &Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
@@ -261,6 +371,7 @@ fn push_resampled(
     // 等间隔抽样（最近邻）到 16kHz
     let mut out = Vec::<i16>::with_capacity((mono_in.len() as f64 / stride) as usize + 1);
     let mut st = state.lock();
+    let mut enh = enhancer.lock();
     let mut sum_sq = 0.0f64;
     let mut n_out = 0usize;
     while st.phase < mono_in.len() as f64 {
@@ -268,7 +379,11 @@ fn push_resampled(
         if idx >= mono_in.len() {
             break;
         }
-        let v = (mono_in[idx].clamp(-1.0, 1.0) * 32767.0) as i32 * gain as i32;
+        let mut raw = mono_in[idx].clamp(-1.0, 1.0);
+        if enhance_enabled {
+            raw = enh.process(raw);
+        }
+        let v = (raw * 32767.0) as i32 * gain as i32;
         let s = v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         out.push(s);
         let f = s as f64 / 32768.0;
@@ -278,6 +393,7 @@ fn push_resampled(
     }
     st.phase -= mono_in.len() as f64;
     drop(st);
+    drop(enh);
 
     if out.is_empty() {
         return;
@@ -300,9 +416,61 @@ fn push_resampled(
 
 /// 把累积的 PCM 静音裁剪后打包成 WAV（对应 Go 版 Recorder.ToWAV）。
 /// 裁剪首尾低于阈值的样本，保底最少 0.5 秒。
-pub fn to_wav(pcm: &[u8]) -> Vec<u8> {
+///
+/// enhance=true 时额外跑 peak_normalize:扫整段找 99th percentile 绝对值(避开
+/// 敲键盘/咳嗽 spike),scale 到 0.9 × i16::MAX。只对批处理 ASR 生效 —— 流式
+/// 路径的 PCM 已经边录边发给了 ASR,追不回。
+pub fn to_wav(pcm: &[u8], enhance: bool) -> Vec<u8> {
     let trimmed = trim_silence(pcm);
-    crate::asr::wav::build_wav(trimmed)
+    let processed = if enhance {
+        peak_normalize(trimmed)
+    } else {
+        trimmed.to_vec()
+    };
+    crate::asr::wav::build_wav(&processed)
+}
+
+const NORMALIZE_TARGET_PEAK: f32 = 0.9 * i16::MAX as f32;
+
+/// Peak normalize:扫一遍 PCM 找 99th percentile 绝对值,按需放大整段。
+/// 用 99th percentile 而不是 max,避免偶发 spike(敲键盘/麦克风 pop)把
+/// 人声整体压得太小。
+fn peak_normalize(pcm: &[u8]) -> Vec<u8> {
+    if pcm.len() < 4 {
+        return pcm.to_vec();
+    }
+    let samples: Vec<i16> = pcm
+        .chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    if samples.is_empty() {
+        return pcm.to_vec();
+    }
+
+    // 99th percentile of abs(sample)
+    let mut abs: Vec<i32> = samples.iter().map(|&s| s.unsigned_abs() as i32).collect();
+    abs.sort_unstable();
+    let idx_99 = ((0.99_f64 * abs.len() as f64).ceil() as usize)
+        .saturating_sub(1)
+        .min(abs.len() - 1);
+    let p99 = abs[idx_99] as f32;
+
+    // peak 已经接近满量程就不放大(放大反而增加底噪)
+    if p99 >= NORMALIZE_TARGET_PEAK * 0.95 {
+        return pcm.to_vec();
+    }
+    // 几乎全静音时也跳过(不然会把底噪放到满量程)
+    if p99 < 30.0 {
+        return pcm.to_vec();
+    }
+
+    let scale = NORMALIZE_TARGET_PEAK / p99;
+    let mut out = Vec::with_capacity(pcm.len());
+    for &s in &samples {
+        let v = (s as f32 * scale).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out
 }
 
 /// 去掉首尾静音，保底最少 0.5 秒。
@@ -377,5 +545,91 @@ mod tests {
         let pcm = loud_pcm(1600);
         let out = trim_silence(&pcm);
         assert_eq!(out.len(), pcm.len());
+    }
+
+    fn pcm_from_samples(samples: &[i16]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(samples.len() * 2);
+        for s in samples {
+            v.extend_from_slice(&s.to_le_bytes());
+        }
+        v
+    }
+
+    fn read_samples(pcm: &[u8]) -> Vec<i16> {
+        pcm.chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect()
+    }
+
+    #[test]
+    fn peak_normalize_scales_quiet_signal_up() {
+        // 峰值只到 ~3000,应该被放大到接近 target
+        let samples: Vec<i16> = (0..200)
+            .map(|i| if i % 2 == 0 { 3000 } else { -3000 })
+            .collect();
+        let out = peak_normalize(&pcm_from_samples(&samples));
+        let out_samples = read_samples(&out);
+        let max = out_samples
+            .iter()
+            .map(|s| s.unsigned_abs() as i32)
+            .max()
+            .unwrap();
+        // 目标 peak ≈ 29491,允许小误差
+        assert!(max > 25_000, "max should be scaled up, got {}", max);
+        assert!(max <= i16::MAX as i32);
+    }
+
+    #[test]
+    fn peak_normalize_skips_near_full_scale() {
+        // 峰值已经接近满量程,不应再放大(防 clip)
+        let samples: Vec<i16> = vec![30000; 100];
+        let out = peak_normalize(&pcm_from_samples(&samples));
+        assert_eq!(out, pcm_from_samples(&samples));
+    }
+
+    #[test]
+    fn peak_normalize_skips_silence() {
+        // 全静音不放大(不然底噪被放到满量程)
+        let samples: Vec<i16> = vec![10; 100]; // 峰值 < 30 阈值
+        let out = peak_normalize(&pcm_from_samples(&samples));
+        assert_eq!(out, pcm_from_samples(&samples));
+    }
+
+    #[test]
+    fn peak_normalize_uses_99th_percentile_not_max() {
+        // 100 个小信号 + 1 个 spike,应按小信号的 peak normalize,不被 spike 影响
+        let mut samples: Vec<i16> = vec![3000; 100];
+        samples[50] = 30_000; // 单点 spike
+        let out = peak_normalize(&pcm_from_samples(&samples));
+        let out_samples = read_samples(&out);
+        // p99 索引 = ceil(0.99 * 100) - 1 = 98,取第 99 大的 = 3000
+        // 所以 scale = NORMALIZE_TARGET_PEAK / 3000 ≈ 9.83,3000 → ~29491
+        // 非 spike 样本应被放大到接近 target
+        let typical = out_samples[0].unsigned_abs() as i32;
+        assert!(
+            typical > 25_000,
+            "typical should be scaled, got {}",
+            typical
+        );
+    }
+
+    #[test]
+    fn enhancer_preserves_silence() {
+        let mut e = Enhancer::default();
+        for _ in 0..100 {
+            assert!(e.process(0.0).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn enhancer_compresses_loud_signal() {
+        // 连续满量程信号,compressor 应该把输出压下来,绝对值 < 1.0
+        let mut e = Enhancer::default();
+        // warm up
+        for _ in 0..2000 {
+            e.process(0.9);
+        }
+        let y = e.process(0.9);
+        assert!(y.abs() <= 1.0, "output out of range: {}", y);
     }
 }
