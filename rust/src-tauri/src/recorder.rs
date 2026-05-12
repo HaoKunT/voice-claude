@@ -213,22 +213,22 @@ async fn run(
     let profile = cfg.active_profile();
     // 润色 timing:off profile 或走到 Err branch 都视为 0(没产生真实延时)
     let polish_start = std::time::Instant::now();
-    let (corrected, polish_ms, polish_model) =
+    let (corrected, polish_ms, polish_model, polish_mode) =
         match correct::correct(&raw_text, profile, cfg.correct_timeout_secs()).await {
             Ok(c) => {
-                // 只有实际走了 LLM 调用(mode != off)才记录 model 和延时;
+                // 只有实际走了 LLM 调用(mode != off)才记录 model/mode 和延时;
                 // off/"" 直接返回原文,c == raw_text,不记作延时
                 use crate::config::POLISH_MODE_OFF;
                 if profile.mode == POLISH_MODE_OFF || profile.mode.is_empty() {
-                    (c, 0i64, String::new())
+                    (c, 0i64, String::new(), String::new())
                 } else {
                     let ms = polish_start.elapsed().as_millis() as i64;
-                    (c, ms, profile.model.clone())
+                    (c, ms, profile.model.clone(), profile.mode.clone())
                 }
             }
             Err(e) => {
                 tracing::warn!(error = ?e, profile = %profile.name, "润色失败,使用原文");
-                (raw_text.clone(), 0, String::new())
+                (raw_text.clone(), 0, String::new(), String::new())
             }
         };
     if corrected != raw_text {
@@ -249,6 +249,7 @@ async fn run(
         asr_ms,
         polish_ms,
         polish_model: &polish_model,
+        polish_mode: &polish_mode,
     });
     let _ = app.emit("history-updated", ());
     // 刷新托盘菜单的"最近 5 条"（必须主线程：Tauri 的 Menu/TrayIcon API）

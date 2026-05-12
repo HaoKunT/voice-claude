@@ -74,7 +74,7 @@ export function StatsView() {
           />
           <LatencySection
             title="AI 润色延时"
-            hint="调用 LLM 润色的耗时。off profile 不记录。"
+            hint="调用 LLM 润色的耗时。off profile 和超时失败不记录。同名 model 的 provider 用小徽章标在名字旁边。"
             rows={window_.polish}
             keyHeader="Model"
           />
@@ -121,7 +121,15 @@ function LatencySection({
                   className={i % 2 === 0 ? "" : "bg-white/[0.02]"}
                 >
                   <td className="px-4 py-2 text-gray-200 font-mono text-xs">
-                    {r.key}
+                    <span>{r.key}</span>
+                    {r.providers.map((p) => (
+                      <span
+                        key={p}
+                        className="ml-1.5 px-1.5 py-0.5 rounded bg-white/[0.06] text-[10px] text-gray-400 font-sans"
+                      >
+                        {p}
+                      </span>
+                    ))}
                   </td>
                   <td className="px-4 py-2 text-right text-gray-300 font-mono">
                     {r.count.toLocaleString()}

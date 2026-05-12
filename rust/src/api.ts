@@ -69,6 +69,8 @@ export interface LatencyRow {
   count: number;
   avg_ms: number;
   p99_ms: number;
+  /** 仅润色行用:该 model 用过的 mode 集合(ollama / openrouter / cloud)。ASR 行为空 */
+  providers: string[];
 }
 
 export interface LatencyWindow {
