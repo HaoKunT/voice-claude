@@ -73,6 +73,32 @@ pub fn save(raw: &str, corrected: &str, provider: &str, duration_ms: i64) {
     );
 }
 
+/// 按 id 查询单条记录;不存在返回 None。
+pub fn get(id: i64) -> Result<Option<HistoryEntry>> {
+    let Some(lock) = DB.get() else {
+        return Ok(None);
+    };
+    let conn = lock.lock();
+    let mut stmt = conn.prepare(
+        "SELECT id, created_at, raw_text, corrected_text, asr_provider, duration_ms
+         FROM history WHERE id = ?",
+    )?;
+    let mut rows = stmt.query_map(params![id], |row| {
+        Ok(HistoryEntry {
+            id: row.get(0)?,
+            created_at: row.get(1)?,
+            raw_text: row.get(2)?,
+            corrected_text: row.get(3)?,
+            asr_provider: row.get(4)?,
+            duration_ms: row.get(5).unwrap_or(0),
+        })
+    })?;
+    match rows.next() {
+        Some(r) => Ok(Some(r?)),
+        None => Ok(None),
+    }
+}
+
 /// 读取最近 limit 条记录。
 pub fn load(limit: i64) -> Result<Vec<HistoryEntry>> {
     let Some(lock) = DB.get() else {
@@ -104,6 +130,79 @@ pub fn delete(id: i64) -> Result<()> {
     let conn = lock.lock();
     conn.execute("DELETE FROM history WHERE id = ?", params![id])?;
     Ok(())
+}
+
+/// 聚合统计,用于 HistoryView 顶部 dashboard。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Stats {
+    pub total_count: i64,
+    pub total_duration_ms: i64,
+    pub total_chars: i64,
+    /// 字/分钟,基于 duration_ms > 0 的记录;没有可测数据返回 0
+    pub avg_chars_per_minute: f32,
+    /// 按人均打字 40 字/分钟估计节省分钟数,取 max(0, 打字耗时 - 口述耗时)
+    pub saved_minutes: f32,
+    /// 首条记录时间(unix seconds),无记录时 None
+    pub first_created_at: Option<i64>,
+}
+
+const TYPING_CHARS_PER_MINUTE: f32 = 40.0;
+
+pub fn stats() -> Result<Stats> {
+    let Some(lock) = DB.get() else {
+        return Ok(Stats::default());
+    };
+    let conn = lock.lock();
+    // 直接把 corrected_text 读出来在 Rust 里 chars().count(),
+    // SQLite 的 length() 对中文返回字节数不准
+    let mut stmt = conn.prepare("SELECT created_at, corrected_text, duration_ms FROM history")?;
+    let mut total_count = 0i64;
+    let mut total_duration_ms = 0i64;
+    let mut total_chars = 0i64;
+    let mut measured_duration_ms = 0i64;
+    let mut measured_chars = 0i64;
+    let mut first_created_at: Option<i64> = None;
+
+    let rows = stmt.query_map([], |row| {
+        let created_at: i64 = row.get(0)?;
+        let text: String = row.get(1)?;
+        let dur: i64 = row.get(2).unwrap_or(0);
+        Ok((created_at, text, dur))
+    })?;
+    for r in rows {
+        let (created_at, text, dur) = r?;
+        total_count += 1;
+        total_duration_ms += dur;
+        let chars = text.chars().count() as i64;
+        total_chars += chars;
+        if dur > 0 {
+            measured_duration_ms += dur;
+            measured_chars += chars;
+        }
+        match first_created_at {
+            Some(ts) if ts <= created_at => {}
+            _ => first_created_at = Some(created_at),
+        }
+    }
+
+    let avg_chars_per_minute = if measured_duration_ms > 0 {
+        (measured_chars as f32) / (measured_duration_ms as f32 / 60_000.0)
+    } else {
+        0.0
+    };
+    // 节省分钟数:打字耗时估计 - 实际口述耗时
+    let typed_minutes = (total_chars as f32) / TYPING_CHARS_PER_MINUTE;
+    let spoken_minutes = (total_duration_ms as f32) / 60_000.0;
+    let saved_minutes = (typed_minutes - spoken_minutes).max(0.0);
+
+    Ok(Stats {
+        total_count,
+        total_duration_ms,
+        total_chars,
+        avg_chars_per_minute,
+        saved_minutes,
+        first_created_at,
+    })
 }
 
 /// 清空全部历史。

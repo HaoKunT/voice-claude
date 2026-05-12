@@ -225,6 +225,8 @@ pub fn run() {
             commands::load_history,
             commands::delete_history,
             commands::clear_history,
+            commands::get_history_stats,
+            commands::repolish_history,
             commands::check_ollama,
             commands::open_logs,
             commands::open_log_dir,

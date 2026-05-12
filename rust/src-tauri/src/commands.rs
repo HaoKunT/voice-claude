@@ -76,6 +76,34 @@ pub fn clear_history() -> Result<(), String> {
     history::clear().map_err(|e| e.to_string())
 }
 
+/// 历史记录聚合统计(总次数/时长/字数/字速/节省时间),用于 HistoryView 仪表盘。
+#[tauri::command]
+pub fn get_history_stats() -> Result<history::Stats, String> {
+    history::stats().map_err(|e| e.to_string())
+}
+
+/// 用指定 profile 对历史条目的 raw_text 重新跑一遍润色,返回新结果。
+/// 不写回数据库 —— 让用户可以试不同 profile 看效果,满意自己复制。
+#[tauri::command]
+pub async fn repolish_history(
+    history_id: i64,
+    profile_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let entry = history::get(history_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("历史记录 #{} 不存在", history_id))?;
+    let cfg = state.snapshot();
+    let profile = cfg
+        .polish_profiles
+        .iter()
+        .find(|p| p.id == profile_id)
+        .ok_or_else(|| format!("profile 「{}」不存在", profile_id))?;
+    correct::correct(&entry.raw_text, profile, cfg.correct_timeout_secs())
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn check_ollama(url: String) -> Result<(), String> {
     correct::check_ollama(&url).await.map_err(|e| e.to_string())

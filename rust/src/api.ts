@@ -55,6 +55,15 @@ export interface HistoryEntry {
   duration_ms: number;
 }
 
+export interface HistoryStats {
+  total_count: number;
+  total_duration_ms: number;
+  total_chars: number;
+  avg_chars_per_minute: number;
+  saved_minutes: number;
+  first_created_at: number | null;
+}
+
 export interface SenseVoiceInfo {
   url: string;
   sha256: string;
@@ -86,6 +95,9 @@ export const api = {
   loadHistory: (limit = 200) => invoke<HistoryEntry[]>("load_history", { limit }),
   deleteHistory: (id: number) => invoke<void>("delete_history", { id }),
   clearHistory: () => invoke<void>("clear_history"),
+  getHistoryStats: () => invoke<HistoryStats>("get_history_stats"),
+  repolishHistory: (historyId: number, profileId: string) =>
+    invoke<string>("repolish_history", { historyId, profileId }),
   checkOllama: (url: string) => invoke<void>("check_ollama", { url }),
   openLogs: () => invoke<void>("open_logs"),
   openLogDir: () => invoke<void>("open_log_dir"),
