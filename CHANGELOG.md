@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.1.3
+
+- 新增：Prompt 模板库——新建 AI 润色 Profile 时可从 4 个内置模板挑一个一键预填，不用自己从头写 prompt。**Claude Code 指令**（重点）：纠错 + 去口头禅 + 保留代码标识符/文件路径/英文术语原样 + 不扩写臆测，专为给 Claude Code 下达编程任务优化；另外还有「只纠错不改写」「口语 → 规范书面中文」「中译英」三个模板
+- 新增：输出方式可选——默认仍是 `input`（enigo 自动输入，与老版一致），新增 `panel` 选项让识别结果停留在悬浮窗 textarea，用户可以就地编辑、复制、关闭；给 enigo 在某些 Electron app 失灵或需要二次确认的场景兜底
+- 新增：快捷键按一下录入——设置页快捷键框旁「⌨ 录入」按钮，点一下后按目标组合键自动填入 `cmd+shift+f5` 格式（用 `e.code` 生成主键字符串，不受 shift 大小写/输入法影响），ESC 取消；录入期间临时 suspend 全局热键避免冲突，不用手打字符串
+- 新增：push-to-talk 模式——录音参数页「按住说话」开关（默认关），按下组合键开始录、松开任一键自动停；适合短句和边界明确的场景。与原 toggle 模式「按一下开始、再按一下结束」并存可切
+- 新增：配置一键导入/导出——关于页「🔄 配置备份」卡片，导出写 pretty JSON 到文件；导入先校验新热键可注册（避免导入后失效）→ save → 重注册 → replace AppState → 广播 config-updated。换机器 / 备份 / 分享配置用
+- 改：Claude Code 模板加极短输入保护——ASR 偶尔返回 "。"、"嗯"、"好" 等 <10 字无意义文本时直接原样返回，不再让 LLM 基于无意义输入幻觉出一整段 Python 代码
+- 改：悬浮窗 panel 模式结果从 `<div>` 换成 `<textarea>`——就地编辑识别文字再复制粘贴；NSPanel 在点 textarea 时走 `becomes_key_only_if_needed=true` 自动接收键盘输入
+- 改：悬浮窗底部热键提示改为从 `recording-started` event payload 动态渲染，跟随配置实时更新；之前硬编码「再按 ⌘⇧F5 结束」，改快捷键后不同步
+- 改：录音 / 处理 / 结果三阶段悬浮窗独立 view——新增 processing view（spinner + "正在处理…"），录音停止切 processing，ASR 最终文本到达切 result；input 模式下很快 hide，panel 模式等润色完再切 result
+- 改：macOS 上录入热键显示 `option` / `cmd`（之前显示 `alt` / `win`，看着像 Windows 命名）；底层 Rust hotkey 解析两种命名都认，兼容老配置
+- 修复：Windows 黑框 + 热键注册改进（Pressed/Released 区分、组合键松开任一键都触发 Released）
+- 修复：panel 模式悬浮窗卡在"正在润色"——`recording-stopped` 和 `asr-final-text` event 顺序修正，`run()` 内部先 emit `recording-stopped` 再 emit `asr-final-text`，indicator 才不会最后停在 processing view
+- 修复：悬浮窗波形不显示——canvas 嵌套进 `#recording-view` 多了一层，module load 时 layout 还没算完，`clientWidth` 读到 0，backing store 写成 0×0，柱子画到空 canvas 上用户完全看不到；改成首帧 `render()` 时才 resize backing store + `ctx.scale(dpr)`，尺寸不变时 skip 避免每帧 scale 导致柱子越来越大
+- 修复：Retina 屏悬浮窗波形不显示 + 尺寸错乱——HTML `<canvas width="920" height="120">` 属性恰好等于 `dpr=2` 时 CSS 尺寸 × 2，`resizeCanvasIfNeeded` 尺寸相等 early-return 跳过 `ctx.scale(dpr)`；去掉 HTML 尺寸属性强制首次一定 resize + scale
+- 修复：panel 模式悬浮窗底部按钮被裁——`indicator.rs` 窗口高度 140 → 180；`#result-view` 加 flex column + align-items:center + gap 让按钮居中整齐
+- 修复：悬浮窗 view 切换失效——`[hidden]` 被 `#foo { display: flex }` ID 选择器覆盖（UA stylesheet `[hidden] { display: none }` 特异性 0,0,1,0 输给 ID 的 0,1,0,0），三个 view 永远都显示；给三个 view 加 `#foo[hidden] { display: none }` (0,1,1,0) 反超
+- 修复：`suspend_hotkey` 没同步清 `AppState.registered_hotkey`，resume 时 `register_hotkey` 以为还有旧 accel 需要 unregister，多发 warn 日志
+- 修复：`import_config` 顺序修正——预校验 hotkey 语法 → save 到磁盘 → register 真正注册 → replace AppState。之前顺序下 save 失败时磁盘是旧、内存是旧、系统热键已改，三处不一致
+- 修复：panic-safe——`RecordingGuard::drop` 补 `active.store(false)`，`run().await` panic 时 active 不再卡 true 让下次 toggle 误判「还在录音」
+- 构建：clippy `-D warnings` 在 `objc 0.2` 的 `cargo-clippy` cfg 上过不了——给 cfg 检查加白名单
+- 重构：`/simplify` 清理最近 5 个 feature 的重复与瑕疵——抽 `fileDialogHelpers.ts`（save/read text 给 AboutView 配置导入导出、SettingsView 热词 CSV 导入导出共用）、`keyCodeToName()`（HotkeyRecorder 的 `KeyA→a` / `Digit1→1` / `F5→f5` 映射从内联移进来）、`POLISH_MODE_*` / `OUTPUT_MODE_*` 常量；HotkeyRecorder 的 useEffect 依赖去掉 onChange，改用 onChangeRef 避免父组件每次 render 新 onChange 触发 effect teardown/setup 频繁调 suspend/resume
+- 文档：README 勘误——辅助功能恢复权限要「**减号删除 → 加号重加**」（不是取消勾选再勾选），因为 TCC 的 csreq 绑在 entry 上，单纯 toggle 开关不会更新 csreq
+
 ## 0.1.2
 
 - 新增：VAD 静音自动停止录音——检测到说话起点后，连续静音超过阈值就自动结束，不用再按一次热键；录音参数页可开关 + 调静音时长（0.5–5.0 秒）和音量触发阈值；默认关闭，想用在设置里打开
