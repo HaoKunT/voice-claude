@@ -175,6 +175,14 @@ listen("recording-stopped", () => {
   showView("processing");
 });
 
+listen("recording-cancelled", () => {
+  // ESC 取消:timer 关掉、partial 复位,窗口由后端 guard drop 直接 hide;
+  // 下一次 recording-started 会把视图切回 recording 并重置
+  stopTimer();
+  partialEl.textContent = "已取消";
+  partialEl.classList.add("empty");
+});
+
 // 页面加载时假设已经进入录音（悬浮窗只在录音时显示）
 startTimer();
 

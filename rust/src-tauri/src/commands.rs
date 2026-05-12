@@ -187,6 +187,14 @@ pub fn close_result_window(app: AppHandle) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+/// 录音中取消本次(丢弃录音,不走 ASR/AI/输出)。ESC 全局热键外的兜底入口,
+/// 比如悬浮窗 webview 获得焦点时本地 keydown 也可以 invoke 这个命令。
+#[tauri::command]
+pub fn cancel_recording() -> Result<(), String> {
+    crate::recorder::cancel();
+    Ok(())
+}
+
 /// 读取最新日志文件的最后 limit 行，返回给前端展示。
 #[tauri::command]
 pub fn read_recent_logs(limit: usize) -> Result<Vec<String>, String> {

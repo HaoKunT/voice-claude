@@ -16,17 +16,24 @@ struct RecordingStartedPayload<'a> {
     hotkey: &'a str,
 }
 
-/// 全局录音状态：避免并发录音 + 支持 toggle
+/// 录音结束方式:正常停止走后续 ASR/AI/输出,取消则丢弃一切
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopReason {
+    Stop,
+    Cancel,
+}
+
+/// 全局录音状态:避免并发录音 + 支持 toggle/cancel
 pub struct RecordingState {
     pub active: AtomicBool,
-    pub stop_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    pub signal_tx: Mutex<Option<tokio::sync::oneshot::Sender<StopReason>>>,
 }
 
 impl RecordingState {
     fn new() -> Self {
         Self {
             active: AtomicBool::new(false),
-            stop_tx: Mutex::new(None),
+            signal_tx: Mutex::new(None),
         }
     }
 }
@@ -52,6 +59,12 @@ impl Drop for RecordingGuard {
         // 兜底重置 active：即便 run().await panic 也不会让 active 卡在 true，
         // 否则下一次 toggle 会以为还在录音
         recording().active.store(false, Ordering::Relaxed);
+        // 录音结束(无论正常 / cancel / panic)统一注销临时 ESC 热键,
+        // 避免录音外还占着 ESC 影响其他 app
+        let unregister_app = self.app.clone();
+        let _ = self.app.run_on_main_thread(move || {
+            crate::unregister_cancel_hotkey(&unregister_app);
+        });
         let hide_app = self.app.clone();
         let _ = self.app.run_on_main_thread(move || {
             crate::indicator::hide(&hide_app);
@@ -79,8 +92,8 @@ pub fn start(app: AppHandle, cfg: Arc<crate::config::Config>) {
         return;
     }
     tracing::info!("recorder: 请求开始录音");
-    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-    *rec_state.stop_tx.lock() = Some(stop_tx);
+    let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<StopReason>();
+    *rec_state.signal_tx.lock() = Some(signal_tx);
     rec_state.active.store(true, Ordering::Relaxed);
 
     let app_handle = app.clone();
@@ -88,7 +101,7 @@ pub fn start(app: AppHandle, cfg: Arc<crate::config::Config>) {
         // run 内部成功路径会在 ASR 完成后自行 emit "recording-stopped"，
         // 这里只在失败路径补发一次（保证 indicator state 机最终能离开
         // recording view；紧接着 guard drop 会 hide 窗口）
-        if let Err(e) = run(app_handle.clone(), cfg, stop_rx).await {
+        if let Err(e) = run(app_handle.clone(), cfg, signal_rx).await {
             tracing::error!(error = ?e, "录音流程失败");
             let _ = app_handle.emit("recording-stopped", ());
         }
@@ -98,14 +111,27 @@ pub fn start(app: AppHandle, cfg: Arc<crate::config::Config>) {
 
 /// 停止当前录音；若未在录音则 no-op。push-to-talk 松开时调，VAD / toggle 也用。
 pub fn stop() {
-    let had_tx = recording().stop_tx.lock().take().map(|tx| tx.send(()));
-    tracing::info!(send_result = ?had_tx, "recorder: 请求停止录音");
+    send_signal(StopReason::Stop);
+}
+
+/// 取消当前录音(丢弃录音内容,不走 ASR/AI/输出)。ESC 热键 + indicator 按钮都调它。
+pub fn cancel() {
+    send_signal(StopReason::Cancel);
+}
+
+fn send_signal(reason: StopReason) {
+    let had_tx = recording()
+        .signal_tx
+        .lock()
+        .take()
+        .map(|tx| tx.send(reason));
+    tracing::info!(?reason, send_result = ?had_tx, "recorder: 请求结束录音");
 }
 
 async fn run(
     app: AppHandle,
     cfg: Arc<crate::config::Config>,
-    stop_rx: tokio::sync::oneshot::Receiver<()>,
+    signal_rx: tokio::sync::oneshot::Receiver<StopReason>,
 ) -> Result<()> {
     tracing::info!("开始录音");
     let started_at = std::time::Instant::now();
@@ -118,10 +144,12 @@ async fn run(
         },
     );
     crate::beep::start();
-    // indicator 窗口创建 + tauri-nspanel to_panel() 必须在主线程，不能在 worker
+    // indicator 窗口创建 + tauri-nspanel to_panel() 必须在主线程，不能在 worker。
+    // 同一次 run_on_main_thread 顺便注册 ESC 取消热键(global_shortcut 注册也应在主线程)。
     let show_app = app.clone();
     let _ = app.run_on_main_thread(move || {
         crate::indicator::show(&show_app);
+        crate::register_cancel_hotkey(&show_app);
     });
 
     // guard：无论正常 / 提前 return / panic，都关闭 indicator + stop level task
@@ -154,11 +182,17 @@ async fn run(
         });
     }
 
-    let raw_text = if is_streaming(&cfg.asr_provider) {
-        run_stream(app.clone(), &rec, &cfg, stop_rx).await?
+    let (reason, raw_text) = if is_streaming(&cfg.asr_provider) {
+        run_stream(app.clone(), &rec, &cfg, signal_rx).await?
     } else {
-        run_batch(&rec, &cfg, stop_rx).await?
+        run_batch(&rec, &cfg, signal_rx).await?
     };
+
+    // 取消路径:悬浮窗直接消失 (guard drop 里 hide),不走 processing/result,不写历史
+    if reason == StopReason::Cancel {
+        tracing::info!("录音已取消,丢弃识别结果");
+        return Ok(());
+    }
 
     // 录音 + ASR 已结束，进入后处理（润色 / 热词）阶段；panel 模式下
     // 悬浮窗切到 processing view。必须在 asr-final-text 之前发，否则 event
@@ -315,8 +349,8 @@ async fn run_stream(
     app: AppHandle,
     rec: &Arc<Recorder>,
     cfg: &crate::config::Config,
-    stop_rx: tokio::sync::oneshot::Receiver<()>,
-) -> Result<String> {
+    signal_rx: tokio::sync::oneshot::Receiver<StopReason>,
+) -> Result<(StopReason, String)> {
     let pcm_rx = rec.start_stream();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -347,32 +381,45 @@ async fn run_stream(
     let _ = ready_rx.await;
     rec.start()?;
 
-    // 等用户停止
-    let _ = stop_rx.await;
+    // 等用户停止或取消
+    let reason = signal_rx.await.unwrap_or(StopReason::Stop);
     crate::beep::stop();
     rec.stop_stream();
     rec.stop();
 
-    let final_text = asr_task.await??;
-    // 把之前输入的中间结果全部删掉
+    // 无论 stop 还是 cancel 都要删掉已经 type 到目标 app 的中间结果,
+    // 否则用户目标窗口里会留着"半个识别结果"
     let prev = *partial_state.lock();
     let _ = input::delete_chars(prev);
-    Ok(final_text)
+
+    if reason == StopReason::Cancel {
+        // 不再等 ASR 最终结果,任务会因 pcm_rx 关闭自然退出
+        asr_task.abort();
+        return Ok((reason, String::new()));
+    }
+
+    let final_text = asr_task.await??;
+    Ok((reason, final_text))
 }
 
 async fn run_batch(
     rec: &Arc<Recorder>,
     cfg: &crate::config::Config,
-    stop_rx: tokio::sync::oneshot::Receiver<()>,
-) -> Result<String> {
+    signal_rx: tokio::sync::oneshot::Receiver<StopReason>,
+) -> Result<(StopReason, String)> {
     rec.start()?;
-    let _ = stop_rx.await;
+    let reason = signal_rx.await.unwrap_or(StopReason::Stop);
     crate::beep::stop();
     let pcm = rec.stop();
+
+    if reason == StopReason::Cancel {
+        return Ok((reason, String::new()));
+    }
+
     let wav = to_wav(&pcm);
     if wav.len() < 100 {
         tracing::warn!(wav_bytes = wav.len(), "未录到声音");
-        return Ok(String::new());
+        return Ok((reason, String::new()));
     }
     // debug：保存最近一次录音 WAV 到 /tmp，方便用 afplay 听
     let _ = std::fs::write("/tmp/voice-claude-last.wav", &wav);
@@ -381,5 +428,6 @@ async fn run_batch(
         path = "/tmp/voice-claude-last.wav",
         "识别中"
     );
-    asr::transcribe_batch(cfg, &wav).await
+    let text = asr::transcribe_batch(cfg, &wav).await?;
+    Ok((reason, text))
 }

@@ -33,7 +33,7 @@ pub mod tray;
 
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 /// 应用状态：配置 + 运行时可变数据。
@@ -56,6 +56,56 @@ impl AppState {
 
     pub fn replace(&self, cfg: config::Config) {
         *self.config.lock() = Arc::new(cfg);
+    }
+}
+
+/// 录音期间用的临时 ESC 全局热键 accelerator 字符串。
+const CANCEL_HOTKEY: &str = "Escape";
+
+/// 录音开始时调用:注册 ESC 为临时全局热键,按下即取消录音。
+/// 若当前主热键本身就是 Escape(罕见),跳过注册避免冲突。
+pub fn register_cancel_hotkey(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    if state
+        .registered_hotkey
+        .lock()
+        .as_deref()
+        .is_some_and(|s| s.eq_ignore_ascii_case(CANCEL_HOTKEY))
+    {
+        tracing::debug!("主热键即 ESC,跳过注册 ESC 取消热键");
+        return;
+    }
+    let gs = app.global_shortcut();
+    // 上次录音未能注销干净时兜底(比如 drop 期间异常),忽略错误
+    let _ = gs.unregister(CANCEL_HOTKEY);
+    let handle = app.clone();
+    let result = gs.on_shortcut(CANCEL_HOTKEY, move |_app, _shortcut, event| {
+        use tauri_plugin_global_shortcut::ShortcutState;
+        if event.state() == ShortcutState::Pressed {
+            tracing::info!("ESC 按下,取消录音");
+            let _ = handle.emit("recording-cancelled", ());
+            recorder::cancel();
+        }
+    });
+    if let Err(e) = result {
+        tracing::warn!(error = ?e, "注册 ESC 取消热键失败");
+    }
+}
+
+/// 录音结束(正常停止或取消)时调用:注销 ESC 临时热键。
+pub fn unregister_cancel_hotkey(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    if state
+        .registered_hotkey
+        .lock()
+        .as_deref()
+        .is_some_and(|s| s.eq_ignore_ascii_case(CANCEL_HOTKEY))
+    {
+        return;
+    }
+    let gs = app.global_shortcut();
+    if let Err(e) = gs.unregister(CANCEL_HOTKEY) {
+        tracing::debug!(error = ?e, "注销 ESC 热键(可能从未注册),忽略");
     }
 }
 
@@ -180,6 +230,7 @@ pub fn run() {
             commands::open_log_dir,
             commands::close_indicator,
             commands::close_result_window,
+            commands::cancel_recording,
             commands::suspend_hotkey,
             commands::resume_hotkey,
             commands::read_recent_logs,
