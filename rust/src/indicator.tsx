@@ -13,10 +13,9 @@ const SMOOTH = 0.65;
 const canvas = document.getElementById("wave") as HTMLCanvasElement;
 const ctx = canvas.getContext("2d")!;
 
-/// 同步 canvas backing store 尺寸到 CSS 尺寸。必须在 layout 完成后调。
-/// 之前 module load 时直接读 clientWidth，新 DOM（多嵌套一层 recording-view）
-/// 有时 layout 还没算完导致尺寸为 0，render 全画到空 canvas 上波形不见。
-let canvasScaled = false;
+/// 同步 canvas backing store 尺寸到 CSS 尺寸。在 render loop 里每帧调；
+/// 尺寸没变就跳过，避免重复 resize 清空 canvas。layout 未完成（clientWidth=0）
+/// 也直接返回，等下一帧。
 function resizeCanvasIfNeeded() {
   const cw = canvas.clientWidth;
   const ch = canvas.clientHeight;
@@ -24,15 +23,11 @@ function resizeCanvasIfNeeded() {
   const dpr = window.devicePixelRatio || 2;
   const wantedW = cw * dpr;
   const wantedH = ch * dpr;
-  // 即便尺寸恰好等于 wanted（retina 屏 HTML attribute 和 CSS*dpr 巧合相等
-  // 的边界情况），首次 resize 仍必须跑一遍 scale，否则 ctx 的 transform 是
-  // 单位矩阵，画出来的图会按 backing store 坐标显示成 1/dpr 尺寸
-  if (canvasScaled && canvas.width === wantedW && canvas.height === wantedH) return;
+  if (canvas.width === wantedW && canvas.height === wantedH) return;
   canvas.width = wantedW;
   canvas.height = wantedH;
   ctx.resetTransform();
   ctx.scale(dpr, dpr);
-  canvasScaled = true;
 }
 
 // ==== 波形渲染 ====

@@ -11,6 +11,11 @@ use std::sync::{Arc, OnceLock};
 use tauri::AppHandle;
 use tauri::Emitter;
 
+#[derive(serde::Serialize, Clone)]
+struct RecordingStartedPayload<'a> {
+    hotkey: &'a str,
+}
+
 /// 全局录音状态：避免并发录音 + 支持 toggle
 pub struct RecordingState {
     pub active: AtomicBool,
@@ -44,6 +49,9 @@ struct RecordingGuard {
 impl Drop for RecordingGuard {
     fn drop(&mut self) {
         self.level_stop.store(true, Ordering::Relaxed);
+        // 兜底重置 active：即便 run().await panic 也不会让 active 卡在 true，
+        // 否则下一次 toggle 会以为还在录音
+        recording().active.store(false, Ordering::Relaxed);
         if self.keep_indicator.load(Ordering::Relaxed) {
             return;
         }
@@ -114,10 +122,6 @@ async fn run(
     let started_at = std::time::Instant::now();
 
     // 带上当前热键，让悬浮窗底部"再按 xxx 结束"提示跟着 config 动态渲染
-    #[derive(serde::Serialize, Clone)]
-    struct RecordingStartedPayload<'a> {
-        hotkey: &'a str,
-    }
     let _ = app.emit(
         "recording-started",
         RecordingStartedPayload {
