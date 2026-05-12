@@ -82,6 +82,12 @@ pub fn get_history_stats() -> Result<history::Stats, String> {
     history::stats().map_err(|e| e.to_string())
 }
 
+/// ASR / 润色延时统计:全量 + 近 24h + 近 7d 三套窗口,按 provider / model 分组。
+#[tauri::command]
+pub fn get_latency_stats() -> Result<history::LatencyStats, String> {
+    history::latency_stats().map_err(|e| e.to_string())
+}
+
 /// 用指定 profile 对历史条目的 raw_text 重新跑一遍润色,返回新结果。
 /// 不写回数据库 —— 让用户可以试不同 profile 看效果,满意自己复制。
 ///

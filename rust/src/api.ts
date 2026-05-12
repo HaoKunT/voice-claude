@@ -64,6 +64,24 @@ export interface HistoryStats {
   first_created_at: number | null;
 }
 
+export interface LatencyRow {
+  key: string;
+  count: number;
+  avg_ms: number;
+  p99_ms: number;
+}
+
+export interface LatencyWindow {
+  asr: LatencyRow[];
+  polish: LatencyRow[];
+}
+
+export interface LatencyStats {
+  all_time: LatencyWindow;
+  last_24h: LatencyWindow;
+  last_7d: LatencyWindow;
+}
+
 export interface SenseVoiceInfo {
   url: string;
   sha256: string;
@@ -96,6 +114,7 @@ export const api = {
   deleteHistory: (id: number) => invoke<void>("delete_history", { id }),
   clearHistory: () => invoke<void>("clear_history"),
   getHistoryStats: () => invoke<HistoryStats>("get_history_stats"),
+  getLatencyStats: () => invoke<LatencyStats>("get_latency_stats"),
   repolishHistory: (historyId: number, profileId: string) =>
     invoke<string>("repolish_history", { historyId, profileId }),
   checkOllama: (url: string) => invoke<void>("check_ollama", { url }),

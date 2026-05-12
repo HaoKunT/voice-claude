@@ -18,6 +18,15 @@ pub struct HistoryEntry {
     pub asr_provider: String,
     #[serde(default)]
     pub duration_ms: i64,
+    /// ASR 调用耗时(从调用开始到拿到最终文本)。旧数据为 0。
+    #[serde(default)]
+    pub asr_ms: i64,
+    /// 润色调用耗时。off profile 或未润色为 0。旧数据为 0。
+    #[serde(default)]
+    pub polish_ms: i64,
+    /// 本次使用的润色 model 名。off / 未润色为空。旧数据为空。
+    #[serde(default)]
+    pub polish_model: String,
 }
 
 static DB: OnceLock<Mutex<Connection>> = OnceLock::new();
@@ -38,39 +47,92 @@ pub fn init() -> Result<()> {
         [],
     )
     .context("create history table")?;
-    // Migration: 加 duration_ms 列（旧数据为 0）。
-    // 用 PRAGMA 查现有列，不存在才 ALTER（ALTER TABLE IF NOT EXISTS 在 SQLite 不支持列）
-    let has_duration = {
+    // Migration: 逐列检查并 ALTER ADD COLUMN(SQLite 不支持 IF NOT EXISTS 语法,用
+    // PRAGMA table_info 查当前列)。老数据新列填默认值,聚合统计时用 WHERE > 0 过滤。
+    let existing_cols: std::collections::HashSet<String> = {
         let mut stmt = conn.prepare("PRAGMA table_info(history)")?;
-        let cols: Vec<String> = stmt
-            .query_map([], |row| row.get::<_, String>(1))?
-            .filter_map(Result::ok)
-            .collect();
-        cols.iter().any(|c| c == "duration_ms")
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let cols: std::collections::HashSet<String> = rows.filter_map(Result::ok).collect();
+        cols
     };
-    if !has_duration {
-        conn.execute(
+    let migrations: &[(&str, &str)] = &[
+        (
+            "duration_ms",
             "ALTER TABLE history ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0",
-            [],
-        )
-        .context("add duration_ms column")?;
+        ),
+        (
+            "asr_ms",
+            "ALTER TABLE history ADD COLUMN asr_ms INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "polish_ms",
+            "ALTER TABLE history ADD COLUMN polish_ms INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "polish_model",
+            "ALTER TABLE history ADD COLUMN polish_model TEXT NOT NULL DEFAULT ''",
+        ),
+    ];
+    for (col, sql) in migrations {
+        if !existing_cols.contains(*col) {
+            conn.execute(sql, [])
+                .with_context(|| format!("add {}", col))?;
+        }
     }
     DB.set(Mutex::new(conn))
         .map_err(|_| anyhow::anyhow!("DB already initialized"))?;
     Ok(())
 }
 
-/// 保存一条识别记录；DB 未初始化时静默返回。
-pub fn save(raw: &str, corrected: &str, provider: &str, duration_ms: i64) {
+/// 一次识别的全部落库数据(延时拆分用)。
+pub struct SaveEntry<'a> {
+    pub raw: &'a str,
+    pub corrected: &'a str,
+    pub provider: &'a str,
+    pub duration_ms: i64,
+    pub asr_ms: i64,
+    pub polish_ms: i64,
+    pub polish_model: &'a str,
+}
+
+/// 保存一条识别记录;DB 未初始化时静默返回。
+pub fn save(entry: SaveEntry<'_>) {
     let Some(lock) = DB.get() else {
         return;
     };
     let conn = lock.lock();
     let ts = chrono::Utc::now().timestamp();
     let _ = conn.execute(
-        "INSERT INTO history (created_at, raw_text, corrected_text, asr_provider, duration_ms) VALUES (?, ?, ?, ?, ?)",
-        params![ts, raw, corrected, provider, duration_ms],
+        "INSERT INTO history (created_at, raw_text, corrected_text, asr_provider, duration_ms, asr_ms, polish_ms, polish_model)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        params![
+            ts,
+            entry.raw,
+            entry.corrected,
+            entry.provider,
+            entry.duration_ms,
+            entry.asr_ms,
+            entry.polish_ms,
+            entry.polish_model,
+        ],
     );
+}
+
+const HISTORY_COLUMNS: &str =
+    "id, created_at, raw_text, corrected_text, asr_provider, duration_ms, asr_ms, polish_ms, polish_model";
+
+fn map_row(row: &rusqlite::Row) -> rusqlite::Result<HistoryEntry> {
+    Ok(HistoryEntry {
+        id: row.get(0)?,
+        created_at: row.get(1)?,
+        raw_text: row.get(2)?,
+        corrected_text: row.get(3)?,
+        asr_provider: row.get(4)?,
+        duration_ms: row.get(5).unwrap_or(0),
+        asr_ms: row.get(6).unwrap_or(0),
+        polish_ms: row.get(7).unwrap_or(0),
+        polish_model: row.get(8).unwrap_or_default(),
+    })
 }
 
 /// 按 id 查询单条记录;不存在返回 None。
@@ -79,20 +141,9 @@ pub fn get(id: i64) -> Result<Option<HistoryEntry>> {
         return Ok(None);
     };
     let conn = lock.lock();
-    let mut stmt = conn.prepare(
-        "SELECT id, created_at, raw_text, corrected_text, asr_provider, duration_ms
-         FROM history WHERE id = ?",
-    )?;
-    let mut rows = stmt.query_map(params![id], |row| {
-        Ok(HistoryEntry {
-            id: row.get(0)?,
-            created_at: row.get(1)?,
-            raw_text: row.get(2)?,
-            corrected_text: row.get(3)?,
-            asr_provider: row.get(4)?,
-            duration_ms: row.get(5).unwrap_or(0),
-        })
-    })?;
+    let sql = format!("SELECT {HISTORY_COLUMNS} FROM history WHERE id = ?");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query_map(params![id], map_row)?;
     match rows.next() {
         Some(r) => Ok(Some(r?)),
         None => Ok(None),
@@ -105,20 +156,9 @@ pub fn load(limit: i64) -> Result<Vec<HistoryEntry>> {
         return Ok(Vec::new());
     };
     let conn = lock.lock();
-    let mut stmt = conn.prepare(
-        "SELECT id, created_at, raw_text, corrected_text, asr_provider, duration_ms
-         FROM history ORDER BY created_at DESC LIMIT ?",
-    )?;
-    let rows = stmt.query_map(params![limit], |row| {
-        Ok(HistoryEntry {
-            id: row.get(0)?,
-            created_at: row.get(1)?,
-            raw_text: row.get(2)?,
-            corrected_text: row.get(3)?,
-            asr_provider: row.get(4)?,
-            duration_ms: row.get(5).unwrap_or(0),
-        })
-    })?;
+    let sql = format!("SELECT {HISTORY_COLUMNS} FROM history ORDER BY created_at DESC LIMIT ?");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![limit], map_row)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
@@ -203,6 +243,134 @@ pub fn stats() -> Result<Stats> {
         saved_minutes,
         first_created_at,
     })
+}
+
+/// 延时统计单行:按 ASR provider 或 润色 model 分组后的汇总。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LatencyRow {
+    /// 分组键(provider 或 model 名)
+    pub key: String,
+    pub count: i64,
+    pub avg_ms: i64,
+    pub p99_ms: i64,
+}
+
+/// 单个时间窗口(全量 / 近 24h / 近 7d)的 ASR + 润色延时。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LatencyWindow {
+    pub asr: Vec<LatencyRow>,
+    pub polish: Vec<LatencyRow>,
+}
+
+/// 三套时间窗口的延时统计,供「状态」页展示。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LatencyStats {
+    pub all_time: LatencyWindow,
+    pub last_24h: LatencyWindow,
+    pub last_7d: LatencyWindow,
+}
+
+/// 聚合 ASR 和润色延时,按全量 / 近 24h / 近 7d 三套窗口切片。
+/// SQLite 没内置 percentile,数据量不大(几千条级)直接读到 Rust 里排序算。
+pub fn latency_stats() -> Result<LatencyStats> {
+    let Some(lock) = DB.get() else {
+        return Ok(LatencyStats::default());
+    };
+    let conn = lock.lock();
+    // 只读统计需要的 5 列,避免把 raw_text/corrected_text 这种大字段一起拖进来
+    let mut stmt = conn
+        .prepare("SELECT created_at, asr_provider, asr_ms, polish_ms, polish_model FROM history")?;
+    let rows: Vec<(i64, String, i64, i64, String)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1).unwrap_or_default(),
+                row.get::<_, i64>(2).unwrap_or(0),
+                row.get::<_, i64>(3).unwrap_or(0),
+                row.get::<_, String>(4).unwrap_or_default(),
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let now = chrono::Utc::now().timestamp();
+    let cutoff_24h = now - 24 * 3600;
+    let cutoff_7d = now - 7 * 24 * 3600;
+
+    let mut all = WindowAcc::default();
+    let mut d24 = WindowAcc::default();
+    let mut d7 = WindowAcc::default();
+    for (ts, provider, asr_ms, polish_ms, polish_model) in &rows {
+        all.add(provider, *asr_ms, polish_model, *polish_ms);
+        if *ts >= cutoff_7d {
+            d7.add(provider, *asr_ms, polish_model, *polish_ms);
+        }
+        if *ts >= cutoff_24h {
+            d24.add(provider, *asr_ms, polish_model, *polish_ms);
+        }
+    }
+
+    Ok(LatencyStats {
+        all_time: all.finish(),
+        last_24h: d24.finish(),
+        last_7d: d7.finish(),
+    })
+}
+
+#[derive(Default)]
+struct WindowAcc {
+    asr: std::collections::BTreeMap<String, Vec<i64>>,
+    polish: std::collections::BTreeMap<String, Vec<i64>>,
+}
+
+impl WindowAcc {
+    fn add(&mut self, provider: &str, asr_ms: i64, polish_model: &str, polish_ms: i64) {
+        if asr_ms > 0 && !provider.is_empty() {
+            self.asr
+                .entry(provider.to_string())
+                .or_default()
+                .push(asr_ms);
+        }
+        if polish_ms > 0 && !polish_model.is_empty() {
+            self.polish
+                .entry(polish_model.to_string())
+                .or_default()
+                .push(polish_ms);
+        }
+    }
+
+    fn finish(self) -> LatencyWindow {
+        LatencyWindow {
+            asr: summarize(self.asr),
+            polish: summarize(self.polish),
+        }
+    }
+}
+
+fn summarize(groups: std::collections::BTreeMap<String, Vec<i64>>) -> Vec<LatencyRow> {
+    let mut rows: Vec<LatencyRow> = groups
+        .into_iter()
+        .map(|(key, mut v)| {
+            v.sort_unstable();
+            let count = v.len() as i64;
+            let sum: i64 = v.iter().sum();
+            let avg_ms = sum / count;
+            // p99:排序后取 ceil(0.99 * len) - 1 位置(clamp 到 [0, len-1])。
+            // len < 100 时 p99 就是最大值
+            let idx = ((0.99_f64 * count as f64).ceil() as usize)
+                .saturating_sub(1)
+                .min(v.len() - 1);
+            let p99_ms = v[idx];
+            LatencyRow {
+                key,
+                count,
+                avg_ms,
+                p99_ms,
+            }
+        })
+        .collect();
+    // count 降序展示更实用(用得多的排前面)
+    rows.sort_by_key(|r| std::cmp::Reverse(r.count));
+    rows
 }
 
 /// 清空全部历史。

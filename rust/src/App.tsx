@@ -4,6 +4,7 @@ import { api, Config } from "./api";
 import { formatHotkey } from "./lib/hotkey";
 import { SettingsView, SettingsSection } from "./views/SettingsView";
 import { HistoryView } from "./views/HistoryView";
+import { StatsView } from "./views/StatsView";
 import { AboutView } from "./views/AboutView";
 import { UpdateProvider, useUpdate } from "./contexts/UpdateContext";
 
@@ -14,6 +15,7 @@ type Route =
   | "hotwords"
   | "log"
   | "history"
+  | "stats"
   | "about";
 
 const ROUTE_HASHES: Record<Route, string> = {
@@ -23,6 +25,7 @@ const ROUTE_HASHES: Record<Route, string> = {
   hotwords: "#/hotwords",
   log: "#/log",
   history: "#/history",
+  stats: "#/stats",
   about: "#/about",
 };
 
@@ -33,6 +36,7 @@ const NAV_ITEMS: { route: Route; icon: string; label: string }[] = [
   { route: "hotwords", icon: "📝", label: "热词替换" },
   { route: "log", icon: "📋", label: "日志" },
   { route: "history", icon: "⏱", label: "历史记录" },
+  { route: "stats", icon: "📊", label: "状态" },
   { route: "about", icon: "ℹ", label: "关于" },
 ];
 
@@ -102,8 +106,9 @@ function Shell() {
         </nav>
         <main className="flex-1 overflow-y-auto">
           {route === "history" && <HistoryView />}
+          {route === "stats" && <StatsView />}
           {route === "about" && <AboutView />}
-          {route !== "history" && route !== "about" && (
+          {route !== "history" && route !== "stats" && route !== "about" && (
             <SettingsView section={route as SettingsSection} />
           )}
         </main>

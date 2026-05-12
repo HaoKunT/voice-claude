@@ -226,6 +226,7 @@ pub fn run() {
             commands::delete_history,
             commands::clear_history,
             commands::get_history_stats,
+            commands::get_latency_stats,
             commands::repolish_history,
             commands::check_ollama,
             commands::open_logs,

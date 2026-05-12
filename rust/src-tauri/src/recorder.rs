@@ -185,7 +185,7 @@ async fn run(
         });
     }
 
-    let (reason, raw_text) = if is_streaming(&cfg.asr_provider) {
+    let (reason, raw_text, asr_ms) = if is_streaming(&cfg.asr_provider) {
         run_stream(app.clone(), &rec, &cfg, signal_rx).await?
     } else {
         run_batch(&rec, &cfg, signal_rx).await?
@@ -211,13 +211,26 @@ async fn run(
     tracing::info!(text = %raw_text, "识别结果");
 
     let profile = cfg.active_profile();
-    let corrected = match correct::correct(&raw_text, profile, cfg.correct_timeout_secs()).await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = ?e, profile = %profile.name, "润色失败，使用原文");
-            raw_text.clone()
-        }
-    };
+    // 润色 timing:off profile 或走到 Err branch 都视为 0(没产生真实延时)
+    let polish_start = std::time::Instant::now();
+    let (corrected, polish_ms, polish_model) =
+        match correct::correct(&raw_text, profile, cfg.correct_timeout_secs()).await {
+            Ok(c) => {
+                // 只有实际走了 LLM 调用(mode != off)才记录 model 和延时;
+                // off/"" 直接返回原文,c == raw_text,不记作延时
+                use crate::config::POLISH_MODE_OFF;
+                if profile.mode == POLISH_MODE_OFF || profile.mode.is_empty() {
+                    (c, 0i64, String::new())
+                } else {
+                    let ms = polish_start.elapsed().as_millis() as i64;
+                    (c, ms, profile.model.clone())
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = ?e, profile = %profile.name, "润色失败,使用原文");
+                (raw_text.clone(), 0, String::new())
+            }
+        };
     if corrected != raw_text {
         tracing::info!(text = %corrected, profile = %profile.name, "润色结果");
     }
@@ -228,7 +241,15 @@ async fn run(
     }
 
     let duration_ms = started_at.elapsed().as_millis() as i64;
-    history::save(&raw_text, &final_text, &cfg.asr_provider, duration_ms);
+    history::save(history::SaveEntry {
+        raw: &raw_text,
+        corrected: &final_text,
+        provider: &cfg.asr_provider,
+        duration_ms,
+        asr_ms,
+        polish_ms,
+        polish_model: &polish_model,
+    });
     let _ = app.emit("history-updated", ());
     // 刷新托盘菜单的"最近 5 条"（必须主线程：Tauri 的 Menu/TrayIcon API）
     let refresh_app = app.clone();
@@ -353,7 +374,7 @@ async fn run_stream(
     rec: &Arc<Recorder>,
     cfg: &crate::config::Config,
     signal_rx: tokio::sync::oneshot::Receiver<StopReason>,
-) -> Result<(StopReason, String)> {
+) -> Result<(StopReason, String, i64)> {
     let pcm_rx = rec.start_stream();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -386,6 +407,8 @@ async fn run_stream(
 
     // 等用户停止或取消
     let reason = signal_rx.await.unwrap_or(StopReason::Stop);
+    // 从用户停止说话开始算 ASR"尾包延时"(stop → final 就绪),这是用户感知的 ASR 等待
+    let asr_start = std::time::Instant::now();
     crate::beep::stop();
     rec.stop_stream();
     rec.stop();
@@ -398,31 +421,32 @@ async fn run_stream(
     if reason == StopReason::Cancel {
         // 不再等 ASR 最终结果,任务会因 pcm_rx 关闭自然退出
         asr_task.abort();
-        return Ok((reason, String::new()));
+        return Ok((reason, String::new(), 0));
     }
 
     let final_text = asr_task.await??;
-    Ok((reason, final_text))
+    let asr_ms = asr_start.elapsed().as_millis() as i64;
+    Ok((reason, final_text, asr_ms))
 }
 
 async fn run_batch(
     rec: &Arc<Recorder>,
     cfg: &crate::config::Config,
     signal_rx: tokio::sync::oneshot::Receiver<StopReason>,
-) -> Result<(StopReason, String)> {
+) -> Result<(StopReason, String, i64)> {
     rec.start()?;
     let reason = signal_rx.await.unwrap_or(StopReason::Stop);
     crate::beep::stop();
     let pcm = rec.stop();
 
     if reason == StopReason::Cancel {
-        return Ok((reason, String::new()));
+        return Ok((reason, String::new(), 0));
     }
 
     let wav = to_wav(&pcm);
     if wav.len() < 100 {
         tracing::warn!(wav_bytes = wav.len(), "未录到声音");
-        return Ok((reason, String::new()));
+        return Ok((reason, String::new(), 0));
     }
     // debug：保存最近一次录音 WAV 到 /tmp，方便用 afplay 听
     let _ = std::fs::write("/tmp/voice-claude-last.wav", &wav);
@@ -431,6 +455,9 @@ async fn run_batch(
         path = "/tmp/voice-claude-last.wav",
         "识别中"
     );
+    // 批处理 ASR:整个 transcribe_batch 调用即用户等待时长
+    let asr_start = std::time::Instant::now();
     let text = asr::transcribe_batch(cfg, &wav).await?;
-    Ok((reason, text))
+    let asr_ms = asr_start.elapsed().as_millis() as i64;
+    Ok((reason, text, asr_ms))
 }
