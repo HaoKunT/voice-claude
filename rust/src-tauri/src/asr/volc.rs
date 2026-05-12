@@ -6,11 +6,16 @@ use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::handshake::client::Request as HandshakeRequest;
 use tokio_tungstenite::tungstenite::http::Uri;
 use tokio_tungstenite::tungstenite::Message;
+
+/// 豆包双向流式热词直传上限:官方文档标称 100 tokens,保守按词数切;
+/// 每个中文词约 1-2 tokens,英文专有名词也多在 1-2 tokens 之内,取 50 个词。
+const MAX_INJECT_HOTWORDS: usize = 50;
 
 const VOLC_ENDPOINT: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
 
@@ -48,7 +53,41 @@ fn encode_message(msg_type: u8, flags: u8, ser: u8, comp: u8, payload: &[u8]) ->
     buf
 }
 
-fn build_client_request(uid: &str) -> Vec<u8> {
+/// 从 config.hotwords 抽出要注入 ASR 的词列表。
+/// key(用户自己记的错音)和 value(正确写法)都注入,去空去重后按字典序排列,
+/// 超过 MAX_INJECT_HOTWORDS 截断(豆包 100 tokens 上限)。
+fn collect_hotwords(hotwords: &std::collections::HashMap<String, String>) -> Vec<String> {
+    let mut set: BTreeSet<String> = BTreeSet::new();
+    for (k, v) in hotwords {
+        let k = k.trim();
+        let v = v.trim();
+        if !k.is_empty() {
+            set.insert(k.to_string());
+        }
+        if !v.is_empty() {
+            set.insert(v.to_string());
+        }
+    }
+    set.into_iter().take(MAX_INJECT_HOTWORDS).collect()
+}
+
+fn build_client_request(uid: &str, hotwords: &[String]) -> Vec<u8> {
+    let mut request = json!({
+        "model_name": "bigmodel",
+        "enable_punc": true,
+        "enable_ddc": true,
+        "enable_nonstream": true,
+        "show_utterances": true,
+        "result_type": "full",
+        "end_window_size": 3000,
+    });
+    if !hotwords.is_empty() {
+        // 豆包 API 约定:corpus.context 的值是一个 JSON 字符串(内部 JSON 序列化)
+        let ctx_inner = json!({
+            "hotwords": hotwords.iter().map(|w| json!({ "word": w })).collect::<Vec<_>>(),
+        });
+        request["corpus"] = json!({ "context": ctx_inner.to_string() });
+    }
     let payload = json!({
         "user": { "uid": uid },
         "audio": {
@@ -58,15 +97,7 @@ fn build_client_request(uid: &str) -> Vec<u8> {
             "bits": 16,
             "channel": 1,
         },
-        "request": {
-            "model_name": "bigmodel",
-            "enable_punc": true,
-            "enable_ddc": true,
-            "enable_nonstream": true,
-            "show_utterances": true,
-            "result_type": "full",
-            "end_window_size": 3000,
-        },
+        "request": request,
     });
     serde_json::to_vec(&payload).unwrap_or_default()
 }
@@ -144,7 +175,11 @@ pub async fn transcribe_stream(
         .timestamp_nanos_opt()
         .unwrap_or(0)
         .to_string();
-    let init_payload = build_client_request(&uid);
+    let hotwords = collect_hotwords(&cfg.hotwords);
+    if !hotwords.is_empty() {
+        tracing::info!(count = hotwords.len(), "豆包 ASR 注入热词");
+    }
+    let init_payload = build_client_request(&uid, &hotwords);
     let init_msg = encode_message(
         MSG_FULL_CLIENT_REQUEST,
         FLAG_NO_SEQUENCE,
@@ -257,5 +292,39 @@ mod tests {
         let (text, is_final) = decode_response(&msg).unwrap();
         assert_eq!(text, "hello");
         assert!(is_final);
+    }
+
+    #[test]
+    fn collect_hotwords_dedups_and_trims() {
+        let mut m = std::collections::HashMap::new();
+        m.insert("克劳德".to_string(), "Claude".to_string());
+        m.insert("吉他布".to_string(), "GitHub".to_string());
+        m.insert("  ".to_string(), "API".to_string()); // 空 key 忽略,value "API" 仍加
+        m.insert("艾皮爱".to_string(), "API".to_string()); // key 新增,value "API" 重复去重
+        let words = collect_hotwords(&m);
+        // key+value 合集去空去重:克劳德 Claude 吉他布 GitHub API 艾皮爱 = 6 个
+        assert_eq!(words.len(), 6);
+        assert!(words.contains(&"Claude".to_string()));
+        assert!(words.contains(&"API".to_string()));
+        assert!(words.contains(&"克劳德".to_string()));
+    }
+
+    #[test]
+    fn build_request_without_hotwords_omits_corpus() {
+        let bytes = build_client_request("uid-1", &[]);
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(v["request"]["corpus"].is_null());
+    }
+
+    #[test]
+    fn build_request_with_hotwords_stringifies_context() {
+        let hw = vec!["Claude".to_string(), "GitHub".to_string()];
+        let bytes = build_client_request("uid-1", &hw);
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        // corpus.context 必须是字符串而不是嵌套对象,API 特殊约定
+        let ctx = v["request"]["corpus"]["context"].as_str().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(ctx).unwrap();
+        assert_eq!(parsed["hotwords"][0]["word"], "Claude");
+        assert_eq!(parsed["hotwords"][1]["word"], "GitHub");
     }
 }

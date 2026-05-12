@@ -1,5 +1,10 @@
 //! 讯飞 LLM-ASR WebSocket 流式识别。
 //! 对应 Go 版的 xfyun_asr.go。
+//!
+//! 注:这个 office-api-ast-dx endpoint 不支持 WebSocket 握手里动态传 hot_words,
+//! 讯飞官方约定需要用户到开放平台"自学习"控制台预先注册热词表。所以 config.hotwords
+//! 对这个后端仅作"转写后字符串替换"用(见 hotwords.rs 的 apply)。若想让识别阶段
+//! 就感知热词,请切换到豆包后端(见 volc.rs 的 corpus.context 实现)。
 
 use crate::config::Config;
 use anyhow::{Context, Result};
