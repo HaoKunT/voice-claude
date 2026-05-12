@@ -146,8 +146,11 @@ async fn run(
     crate::beep::start();
     // indicator 窗口创建 + tauri-nspanel to_panel() 必须在主线程，不能在 worker。
     // 同一次 run_on_main_thread 顺便注册 ESC 取消热键(global_shortcut 注册也应在主线程)。
+    // 关上一次 panel 模式遗留的结果窗——否则用户没手动关就按热键,两个窗口会同时显示,
+    // 而且结果窗在上面还可能拦住悬浮窗视觉。
     let show_app = app.clone();
     let _ = app.run_on_main_thread(move || {
+        crate::result::hide(&show_app);
         crate::indicator::show(&show_app);
         crate::register_cancel_hotkey(&show_app);
     });
