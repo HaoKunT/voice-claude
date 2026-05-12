@@ -6,6 +6,7 @@ export function HistoryView() {
   const [selected, setSelected] = useState<HistoryEntry | null>(null);
   const [loading, setLoading] = useState(true);
   const [profiles, setProfiles] = useState<PolishProfile[]>([]);
+  const [activeProfileId, setActiveProfileId] = useState<string>("");
   const [stats, setStats] = useState<HistoryStats | null>(null);
   // 重润色相关状态,每次打开 detail 都 reset
   const [repolishProfileId, setRepolishProfileId] = useState<string>("");
@@ -37,8 +38,10 @@ export function HistoryView() {
     try {
       const cfg: Config = await api.getConfig();
       setProfiles(cfg.polish_profiles ?? []);
+      setActiveProfileId(cfg.active_profile_id ?? "");
     } catch {
       setProfiles([]);
+      setActiveProfileId("");
     }
   };
 
@@ -61,7 +64,9 @@ export function HistoryView() {
 
   const onSelect = (e: HistoryEntry) => {
     setSelected(e);
-    setRepolishProfileId(runnableProfiles[0]?.id ?? "");
+    // 默认选中 active profile(与录音主流程一致);active 不是 runnable 时才回退到第一个
+    const active = runnableProfiles.find((p) => p.id === activeProfileId);
+    setRepolishProfileId(active?.id ?? runnableProfiles[0]?.id ?? "");
     setRepolishResult("");
     setRepolishError("");
   };
@@ -170,7 +175,7 @@ export function HistoryView() {
                   >
                     {runnableProfiles.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.name}
+                        {p.id === activeProfileId ? `${p.name}（当前）` : p.name}
                       </option>
                     ))}
                   </select>

@@ -84,6 +84,9 @@ pub fn get_history_stats() -> Result<history::Stats, String> {
 
 /// 用指定 profile 对历史条目的 raw_text 重新跑一遍润色,返回新结果。
 /// 不写回数据库 —— 让用户可以试不同 profile 看效果,满意自己复制。
+///
+/// profile_id 找不到时 fallback 到 active profile —— 前端选中的 profile 可能刚好
+/// 在另一个窗口被删/改了,此时给个可用结果比抛错更友好。fallback 会在日志里 warn。
 #[tauri::command]
 pub async fn repolish_history(
     history_id: i64,
@@ -94,11 +97,23 @@ pub async fn repolish_history(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("历史记录 #{} 不存在", history_id))?;
     let cfg = state.snapshot();
-    let profile = cfg
-        .polish_profiles
-        .iter()
-        .find(|p| p.id == profile_id)
-        .ok_or_else(|| format!("profile 「{}」不存在", profile_id))?;
+    let profile = match cfg.polish_profiles.iter().find(|p| p.id == profile_id) {
+        Some(p) => p,
+        None => {
+            tracing::warn!(
+                requested = %profile_id,
+                fallback = %cfg.active_profile_id,
+                "repolish: profile 找不到,fallback 到 active profile"
+            );
+            cfg.active_profile()
+        }
+    };
+    tracing::info!(
+        profile = %profile.name,
+        mode = %profile.mode,
+        model = %profile.model,
+        "repolish: 开始润色"
+    );
     correct::correct(&entry.raw_text, profile, cfg.correct_timeout_secs())
         .await
         .map_err(|e| e.to_string())
