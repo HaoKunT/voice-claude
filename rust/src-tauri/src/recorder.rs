@@ -211,26 +211,45 @@ async fn run(
     tracing::info!(text = %raw_text, "识别结果");
 
     let profile = cfg.active_profile();
-    // 润色 timing:off profile 或走到 Err branch 都视为 0(没产生真实延时)
+    let timeout_secs = cfg.correct_timeout_secs();
+    let timeout_ms = (timeout_secs * 1000) as i64;
+    // 润色 timing:off profile / 非超时 Err 都视为 0(未实际产生可观测延时);
+    // 超时场景例外 —— polish_ms 记 timeout_ms 入 p99,polish_timeout=1 单独统计,
+    // 否则 p99 会漏掉"老是卡到上限"的 model 分布
     let polish_start = std::time::Instant::now();
-    let (corrected, polish_ms, polish_model, polish_mode) =
-        match correct::correct(&raw_text, profile, cfg.correct_timeout_secs()).await {
-            Ok(c) => {
-                // 只有实际走了 LLM 调用(mode != off)才记录 model/mode 和延时;
-                // off/"" 直接返回原文,c == raw_text,不记作延时
-                use crate::config::POLISH_MODE_OFF;
-                if profile.mode == POLISH_MODE_OFF || profile.mode.is_empty() {
-                    (c, 0i64, String::new(), String::new())
-                } else {
-                    let ms = polish_start.elapsed().as_millis() as i64;
-                    (c, ms, profile.model.clone(), profile.mode.clone())
-                }
-            }
-            Err(e) => {
+    let polish_result = correct::correct(&raw_text, profile, timeout_secs).await;
+    let elapsed_ms = polish_start.elapsed().as_millis() as i64;
+    let polish_provider = compute_polish_provider(profile);
+    use crate::config::POLISH_MODE_OFF;
+    let profile_active = !(profile.mode == POLISH_MODE_OFF || profile.mode.is_empty());
+    let (corrected, polish_ms, polish_model, polish_mode, polish_timeout) = match polish_result {
+        Ok(c) if !profile_active => (c, 0i64, String::new(), String::new(), false),
+        Ok(c) => (
+            c,
+            elapsed_ms,
+            profile.model.clone(),
+            polish_provider.clone(),
+            false,
+        ),
+        Err(e) => {
+            // reqwest timeout 是硬超时(到时间抛 Err),用 elapsed 接近 timeout 作近似判定;
+            // 200ms 容错足够区分 timeout 和其他早期 Err(400 / 网络断 / 反序列化失败等)
+            let is_timeout = profile_active && elapsed_ms >= timeout_ms.saturating_sub(200);
+            if is_timeout {
+                tracing::warn!(error = ?e, profile = %profile.name, elapsed_ms, "润色超时,记入 p99");
+                (
+                    raw_text.clone(),
+                    timeout_ms,
+                    profile.model.clone(),
+                    polish_provider.clone(),
+                    true,
+                )
+            } else {
                 tracing::warn!(error = ?e, profile = %profile.name, "润色失败,使用原文");
-                (raw_text.clone(), 0, String::new(), String::new())
+                (raw_text.clone(), 0, String::new(), String::new(), false)
             }
-        };
+        }
+    };
     if corrected != raw_text {
         tracing::info!(text = %corrected, profile = %profile.name, "润色结果");
     }
@@ -250,6 +269,7 @@ async fn run(
         polish_ms,
         polish_model: &polish_model,
         polish_mode: &polish_mode,
+        polish_timeout,
     });
     let _ = app.emit("history-updated", ());
     // 刷新托盘菜单的"最近 5 条"（必须主线程：Tauri 的 Menu/TrayIcon API）
@@ -461,4 +481,97 @@ async fn run_batch(
     let text = asr::transcribe_batch(cfg, &wav).await?;
     let asr_ms = asr_start.elapsed().as_millis() as i64;
     Ok((reason, text, asr_ms))
+}
+
+/// 为「状态」页展示推导一个 provider 标识。
+///
+/// - ollama / openrouter mode:直接用 mode 名(URL 固定,没必要拆 host)
+/// - cloud mode:多 base URL 场景下 mode 字面值("cloud")辨识度不够,
+///   从 profile.url 提取 host(如 api.groq.com)作为 provider
+/// - off / 未知 mode:空字符串(不展示徽章)
+fn compute_polish_provider(profile: &crate::config::PolishProfile) -> String {
+    use crate::config::{POLISH_MODE_CLOUD, POLISH_MODE_OLLAMA, POLISH_MODE_OPENROUTER};
+    match profile.mode.as_str() {
+        POLISH_MODE_OLLAMA => "ollama".to_string(),
+        POLISH_MODE_OPENROUTER => "openrouter".to_string(),
+        POLISH_MODE_CLOUD => host_of(&profile.url).unwrap_or_else(|| "cloud".to_string()),
+        _ => String::new(),
+    }
+}
+
+/// 从 URL 提取 host(含端口),失败返回 None。
+/// 不引入 url crate,手写一个够用的:截 "://" 和下一个 '/' 之间。
+fn host_of(url: &str) -> Option<String> {
+    let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let host = after_scheme.split('/').next()?.trim();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        PolishProfile, POLISH_MODE_CLOUD, POLISH_MODE_OLLAMA, POLISH_MODE_OPENROUTER,
+    };
+
+    fn profile(mode: &str, url: &str) -> PolishProfile {
+        let mut p = PolishProfile::default_named("t", "t");
+        p.mode = mode.to_string();
+        p.url = url.to_string();
+        p
+    }
+
+    #[test]
+    fn provider_ollama_is_literal() {
+        let p = profile(POLISH_MODE_OLLAMA, "http://localhost:11434/api/generate");
+        assert_eq!(compute_polish_provider(&p), "ollama");
+    }
+
+    #[test]
+    fn provider_openrouter_is_literal() {
+        let p = profile(POLISH_MODE_OPENROUTER, "https://openrouter.ai/api/v1");
+        assert_eq!(compute_polish_provider(&p), "openrouter");
+    }
+
+    #[test]
+    fn provider_cloud_uses_host() {
+        let p = profile(
+            POLISH_MODE_CLOUD,
+            "https://api.groq.com/openai/v1/chat/completions",
+        );
+        assert_eq!(compute_polish_provider(&p), "api.groq.com");
+    }
+
+    #[test]
+    fn provider_cloud_fallback_on_bad_url() {
+        let p = profile(POLISH_MODE_CLOUD, "");
+        assert_eq!(compute_polish_provider(&p), "cloud");
+    }
+
+    #[test]
+    fn provider_off_is_empty() {
+        let p = profile("off", "");
+        assert_eq!(compute_polish_provider(&p), "");
+    }
+
+    #[test]
+    fn host_of_handles_port_and_path() {
+        assert_eq!(
+            host_of("http://localhost:11434/api"),
+            Some("localhost:11434".into())
+        );
+        assert_eq!(
+            host_of("https://api.deepseek.com/v1"),
+            Some("api.deepseek.com".into())
+        );
+        assert_eq!(
+            host_of("openrouter.ai/api/v1"),
+            Some("openrouter.ai".into())
+        );
+        assert!(host_of("").is_none());
+    }
 }

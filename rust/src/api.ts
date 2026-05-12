@@ -69,8 +69,10 @@ export interface LatencyRow {
   count: number;
   avg_ms: number;
   p99_ms: number;
-  /** 仅润色行用:该 model 用过的 mode 集合(ollama / openrouter / cloud)。ASR 行为空 */
+  /** 仅润色行用:该 model 用过的 provider 集合(ollama / openrouter / api.groq.com 等)。ASR 行为空 */
   providers: string[];
+  /** 仅润色行用:本组里触发超时的次数。ASR 行为 0 */
+  timeout_count: number;
 }
 
 export interface LatencyWindow {

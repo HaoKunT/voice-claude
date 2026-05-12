@@ -27,10 +27,19 @@ pub struct HistoryEntry {
     /// 本次使用的润色 model 名。off / 未润色为空。旧数据为空。
     #[serde(default)]
     pub polish_model: String,
-    /// 本次使用的润色 mode(ollama / openrouter / cloud)。off / 未润色为空。旧数据为空。
-    /// 统计不按 mode 分组,但展示层把每个 model 用过的 mode 集合列出来,方便辨识同名 model。
+    /// 本次使用的润色 provider 标识。
+    ///
+    /// - ollama / openrouter mode:直接是 mode 名
+    /// - cloud mode:profile.url 的 host(api.groq.com 等),因为同为 cloud 可能接不同厂商
+    ///
+    /// off / 未润色为空。旧数据可能是字面 "cloud"(升级前 commit 写的值)。
+    /// 统计不按这个分组,展示层把每个 model 用过的 provider 集合列出来。
     #[serde(default)]
     pub polish_mode: String,
+    /// 本次润色是否触发了超时。超时时 polish_ms 记 timeout_ms 入 p99,polish_timeout=true
+    /// 单独计数,让 StatsView 能显示"这个 model 经常超时"。旧数据为 false。
+    #[serde(default)]
+    pub polish_timeout: bool,
 }
 
 static DB: OnceLock<Mutex<Connection>> = OnceLock::new();
@@ -80,6 +89,10 @@ pub fn init() -> Result<()> {
             "polish_mode",
             "ALTER TABLE history ADD COLUMN polish_mode TEXT NOT NULL DEFAULT ''",
         ),
+        (
+            "polish_timeout",
+            "ALTER TABLE history ADD COLUMN polish_timeout INTEGER NOT NULL DEFAULT 0",
+        ),
     ];
     for (col, sql) in migrations {
         if !existing_cols.contains(*col) {
@@ -102,6 +115,7 @@ pub struct SaveEntry<'a> {
     pub polish_ms: i64,
     pub polish_model: &'a str,
     pub polish_mode: &'a str,
+    pub polish_timeout: bool,
 }
 
 /// 保存一条识别记录;DB 未初始化时静默返回。
@@ -112,8 +126,8 @@ pub fn save(entry: SaveEntry<'_>) {
     let conn = lock.lock();
     let ts = chrono::Utc::now().timestamp();
     let _ = conn.execute(
-        "INSERT INTO history (created_at, raw_text, corrected_text, asr_provider, duration_ms, asr_ms, polish_ms, polish_model, polish_mode)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO history (created_at, raw_text, corrected_text, asr_provider, duration_ms, asr_ms, polish_ms, polish_model, polish_mode, polish_timeout)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             ts,
             entry.raw,
@@ -124,12 +138,13 @@ pub fn save(entry: SaveEntry<'_>) {
             entry.polish_ms,
             entry.polish_model,
             entry.polish_mode,
+            entry.polish_timeout as i64,
         ],
     );
 }
 
 const HISTORY_COLUMNS: &str =
-    "id, created_at, raw_text, corrected_text, asr_provider, duration_ms, asr_ms, polish_ms, polish_model, polish_mode";
+    "id, created_at, raw_text, corrected_text, asr_provider, duration_ms, asr_ms, polish_ms, polish_model, polish_mode, polish_timeout";
 
 fn map_row(row: &rusqlite::Row) -> rusqlite::Result<HistoryEntry> {
     Ok(HistoryEntry {
@@ -143,6 +158,7 @@ fn map_row(row: &rusqlite::Row) -> rusqlite::Result<HistoryEntry> {
         polish_ms: row.get(7).unwrap_or(0),
         polish_model: row.get(8).unwrap_or_default(),
         polish_mode: row.get(9).unwrap_or_default(),
+        polish_timeout: row.get::<_, i64>(10).unwrap_or(0) != 0,
     })
 }
 
@@ -264,10 +280,13 @@ pub struct LatencyRow {
     pub count: i64,
     pub avg_ms: i64,
     pub p99_ms: i64,
-    /// 仅润色行用:这个 model 用过的 mode 集合(ollama / openrouter / cloud)。
+    /// 仅润色行用:这个 model 用过的 provider 集合(ollama / openrouter / api.groq.com 等)。
     /// ASR 行为空。老数据 polish_mode 为空字符串时也不入集合。
     #[serde(default)]
     pub providers: Vec<String>,
+    /// 仅润色行用:本组里触发超时的次数(polish_timeout=1 的行数)。ASR 行为 0。
+    #[serde(default)]
+    pub timeout_count: i64,
 }
 
 /// 单个时间窗口(全量 / 近 24h / 近 7d)的 ASR + 润色延时。
@@ -292,11 +311,11 @@ pub fn latency_stats() -> Result<LatencyStats> {
         return Ok(LatencyStats::default());
     };
     let conn = lock.lock();
-    // 只读统计需要的 6 列,避免把 raw_text/corrected_text 这种大字段一起拖进来
+    // 只读统计需要的 7 列,避免把 raw_text/corrected_text 这种大字段一起拖进来
     let mut stmt = conn.prepare(
-        "SELECT created_at, asr_provider, asr_ms, polish_ms, polish_model, polish_mode FROM history",
+        "SELECT created_at, asr_provider, asr_ms, polish_ms, polish_model, polish_mode, polish_timeout FROM history",
     )?;
-    let rows: Vec<(i64, String, i64, i64, String, String)> = stmt
+    let rows: Vec<(i64, String, i64, i64, String, String, bool)> = stmt
         .query_map([], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
@@ -305,6 +324,7 @@ pub fn latency_stats() -> Result<LatencyStats> {
                 row.get::<_, i64>(3).unwrap_or(0),
                 row.get::<_, String>(4).unwrap_or_default(),
                 row.get::<_, String>(5).unwrap_or_default(),
+                row.get::<_, i64>(6).unwrap_or(0) != 0,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -316,13 +336,34 @@ pub fn latency_stats() -> Result<LatencyStats> {
     let mut all = WindowAcc::default();
     let mut d24 = WindowAcc::default();
     let mut d7 = WindowAcc::default();
-    for (ts, provider, asr_ms, polish_ms, polish_model, polish_mode) in &rows {
-        all.add(provider, *asr_ms, polish_model, polish_mode, *polish_ms);
+    for (ts, provider, asr_ms, polish_ms, polish_model, polish_mode, polish_timeout) in &rows {
+        all.add(
+            provider,
+            *asr_ms,
+            polish_model,
+            polish_mode,
+            *polish_ms,
+            *polish_timeout,
+        );
         if *ts >= cutoff_7d {
-            d7.add(provider, *asr_ms, polish_model, polish_mode, *polish_ms);
+            d7.add(
+                provider,
+                *asr_ms,
+                polish_model,
+                polish_mode,
+                *polish_ms,
+                *polish_timeout,
+            );
         }
         if *ts >= cutoff_24h {
-            d24.add(provider, *asr_ms, polish_model, polish_mode, *polish_ms);
+            d24.add(
+                provider,
+                *asr_ms,
+                polish_model,
+                polish_mode,
+                *polish_ms,
+                *polish_timeout,
+            );
         }
     }
 
@@ -334,10 +375,17 @@ pub fn latency_stats() -> Result<LatencyStats> {
 }
 
 #[derive(Default)]
+struct PolishAcc {
+    samples: Vec<i64>,
+    providers: std::collections::BTreeSet<String>,
+    timeout_count: i64,
+}
+
+#[derive(Default)]
 struct WindowAcc {
     asr: std::collections::BTreeMap<String, Vec<i64>>,
-    /// 润色 key = model 名,value = (延时样本数组, 见过的 mode 集合)
-    polish: std::collections::BTreeMap<String, (Vec<i64>, std::collections::BTreeSet<String>)>,
+    /// 润色 key = model 名,value = (延时样本 + provider 集合 + 超时次数)
+    polish: std::collections::BTreeMap<String, PolishAcc>,
 }
 
 impl WindowAcc {
@@ -348,6 +396,7 @@ impl WindowAcc {
         polish_model: &str,
         polish_mode: &str,
         polish_ms: i64,
+        polish_timeout: bool,
     ) {
         if asr_ms > 0 && !provider.is_empty() {
             self.asr
@@ -357,9 +406,12 @@ impl WindowAcc {
         }
         if polish_ms > 0 && !polish_model.is_empty() {
             let e = self.polish.entry(polish_model.to_string()).or_default();
-            e.0.push(polish_ms);
+            e.samples.push(polish_ms);
             if !polish_mode.is_empty() {
-                e.1.insert(polish_mode.to_string());
+                e.providers.insert(polish_mode.to_string());
+            }
+            if polish_timeout {
+                e.timeout_count += 1;
             }
         }
     }
@@ -393,6 +445,7 @@ fn summarize_asr(groups: std::collections::BTreeMap<String, Vec<i64>>) -> Vec<La
                 avg_ms: sum / count,
                 p99_ms: v[p99_index(v.len())],
                 providers: Vec::new(),
+                timeout_count: 0,
             }
         })
         .collect();
@@ -400,12 +453,11 @@ fn summarize_asr(groups: std::collections::BTreeMap<String, Vec<i64>>) -> Vec<La
     rows
 }
 
-fn summarize_polish(
-    groups: std::collections::BTreeMap<String, (Vec<i64>, std::collections::BTreeSet<String>)>,
-) -> Vec<LatencyRow> {
+fn summarize_polish(groups: std::collections::BTreeMap<String, PolishAcc>) -> Vec<LatencyRow> {
     let mut rows: Vec<LatencyRow> = groups
         .into_iter()
-        .map(|(key, (mut v, modes))| {
+        .map(|(key, acc)| {
+            let mut v = acc.samples;
             v.sort_unstable();
             let count = v.len() as i64;
             let sum: i64 = v.iter().sum();
@@ -414,7 +466,8 @@ fn summarize_polish(
                 count,
                 avg_ms: sum / count,
                 p99_ms: v[p99_index(v.len())],
-                providers: modes.into_iter().collect(),
+                providers: acc.providers.into_iter().collect(),
+                timeout_count: acc.timeout_count,
             }
         })
         .collect();

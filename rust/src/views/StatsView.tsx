@@ -71,12 +71,14 @@ export function StatsView() {
             hint="从用户停止说话到拿到最终识别文本的等待时长。流式后端是尾包延时,批处理是整个 HTTP 调用。"
             rows={window_.asr}
             keyHeader="ASR 后端"
+            showTimeout={false}
           />
           <LatencySection
             title="AI 润色延时"
-            hint="调用 LLM 润色的耗时。off profile 和超时失败不记录。同名 model 的 provider 用小徽章标在名字旁边。"
+            hint="调用 LLM 润色的耗时。off profile 不记录。超时按 timeout_ms 计入 p99 + 单独用「超时」列计数。同名 model 的 provider 在名字旁用徽章标出。"
             rows={window_.polish}
             keyHeader="Model"
+            showTimeout={true}
           />
         </div>
       )}
@@ -89,11 +91,13 @@ function LatencySection({
   hint,
   rows,
   keyHeader,
+  showTimeout,
 }: {
   title: string;
   hint: string;
   rows: LatencyRow[];
   keyHeader: string;
+  showTimeout: boolean;
 }) {
   return (
     <div>
@@ -110,6 +114,9 @@ function LatencySection({
               <tr>
                 <th className="text-left px-4 py-2 font-medium">{keyHeader}</th>
                 <th className="text-right px-4 py-2 font-medium">次数</th>
+                {showTimeout && (
+                  <th className="text-right px-4 py-2 font-medium">超时</th>
+                )}
                 <th className="text-right px-4 py-2 font-medium">平均</th>
                 <th className="text-right px-4 py-2 font-medium">P99</th>
               </tr>
@@ -134,6 +141,15 @@ function LatencySection({
                   <td className="px-4 py-2 text-right text-gray-300 font-mono">
                     {r.count.toLocaleString()}
                   </td>
+                  {showTimeout && (
+                    <td
+                      className={`px-4 py-2 text-right font-mono ${
+                        r.timeout_count > 0 ? "text-amber-400" : "text-gray-600"
+                      }`}
+                    >
+                      {r.timeout_count > 0 ? r.timeout_count.toLocaleString() : "—"}
+                    </td>
+                  )}
                   <td className="px-4 py-2 text-right text-gray-300 font-mono">
                     {formatMs(r.avg_ms)}
                   </td>
