@@ -1,13 +1,30 @@
-//! OpenRouter Whisper（HTTP 批处理）。
-//! 对应 Go 版的 openrouter_asr.go。
+//! OpenRouter Whisper(HTTP 批处理)。
+//!
+//! OpenRouter 的 transcription API 不走 OpenAI 兼容的 multipart form,而是自己
+//! 的 JSON 协议:body = `{model, input_audio: {data: base64, format}}`,和 chat
+//! completions 里的 input_audio modality 同构。格式写错服务端会把 multipart
+//! boundary `--xxx` 当 JSON body 解析,报 `No number after minus sign in JSON`。
 
 use crate::config::Config;
 use anyhow::Result;
-use reqwest::multipart::{Form, Part};
-use serde::Deserialize;
+use base64::Engine;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/audio/transcriptions";
+const MODEL: &str = "openai/whisper-large-v3-turbo";
+
+#[derive(Serialize)]
+struct InputAudio<'a> {
+    data: &'a str,
+    format: &'a str,
+}
+
+#[derive(Serialize)]
+struct TranscribeRequest<'a> {
+    model: &'a str,
+    input_audio: InputAudio<'a>,
+}
 
 #[derive(Deserialize)]
 struct WhisperResponse {
@@ -20,12 +37,14 @@ pub async fn transcribe(cfg: &Config, wav: &[u8]) -> Result<String> {
         anyhow::bail!("请配置 OpenRouter API Key");
     }
 
-    let file_part = Part::bytes(wav.to_vec())
-        .file_name("audio.wav")
-        .mime_str("audio/wav")?;
-    let form = Form::new()
-        .text("model", "openai/whisper-large-v3-turbo")
-        .part("file", file_part);
+    let wav_b64 = base64::engine::general_purpose::STANDARD.encode(wav);
+    let body = TranscribeRequest {
+        model: MODEL,
+        input_audio: InputAudio {
+            data: &wav_b64,
+            format: "wav",
+        },
+    };
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
@@ -34,7 +53,7 @@ pub async fn transcribe(cfg: &Config, wav: &[u8]) -> Result<String> {
     let resp = client
         .post(OPENROUTER_URL)
         .bearer_auth(&cfg.openrouter_api_key)
-        .multipart(form)
+        .json(&body)
         .send()
         .await?;
     let status = resp.status();
