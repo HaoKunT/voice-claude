@@ -44,7 +44,6 @@ export interface Config {
   push_to_talk: boolean;
   voice_enhance: boolean;
   local_use_fp32_model: boolean;
-  local_use_coreml: boolean;
 }
 
 export interface DeviceInfo {

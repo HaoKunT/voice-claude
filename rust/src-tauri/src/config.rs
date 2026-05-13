@@ -135,14 +135,10 @@ pub struct Config {
     #[serde(default = "default_voice_enhance")]
     pub voice_enhance: bool,
     /// 本地 SenseVoice 用 fp32 完整模型(model.onnx, ~894MB)还是 int8 量化
-    /// (model.int8.onnx, ~228MB)。fp32 精度高,内存和延时翻倍。
+    /// (model.int8.onnx, ~228MB)。fp32 精度更高;实测在 ARM Mac 上推理还
+    /// 略快(ORT 对 fp32 走 Accelerate/NEON,int8 没占便宜),代价是内存。
     #[serde(default)]
     pub local_use_fp32_model: bool,
-    /// 本地 SenseVoice 用 CoreML execution provider(macOS Apple Neural Engine
-    /// 加速)还是 CPU。如果 sherpa-onnx 预编译库没启用 CoreML,会被忽略走 CPU。
-    /// 仅 macOS 有意义。
-    #[serde(default)]
-    pub local_use_coreml: bool,
 }
 
 fn default_asr_provider() -> String {
@@ -235,7 +231,6 @@ impl Default for Config {
             push_to_talk: false,
             voice_enhance: default_voice_enhance(),
             local_use_fp32_model: false,
-            local_use_coreml: false,
         }
     }
 }

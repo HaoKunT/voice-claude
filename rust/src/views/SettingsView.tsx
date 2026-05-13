@@ -229,28 +229,6 @@ export function SettingsView({ section }: { section: SettingsSection }) {
                   两个文件都存在,切换不需重下载。
                 </p>
               </Field>
-              <Field
-                label={
-                  <>
-                    <span>CoreML 加速</span>
-                    <label className="ml-auto flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={cfg.local_use_coreml}
-                        onChange={(e) => update("local_use_coreml", e.target.checked)}
-                        className="accent-accent"
-                      />
-                      {cfg.local_use_coreml ? "开启" : "关闭"}
-                    </label>
-                  </>
-                }
-              >
-                <p className="text-[11px] text-gray-500 leading-relaxed mt-0.5">
-                  让 ONNX 推理委托给 macOS CoreML execution provider,系统自动调度
-                  到 ANE / GPU / CPU。Apple Silicon 上加速明显;若 sherpa-onnx
-                  预编译库没启用 CoreML,会被忽略走 CPU,无副作用可放心试。
-                </p>
-              </Field>
               <LocalSenseVoicePanel />
             </>
           )}

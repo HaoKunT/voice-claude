@@ -46,11 +46,10 @@ pub async fn transcribe(cfg: &crate::config::Config, wav: &[u8]) -> Result<Strin
     } else {
         "model.int8.onnx"
     };
-    let provider = if cfg.local_use_coreml {
-        "coreml"
-    } else {
-        "cpu"
-    };
+    // CoreML 暂未开放 —— sherpa-onnx 当前 crate 预编译用的 ONNX Runtime < 1.15,
+    // 不带 CoreML EP,设了 provider="coreml" 会静默 fallback 到 cpu。等 crate
+    // 升级或我们改成 source build 之后再打开开关。
+    let provider = "cpu";
     let model_file = model_path()
         .join(model_filename)
         .to_string_lossy()
@@ -108,7 +107,6 @@ fn build_signature(cfg: &crate::config::Config) -> String {
     use std::hash::{DefaultHasher, Hash, Hasher};
     let mut h = DefaultHasher::new();
     cfg.local_use_fp32_model.hash(&mut h);
-    cfg.local_use_coreml.hash(&mut h);
     let sorted: BTreeMap<&String, &String> = cfg.hotwords.iter().collect();
     for (k, v) in &sorted {
         k.hash(&mut h);
