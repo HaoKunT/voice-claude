@@ -10,7 +10,7 @@ import {
   DeviceInfo,
   DownloadProgress,
   PolishProfile,
-  SenseVoiceInfo,
+  LocalEngineInfo,
 } from "../api";
 import {
   parseHotkeyKeys,
@@ -229,7 +229,7 @@ export function SettingsView({ section }: { section: SettingsSection }) {
                   两个文件都存在,切换不需重下载。
                 </p>
               </Field>
-              <LocalSenseVoicePanel />
+              <LocalEnginePanel cfg={cfg} update={update} />
             </>
           )}
         </section>
@@ -1191,36 +1191,45 @@ function KbdCombo({ combo }: { combo: string }) {
   );
 }
 
-function LocalSenseVoicePanel() {
-  const [info, setInfo] = useState<SenseVoiceInfo | null>(null);
+function LocalEnginePanel({
+  cfg,
+  update,
+}: {
+  cfg: Config;
+  update: <K extends keyof Config>(key: K, val: Config[K]) => void;
+}) {
+  const [engines, setEngines] = useState<LocalEngineInfo[]>([]);
   const [downloading, setDownloading] = useState(false);
   const [downloaded, setDownloaded] = useState(0);
   const [total, setTotal] = useState(0);
-  // 计算速率用：上一次 tick 的 { ts, bytes }
   const speedStateRef = useRef<{ ts: number; bytes: number } | null>(null);
-  const [speedBps, setSpeedBps] = useState(0); // bytes per second
+  const [speedBps, setSpeedBps] = useState(0);
   const [msg, setMsg] = useState("");
 
+  // 当前选中 engine id(从 cfg 来,自然响应外部 dropdown)
+  const selectedId = cfg.local_engine || "sense_voice";
+  const info = engines.find((e) => e.id === selectedId) ?? null;
+
   const refresh = useCallback(() => {
-    api.getSenseVoiceInfo().then(setInfo);
+    api.listLocalEngines().then(setEngines);
   }, []);
 
   useEffect(() => {
     refresh();
     const unlisten = listen<DownloadProgress>(
-      "sense-voice-download-progress",
+      "local-engine-download-progress",
       (e) => {
+        // 只接收"当前选中 engine"的进度,避免切换 engine 时旧下载的事件污染
+        if (e.payload.engine_id !== selectedId) return;
         const { downloaded: d, total: t } = e.payload;
         setDownloaded(d);
         setTotal(t);
-        // 计算速率：相对上一次 tick
         const now = Date.now();
         const prev = speedStateRef.current;
         if (prev) {
           const dt = (now - prev.ts) / 1000;
           if (dt > 0.2) {
-            const bps = (d - prev.bytes) / dt;
-            setSpeedBps(bps);
+            setSpeedBps((d - prev.bytes) / dt);
             speedStateRef.current = { ts: now, bytes: d };
           }
         } else {
@@ -1231,9 +1240,10 @@ function LocalSenseVoicePanel() {
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [refresh]);
+  }, [refresh, selectedId]);
 
   const onDownload = async () => {
+    if (!info) return;
     setDownloading(true);
     setMsg("");
     setDownloaded(0);
@@ -1241,7 +1251,7 @@ function LocalSenseVoicePanel() {
     setSpeedBps(0);
     speedStateRef.current = null;
     try {
-      await api.downloadSenseVoice();
+      await api.downloadLocalEngine(info.id);
       setMsg("下载完成 ✓");
       refresh();
     } catch (e) {
@@ -1252,9 +1262,10 @@ function LocalSenseVoicePanel() {
   };
 
   const onImport = async () => {
+    if (!info) return;
     const selected = await openDialog({
       filters: [
-        { name: "SenseVoice 压缩包", extensions: ["bz2", "tar.bz2"] },
+        { name: `${info.label} 压缩包`, extensions: ["bz2", "tar.bz2"] },
         { name: "All", extensions: ["*"] },
       ],
       multiple: false,
@@ -1263,7 +1274,7 @@ function LocalSenseVoicePanel() {
     setDownloading(true);
     setMsg("校验 + 解压中…");
     try {
-      await api.importSenseVoiceTarball(selected);
+      await api.importLocalEngineTarball(info.id, selected);
       setMsg("导入完成 ✓");
       refresh();
     } catch (e) {
@@ -1273,8 +1284,11 @@ function LocalSenseVoicePanel() {
     }
   };
 
+  if (engines.length === 0) {
+    return <div className="text-xs text-gray-500">加载引擎列表中…</div>;
+  }
   if (!info) {
-    return <div className="text-xs text-gray-500">加载中…</div>;
+    return <div className="text-xs text-gray-500">未找到引擎 {selectedId}</div>;
   }
 
   const percent = total > 0 ? Math.min(100, (downloaded / total) * 100) : 0;
@@ -1282,8 +1296,27 @@ function LocalSenseVoicePanel() {
 
   return (
     <div className="rounded-xl bg-white/[0.03] border border-white/[0.06] p-4 space-y-3">
+      {/* 引擎选择 */}
+      <div>
+        <label className="text-[11px] text-gray-500 mb-1 block">本地引擎</label>
+        <select
+          className="input"
+          value={selectedId}
+          onChange={(e) => update("local_engine", e.target.value)}
+          disabled={downloading}
+        >
+          {engines.map((e) => (
+            <option key={e.id} value={e.id}>
+              {e.label} · {e.size_mb >= 1024 ? `${(e.size_mb / 1024).toFixed(1)} GB` : `${e.size_mb} MB`}
+              {e.available ? " ✓" : ""}
+            </option>
+          ))}
+        </select>
+        <p className="text-[11px] text-gray-500 mt-1.5 leading-relaxed">{info.description}</p>
+      </div>
+
       {/* 状态行 */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 pt-2 border-t border-white/[0.04]">
         <div
           className={`w-2 h-2 rounded-full ${
             info.available
@@ -1301,7 +1334,7 @@ function LocalSenseVoicePanel() {
         <span className="text-xs text-gray-500 ml-auto font-mono">
           {total > 0
             ? `${formatBytes(downloaded)} / ${formatBytes(total)}`
-            : "约 1 GB"}
+            : `约 ${info.size_mb >= 1024 ? `${(info.size_mb / 1024).toFixed(1)} GB` : `${info.size_mb} MB`}`}
         </span>
       </div>
 

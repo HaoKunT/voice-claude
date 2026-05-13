@@ -303,50 +303,79 @@ pub fn get_app_info() -> AppInfo {
     }
 }
 
-#[tauri::command]
-pub fn is_sense_voice_available() -> bool {
-    local::is_available()
-}
-
-#[derive(Serialize)]
-pub struct SenseVoiceInfo {
-    pub url: String,
-    pub sha256: String,
-    pub available: bool,
-    pub model_dir: String,
-}
-
-#[tauri::command]
-pub fn get_sense_voice_info() -> SenseVoiceInfo {
-    SenseVoiceInfo {
-        url: local::MODEL_URL.into(),
-        sha256: local::MODEL_SHA256.into(),
-        available: local::is_available(),
-        model_dir: local::model_path().to_string_lossy().into_owned(),
-    }
-}
-
 #[derive(Serialize, Clone)]
 pub struct DownloadProgress {
     pub downloaded: u64,
     pub total: u64,
+    /// 当前下载的引擎 id,前端按这个匹配自己 panel 的进度
+    pub engine_id: String,
 }
 
+#[derive(Serialize)]
+pub struct LocalEngineInfo {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub url: String,
+    pub sha256: String,
+    pub model_dir: String,
+    pub available: bool,
+    pub size_mb: u32,
+}
+
+fn engine_to_info(engine: local::LocalEngine) -> LocalEngineInfo {
+    LocalEngineInfo {
+        id: engine.id().to_string(),
+        label: engine.label().to_string(),
+        description: engine.description().to_string(),
+        url: engine.model_url(),
+        sha256: engine.sha256().to_string(),
+        model_dir: engine.install_path().to_string_lossy().into_owned(),
+        available: engine.is_available(),
+        size_mb: engine.approx_size_mb(),
+    }
+}
+
+/// 列出所有本地 ASR 引擎(给设置页 dropdown + 状态面板)。
 #[tauri::command]
-pub async fn download_sense_voice(app: AppHandle) -> Result<(), String> {
-    local::download_model(move |downloaded, total| {
+pub fn list_local_engines() -> Vec<LocalEngineInfo> {
+    local::LocalEngine::ALL
+        .iter()
+        .map(|&e| engine_to_info(e))
+        .collect()
+}
+
+/// 按 id 查询单个引擎信息(刷新下载状态)。
+#[tauri::command]
+pub fn get_local_engine_info(id: String) -> LocalEngineInfo {
+    engine_to_info(local::LocalEngine::from_id(&id))
+}
+
+/// 下载指定引擎模型,进度通过 `local-engine-download-progress` 事件推送。
+/// payload 含 engine_id,前端按 id 过滤自己面板的进度。
+#[tauri::command]
+pub async fn download_local_engine(id: String, app: AppHandle) -> Result<(), String> {
+    let engine = local::LocalEngine::from_id(&id);
+    let engine_id = engine.id().to_string();
+    local::download_engine(engine, move |downloaded, total| {
         let _ = app.emit(
-            "sense-voice-download-progress",
-            DownloadProgress { downloaded, total },
+            "local-engine-download-progress",
+            DownloadProgress {
+                downloaded,
+                total,
+                engine_id: engine_id.clone(),
+            },
         );
     })
     .await
     .map_err(|e| e.to_string())
 }
 
+/// 从本地 tar.bz2 导入指定引擎模型(国内下载失败兜底)。
 #[tauri::command]
-pub async fn import_sense_voice_tarball(path: String) -> Result<(), String> {
-    local::import_tarball(std::path::PathBuf::from(path))
+pub async fn import_local_engine_tarball(id: String, path: String) -> Result<(), String> {
+    let engine = local::LocalEngine::from_id(&id);
+    local::import_engine_tarball(engine, std::path::PathBuf::from(path))
         .await
         .map_err(|e| e.to_string())
 }

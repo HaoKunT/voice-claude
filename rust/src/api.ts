@@ -46,6 +46,8 @@ export interface Config {
   local_use_fp32_model: boolean;
   /** UI 暂未暴露开关 —— sherpa-onnx crate 升级前手动改 config.json 才能开 */
   local_use_coreml: boolean;
+  /** 本地 ASR 引擎:sense_voice / fire_red_aed / fire_red_ctc2 / qwen3_asr */
+  local_engine: string;
 }
 
 export interface DeviceInfo {
@@ -92,16 +94,22 @@ export interface LatencyStats {
   last_7d: LatencyWindow;
 }
 
-export interface SenseVoiceInfo {
+export interface LocalEngineInfo {
+  id: string;
+  label: string;
+  description: string;
   url: string;
   sha256: string;
-  available: boolean;
   model_dir: string;
+  available: boolean;
+  size_mb: number;
 }
 
 export interface DownloadProgress {
   downloaded: number;
   total: number;
+  /** 当前下载的引擎 id;前端按这个匹配自己 panel 的进度 */
+  engine_id: string;
 }
 
 export interface AppInfo {
@@ -134,11 +142,13 @@ export const api = {
   resumeHotkey: () => invoke<void>("resume_hotkey"),
   readRecentLogs: (limit: number) => invoke<string[]>("read_recent_logs", { limit }),
   openConfigDir: () => invoke<void>("open_config_dir"),
-  isSenseVoiceAvailable: () => invoke<boolean>("is_sense_voice_available"),
-  getSenseVoiceInfo: () => invoke<SenseVoiceInfo>("get_sense_voice_info"),
-  downloadSenseVoice: () => invoke<void>("download_sense_voice"),
-  importSenseVoiceTarball: (path: string) =>
-    invoke<void>("import_sense_voice_tarball", { path }),
+  listLocalEngines: () => invoke<LocalEngineInfo[]>("list_local_engines"),
+  getLocalEngineInfo: (id: string) =>
+    invoke<LocalEngineInfo>("get_local_engine_info", { id }),
+  downloadLocalEngine: (id: string) =>
+    invoke<void>("download_local_engine", { id }),
+  importLocalEngineTarball: (id: string, path: string) =>
+    invoke<void>("import_local_engine_tarball", { id, path }),
   getAppInfo: () => invoke<AppInfo>("get_app_info"),
   exportHotwordsCsv: () => invoke<string>("export_hotwords_csv"),
   importHotwordsCsv: (csv: string, merge: boolean) =>

@@ -137,8 +137,13 @@ pub struct Config {
     /// 本地 SenseVoice 用 fp32 完整模型(model.onnx, ~894MB)还是 int8 量化
     /// (model.int8.onnx, ~228MB)。fp32 精度更高;实测在 ARM Mac 上推理还
     /// 略快(ORT 对 fp32 走 Accelerate/NEON,int8 没占便宜),代价是内存。
+    /// 仅 SenseVoice 引擎支持,其他引擎只发布 int8。
     #[serde(default)]
     pub local_use_fp32_model: bool,
+    /// 本地 ASR 引擎选择:sense_voice / fire_red_aed / fire_red_ctc2 / qwen3_asr。
+    /// 未知字符串回退到 sense_voice。每个引擎独立模型目录,切换需对应模型已下载。
+    #[serde(default = "default_local_engine")]
+    pub local_engine: String,
     /// 本地 SenseVoice 用 CoreML execution provider(macOS Apple Neural Engine
     /// 加速)。当前 sherpa-onnx 1.13.x 的 crate 预编译产物用的 ONNX Runtime
     /// 不带 CoreML EP,设了会静默 fallback 到 cpu —— 所以 UI 上暂时不开放
@@ -188,6 +193,9 @@ fn default_vad_enabled() -> bool {
 }
 fn default_vad_silence_ms() -> u32 {
     1500
+}
+fn default_local_engine() -> String {
+    "sense_voice".into()
 }
 /// silero-vad 概率阈值默认 0.5(0-1 范围)。
 /// 老 RMS 时代用的是能量值(典型 0.005-0.05),比 silero 阈值小一个数量级。
@@ -241,6 +249,7 @@ impl Default for Config {
             push_to_talk: false,
             voice_enhance: default_voice_enhance(),
             local_use_fp32_model: false,
+            local_engine: default_local_engine(),
             local_use_coreml: false,
         }
     }
