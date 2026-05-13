@@ -44,6 +44,8 @@ export interface Config {
   push_to_talk: boolean;
   voice_enhance: boolean;
   local_use_fp32_model: boolean;
+  /** UI 暂未暴露开关 —— sherpa-onnx crate 升级前手动改 config.json 才能开 */
+  local_use_coreml: boolean;
 }
 
 export interface DeviceInfo {

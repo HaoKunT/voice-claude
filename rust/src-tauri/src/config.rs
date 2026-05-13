@@ -139,6 +139,13 @@ pub struct Config {
     /// 略快(ORT 对 fp32 走 Accelerate/NEON,int8 没占便宜),代价是内存。
     #[serde(default)]
     pub local_use_fp32_model: bool,
+    /// 本地 SenseVoice 用 CoreML execution provider(macOS Apple Neural Engine
+    /// 加速)。当前 sherpa-onnx 1.13.x 的 crate 预编译产物用的 ONNX Runtime
+    /// 不带 CoreML EP,设了会静默 fallback 到 cpu —— 所以 UI 上暂时不开放
+    /// 这个开关。等 crate 升级到带 ORT >=1.15 的预编译版本后再放出来。
+    /// 想提前试的可以手动改 config.json。
+    #[serde(default)]
+    pub local_use_coreml: bool,
 }
 
 fn default_asr_provider() -> String {
@@ -231,6 +238,7 @@ impl Default for Config {
             push_to_talk: false,
             voice_enhance: default_voice_enhance(),
             local_use_fp32_model: false,
+            local_use_coreml: false,
         }
     }
 }
