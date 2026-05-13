@@ -88,6 +88,17 @@ optional = true
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2" }
 objc = "0.2"
 
+# Windows 专用：
+# - window-vibrancy:Mica(Win11) / Acrylic(Win10) 毛玻璃,跟 macOS NSPanel 透明背景对位
+# - windows:调 SetWindowLongPtrW 给 indicator 设 WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+#   实现 macOS NSPanel 的「不抢焦点」等价行为
+[target.'cfg(target_os = "windows")'.dependencies]
+window-vibrancy = "0.5"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 [lints.rust]
 # objc 0.2 crate 的 msg_send! / class! 宏内部用了 #[cfg(feature = "cargo-clippy")]，
 # 新版 Rust 的 --check-cfg 不认这个 feature，`cargo clippy -D warnings` 下会报

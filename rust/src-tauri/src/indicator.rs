@@ -4,7 +4,12 @@
 //! style mask 设 `NSWindowStyleMaskNonactivatingPanel | NSWindowStyleMaskBorderless`，
 //! level 设 floating，`canBecomeKey = false` —— 真·不抢焦点（参考 type4me FloatingBarPanel）。
 //!
-//! Windows / Linux：用 Tauri 内置 always-on-top + skip-taskbar 兜底。
+//! Windows：`SetWindowLongPtrW` 给窗口加 `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`
+//! ——前者让窗口不会成为前台/抢焦点(macOS NSPanel canBecomeKey=false 的等价),
+//! 后者让窗口不进任务栏 / Alt-Tab(同 skip_taskbar 但更彻底)。
+//! 透明背景 + 毛玻璃靠 `window-vibrancy::apply_mica`(Win11) / `apply_acrylic`(Win10)。
+//!
+//! Linux:用 Tauri 内置 always-on-top + skip-taskbar 兜底,无原生 vibrancy。
 
 // tauri-nspanel v2 仍引用 cocoa crate，而 cocoa 已官方推荐迁移 objc2-app-kit；
 // 上游未完成迁移前，我们允许这些 deprecation warnings。
@@ -91,10 +96,51 @@ pub fn prebuild(app: &AppHandle) {
                     }
                 }
             }
+            #[cfg(target_os = "windows")]
+            apply_windows_indicator_chrome(&w);
         }
         Err(e) => {
             tracing::error!(error = ?e, "预创建悬浮窗失败");
         }
+    }
+}
+
+/// Windows 端 indicator 的「不抢焦点 + 毛玻璃」配置:
+/// 1. WS_EX_NOACTIVATE:窗口被 show 时不抢前台 / 不让 enigo 写错目标 app
+/// 2. WS_EX_TOOLWINDOW:不进任务栏和 Alt-Tab(skip_taskbar 在某些 DWM 主题下漏过)
+/// 3. apply_mica(Win11) → fallback apply_acrylic(Win10):毛玻璃,跟 macOS NSPanel
+///    透明背景对位
+///
+/// 任何步骤失败都只是 warn,不影响录音主流程。
+#[cfg(target_os = "windows")]
+fn apply_windows_indicator_chrome(w: &tauri::WebviewWindow) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    };
+
+    match w.hwnd() {
+        Ok(hwnd) => unsafe {
+            let cur = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            let new_style =
+                cur | (WS_EX_NOACTIVATE.0 as isize) | (WS_EX_TOOLWINDOW.0 as isize);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_style);
+        },
+        Err(e) => {
+            tracing::warn!(error = ?e, "indicator: 获取 hwnd 失败,跳过 NOACTIVATE 设置");
+        }
+    }
+
+    // Mica 只在 Win11 build 22000+ 可用;失败回退 Acrylic(Win10 v1809+)
+    if let Err(mica_err) = window_vibrancy::apply_mica(w, Some(true)) {
+        tracing::debug!(error = ?mica_err, "indicator: apply_mica 失败,尝试 acrylic");
+        // RGBA:深灰带轻度透明,跟 macOS NSPanel 视觉接近
+        if let Err(acrylic_err) = window_vibrancy::apply_acrylic(w, Some((20, 20, 25, 200))) {
+            tracing::warn!(error = ?acrylic_err, "indicator: acrylic 也失败,fallback CSS backdrop-filter");
+        } else {
+            tracing::info!("indicator: 启用 Acrylic 毛玻璃");
+        }
+    } else {
+        tracing::info!("indicator: 启用 Mica 毛玻璃");
     }
 }
 

@@ -53,6 +53,25 @@ pub fn prebuild(app: &AppHandle) {
                     }
                 }
             }
+            // Windows 端透明背景:DWM 默认会给透明窗口压出黑/白底板,
+            // 用 Mica/Acrylic 把它替换成跟 macOS 一致的毛玻璃。
+            // result 窗要拿焦点(IME 候选词需要 first responder),所以**不**加
+            // WS_EX_NOACTIVATE —— 跟 indicator 不一样。
+            #[cfg(target_os = "windows")]
+            {
+                if let Err(mica_err) = window_vibrancy::apply_mica(&w, Some(true)) {
+                    tracing::debug!(error = ?mica_err, "result: apply_mica 失败,尝试 acrylic");
+                    if let Err(acrylic_err) =
+                        window_vibrancy::apply_acrylic(&w, Some((20, 20, 25, 200)))
+                    {
+                        tracing::warn!(error = ?acrylic_err, "result: acrylic 也失败,fallback CSS backdrop-filter");
+                    } else {
+                        tracing::info!("result: 启用 Acrylic 毛玻璃");
+                    }
+                } else {
+                    tracing::info!("result: 启用 Mica 毛玻璃");
+                }
+            }
             tracing::info!("result 窗口预创建完成");
         }
         Err(e) => {
