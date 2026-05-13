@@ -80,7 +80,9 @@ bzip2 = "0.4"
 tar = "0.4"
 
 [dependencies.sherpa-onnx]
-version = "1.13"
+version = "1.13.1"
+default-features = false
+features = ["shared"]
 optional = true
 
 # macOS 专用：用 NSPanel 做真·不抢焦点浮窗（对应 type4me 的 FloatingBarPanel 方案）

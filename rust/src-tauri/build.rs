@@ -8,6 +8,16 @@ fn main() {
     emit_env("VC_BUILD_TIME", chrono::Utc::now().to_rfc3339());
     emit_env("VC_TARGET", std::env::var("TARGET").unwrap_or_default());
 
+    // sherpa-onnx 在 shared 模式下 link libsherpa-onnx-c-api.dylib + libonnxruntime.dylib;
+    // 这两个 dylib 由 tauri.conf.json 的 bundle.macOS.files 复制进 .app/Contents/Frameworks/。
+    // 这里给主二进制加上 LC_RPATH 指向 Frameworks/,运行时 dyld 才找得到。
+    // sherpa-onnx-sys 自己 build.rs 里也加了 rpath link arg,但 cargo link arg 不会传递
+    // 到上游 crate(就是这个 binary),所以这条必须在 voice-claude 自己的 build.rs 里加。
+    #[cfg(target_os = "macos")]
+    {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Frameworks");
+    }
+
     tauri_build::build()
 }
 
