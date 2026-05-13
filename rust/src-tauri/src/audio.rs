@@ -64,6 +64,19 @@ impl Recorder {
         f32::from_bits(self.current_level.load(Ordering::Relaxed))
     }
 
+    /// 拷贝 buffer[offset..] 的字节(不消费)。VAD 任务用游标跟踪已喂给检测器
+    /// 的位置,周期性 peek 尾部新增 PCM 增量喂入。返回 (新字节, 总长度)。
+    pub fn peek_pcm_since(&self, offset: usize) -> (Vec<u8>, usize) {
+        let buf = self.buffer.lock();
+        let total = buf.len();
+        let new_bytes = if offset >= total {
+            Vec::new()
+        } else {
+            buf[offset..].to_vec()
+        };
+        (new_bytes, total)
+    }
+
     /// 开始流式录音：返回 PCM 块接收端。调用方通过 drop Receiver 或 stop_stream 停止。
     pub fn start_stream(&self) -> mpsc::Receiver<Vec<u8>> {
         let (tx, rx) = mpsc::channel::<Vec<u8>>(32);

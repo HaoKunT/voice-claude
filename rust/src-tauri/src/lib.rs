@@ -30,6 +30,7 @@ pub mod logger;
 pub mod recorder;
 pub mod result;
 pub mod tray;
+pub mod vad;
 
 use parking_lot::Mutex;
 use std::sync::Arc;

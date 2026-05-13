@@ -397,31 +397,33 @@ export function SettingsView({ section }: { section: SettingsSection }) {
                 <Field
                   label={
                     <>
-                      <span>音量触发阈值</span>
+                      <span>说话概率阈值</span>
                       <span className="ml-auto font-mono text-accent">
-                        {cfg.vad_threshold.toFixed(3)}
+                        {cfg.vad_threshold.toFixed(2)}
                       </span>
                     </>
                   }
                 >
                   <input
                     type="range"
-                    min={5}
-                    max={50}
-                    step={1}
-                    value={Math.round(cfg.vad_threshold * 1000)}
+                    min={20}
+                    max={80}
+                    step={5}
+                    value={Math.round(cfg.vad_threshold * 100)}
                     onChange={(e) =>
-                      update("vad_threshold", parseInt(e.target.value) / 1000)
+                      update("vad_threshold", parseInt(e.target.value) / 100)
                     }
                     className="w-full accent-accent"
                   />
                   <div className="flex justify-between text-[10px] text-gray-600 mt-1 font-mono">
-                    <span>0.005（安静环境）</span>
-                    <span>0.015</span>
-                    <span>0.050（嘈杂环境）</span>
+                    <span>0.20（敏感）</span>
+                    <span>0.50</span>
+                    <span>0.80（保守）</span>
                   </div>
                   <p className="text-[11px] text-gray-500 leading-relaxed mt-1.5">
-                    如果在吵的环境里 VAD 不停，调高；如果说话不够响被误判为静音提前停了，调低。
+                    silero 神经网络 VAD 输出的"是说话"概率门槛(0-1)。
+                    嘈杂环境 / 误触发频繁 → 调高;气声 / 轻声被误切 → 调低。
+                    模型 ~640KB,首次启用 VAD 时自动下载。
                   </p>
                 </Field>
               </>

@@ -189,8 +189,11 @@ fn default_vad_enabled() -> bool {
 fn default_vad_silence_ms() -> u32 {
     1500
 }
+/// silero-vad 概率阈值默认 0.5(0-1 范围)。
+/// 老 RMS 时代用的是能量值(典型 0.005-0.05),比 silero 阈值小一个数量级。
+/// 如果加载到老 config 的 < 0.1 值,migrate_vad_threshold 会重置成 0.5。
 fn default_vad_threshold() -> f32 {
-    0.015
+    0.5
 }
 fn default_output_mode() -> String {
     OUTPUT_MODE_INPUT.into()
@@ -253,7 +256,20 @@ impl Config {
             Err(_) => Self::default(),
         };
         cfg.migrate_polish_profiles();
+        cfg.migrate_vad_threshold();
         cfg
+    }
+
+    /// silero VAD 阈值是 0-1 概率,老 RMS 时代用的是能量值(典型 0.005-0.05)。
+    /// 加载老 config 时 < 0.1 视为遗留 RMS 值,重置成 0.5(silero 默认)。
+    fn migrate_vad_threshold(&mut self) {
+        if self.vad_threshold > 0.0 && self.vad_threshold < 0.1 {
+            tracing::info!(
+                old = self.vad_threshold,
+                "vad_threshold 是老 RMS 能量值,迁移到 silero 概率默认 0.5"
+            );
+            self.vad_threshold = 0.5;
+        }
     }
 
     /// 首次升级到多 profile 版本时，把老的 correct_* 字段迁成一个「默认」profile。

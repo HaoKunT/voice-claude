@@ -180,8 +180,24 @@ async fn run(
         let vad_stop_cb = Arc::clone(&level_stop);
         let vad_silence_ms = cfg.vad_silence_ms as u64;
         let vad_threshold = cfg.vad_threshold;
+        // silero 模型按需下载(~640KB,首次进设置/启用 VAD 应当已经触发);
+        // 没下载就回退到 RMS,体感差但不崩
+        let model_ready = crate::vad::is_available();
+        if !model_ready {
+            // 后台尝试下载,本次录音先用 RMS 兜底
+            tokio::spawn(async {
+                if let Err(e) = crate::vad::download_if_needed().await {
+                    tracing::warn!(error = ?e, "silero-vad 下载失败,本次 VAD 走 RMS 兜底");
+                }
+            });
+        }
         tokio::spawn(async move {
-            run_vad(vad_rec, vad_stop_cb, vad_silence_ms, vad_threshold).await;
+            if model_ready {
+                run_vad_silero(vad_rec, vad_stop_cb, vad_silence_ms, vad_threshold).await;
+            } else {
+                tracing::info!("silero-vad 模型未就绪,本次 VAD 走 RMS 兜底");
+                run_vad_rms(vad_rec, vad_stop_cb, vad_silence_ms, 0.015).await;
+            }
         });
     }
 
@@ -309,13 +325,103 @@ async fn run(
     Ok(())
 }
 
-/// VAD：检测到说话起点后，连续 silence_ms 毫秒低于 threshold 自动触发停止。
-/// 起点判定：累计 300ms 高于阈值才算"开始说话"，避免用户还没开口就停。
+/// 编译时关掉 local-asr feature 时,silero 不可用,直接 fallback 到 RMS。
+#[cfg(not(feature = "local-asr"))]
+async fn run_vad_silero(
+    rec: Arc<Recorder>,
+    stop_signal: Arc<AtomicBool>,
+    silence_ms: u64,
+    _threshold: f32,
+) {
+    run_vad_rms(rec, stop_signal, silence_ms, 0.015).await;
+}
+
+/// silero-vad VAD:用神经网络判断当前是否在说话,持续静音超过 silence_ms 自动停。
+/// 比 RMS 门限对气声/键盘噪声鲁棒得多(silero ROC-AUC 0.96 vs WebRTC 0.73)。
 ///
-/// 诊断日志：
-///   - info：启动参数、说话起点、静音触发、退出原因
-///   - debug：每 1s 打印一次 RMS 和状态（开 log_level=debug 看）
-async fn run_vad(
+/// 实现:从 Recorder buffer 周期 peek 增量 PCM 喂给 detector,detector.detected()
+/// 是当前是否在说话的硬判定。silence_ms 由外层累计触发(沿用现有语义)。
+#[cfg(feature = "local-asr")]
+async fn run_vad_silero(
+    rec: Arc<Recorder>,
+    stop_signal: Arc<AtomicBool>,
+    silence_ms: u64,
+    threshold: f32,
+) {
+    const TICK_MS: u64 = 50;
+    const SPEECH_START_MS: u64 = 300;
+
+    let detector = match crate::vad::create_detector(threshold, 700) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(error = ?e, "silero-vad 初始化失败,回退到 RMS");
+            run_vad_rms(rec, stop_signal, silence_ms, 0.015).await;
+            return;
+        }
+    };
+
+    tracing::info!(threshold, silence_ms, "VAD: silero 启动");
+
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(TICK_MS));
+    let mut consumed_bytes: usize = 0;
+    let mut started_speaking = false;
+    let mut speech_accum_ms: u64 = 0;
+    let mut silence_accum_ms: u64 = 0;
+    let mut log_accum_ms: u64 = 0;
+
+    while !stop_signal.load(Ordering::Relaxed) {
+        interval.tick().await;
+        let (new_bytes, total) = rec.peek_pcm_since(consumed_bytes);
+        consumed_bytes = total;
+        if !new_bytes.is_empty() {
+            // i16 LE → f32 [-1, 1]
+            let f32_samples: Vec<f32> = new_bytes
+                .chunks_exact(2)
+                .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+                .collect();
+            detector.accept_waveform(&f32_samples);
+        }
+        let detected = detector.detected();
+
+        log_accum_ms += TICK_MS;
+        if log_accum_ms >= 1000 {
+            tracing::debug!(
+                detected,
+                started_speaking,
+                silence_accum_ms,
+                "VAD silero tick",
+            );
+            log_accum_ms = 0;
+        }
+
+        if !started_speaking {
+            if detected {
+                speech_accum_ms += TICK_MS;
+                if speech_accum_ms >= SPEECH_START_MS {
+                    started_speaking = true;
+                    tracing::info!("VAD silero: 检测到说话起点");
+                }
+            } else {
+                speech_accum_ms = 0;
+            }
+        } else if detected {
+            // 类比老 RMS spike 惩罚:detected 时给 silence accumulator 扣 2*TICK_MS
+            silence_accum_ms = silence_accum_ms.saturating_sub(2 * TICK_MS);
+        } else {
+            silence_accum_ms += TICK_MS;
+            if silence_accum_ms >= silence_ms {
+                tracing::info!(silence_ms, "VAD silero: 静音超时,自动停止");
+                stop();
+                return;
+            }
+        }
+    }
+    tracing::info!(started_speaking, "VAD silero: 随录音一起结束");
+}
+
+/// 老 RMS 门限 VAD,作为 silero 不可用(模型没下载/初始化失败)的兜底。
+/// 起点判定:累计 300ms 高于阈值才算"开始说话",避免还没开口就停。
+async fn run_vad_rms(
     rec: Arc<Recorder>,
     stop_signal: Arc<AtomicBool>,
     silence_ms: u64,
