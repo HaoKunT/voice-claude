@@ -28,50 +28,198 @@ pub fn is_available() -> bool {
 
 /// 主识别接口。
 #[cfg(feature = "local-asr")]
-pub async fn transcribe(wav: &[u8]) -> Result<String> {
+pub async fn transcribe(cfg: &crate::config::Config, wav: &[u8]) -> Result<String> {
     use anyhow::anyhow;
-    use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig};
 
     if !is_available() {
-        anyhow::bail!("SenseVoice 模型未下载，请先在设置里下载");
+        anyhow::bail!("SenseVoice 模型未下载,请先在设置里下载");
     }
-    let model_dir = model_path();
-    let model_file = model_dir
-        .join("model.int8.onnx")
+
+    let signature = build_signature(cfg);
+    let hotwords_path = if cfg.hotwords.is_empty() {
+        None
+    } else {
+        Some(write_hotwords_file(&cfg.hotwords)?)
+    };
+    let model_filename = if cfg.local_use_fp32_model {
+        "model.onnx"
+    } else {
+        "model.int8.onnx"
+    };
+    let provider = if cfg.local_use_coreml {
+        "coreml"
+    } else {
+        "cpu"
+    };
+    let model_file = model_path()
+        .join(model_filename)
         .to_string_lossy()
         .into_owned();
-    let tokens_file = model_dir.join("tokens.txt").to_string_lossy().into_owned();
+    if !std::path::Path::new(&model_file).is_file() {
+        anyhow::bail!("SenseVoice 模型文件 {} 不存在,请重下载模型", model_filename);
+    }
+    let tokens_file = model_path()
+        .join("tokens.txt")
+        .to_string_lossy()
+        .into_owned();
 
     let wav_vec = wav.to_vec();
 
-    // 在独立线程跑 native 推理，避免阻塞 tokio runtime
+    // 在独立线程跑 native 推理,避免阻塞 tokio runtime。with_recognizer 闭包
+    // 在 cache mutex 持有期间执行,这样不需要 clone OfflineRecognizer
+    // (sherpa-onnx 没实现 Clone)。voice-claude 设计上同一时刻只有一次录音,
+    // 不会发生需要并发解码的情况,串行 mutex 没有性能损失。
     tokio::task::spawn_blocking(move || -> Result<String> {
-        let mut cfg = OfflineRecognizerConfig::default();
-        cfg.model_config.sense_voice.model = Some(model_file);
-        cfg.model_config.sense_voice.language = Some("zh".to_string());
-        cfg.model_config.sense_voice.use_itn = true;
-        cfg.model_config.tokens = Some(tokens_file);
-        cfg.model_config.num_threads = 2;
-        cfg.model_config.provider = Some("cpu".to_string());
-        cfg.decoding_method = Some("greedy_search".to_string());
-
-        let recognizer =
-            OfflineRecognizer::create(&cfg).ok_or_else(|| anyhow!("SenseVoice 初始化失败"))?;
-        let (samples, sample_rate) = wav_bytes_to_samples(&wav_vec)?;
-        let stream = recognizer.create_stream();
-        stream.accept_waveform(sample_rate, &samples);
-        recognizer.decode(&stream);
-        let result = stream.get_result().ok_or_else(|| anyhow!("识别结果为空"))?;
-        Ok(result.text)
+        with_recognizer(
+            &signature,
+            &model_file,
+            &tokens_file,
+            provider,
+            hotwords_path.as_deref(),
+            |recognizer| {
+                let (samples, sample_rate) = wav_bytes_to_samples(&wav_vec)?;
+                let stream = recognizer.create_stream();
+                stream.accept_waveform(sample_rate, &samples);
+                recognizer.decode(&stream);
+                let result = stream.get_result().ok_or_else(|| anyhow!("识别结果为空"))?;
+                Ok(result.text)
+            },
+        )
     })
     .await?
 }
 
 #[cfg(not(feature = "local-asr"))]
-pub async fn transcribe(_wav: &[u8]) -> Result<String> {
+pub async fn transcribe(_cfg: &crate::config::Config, _wav: &[u8]) -> Result<String> {
     anyhow::bail!(
-        "本地 SenseVoice 未启用。请用 `cargo build --features local-asr` 重新编译，或选择其他 ASR 后端"
+        "本地 SenseVoice 未启用。请用 `cargo build --features local-asr` 重新编译,或选择其他 ASR 后端"
     )
+}
+
+// ============================================================================
+// Recognizer 缓存 —— OfflineRecognizer 是 Send + Sync,可以静态持有,
+// 复用避免反复 228MB / 894MB 的 ONNX 加载。配置(模型精度 / provider / 热词)
+// 变了用 signature 失效重建。
+// ============================================================================
+
+#[cfg(feature = "local-asr")]
+fn build_signature(cfg: &crate::config::Config) -> String {
+    use std::collections::BTreeMap;
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    cfg.local_use_fp32_model.hash(&mut h);
+    cfg.local_use_coreml.hash(&mut h);
+    let sorted: BTreeMap<&String, &String> = cfg.hotwords.iter().collect();
+    for (k, v) in &sorted {
+        k.hash(&mut h);
+        v.hash(&mut h);
+    }
+    format!("{:x}", h.finish())
+}
+
+#[cfg(feature = "local-asr")]
+fn write_hotwords_file(
+    hotwords: &std::collections::HashMap<String, String>,
+) -> Result<std::path::PathBuf> {
+    use std::collections::BTreeSet;
+    let mut set: BTreeSet<&str> = BTreeSet::new();
+    for (k, v) in hotwords {
+        let k = k.trim();
+        let v = v.trim();
+        if !k.is_empty() {
+            set.insert(k);
+        }
+        if !v.is_empty() {
+            set.insert(v);
+        }
+    }
+    // sherpa-onnx hotwords_file 格式:每行一个词。SenseVoice 训练时用 char-level
+    // tokenize,直接写中文/英文词都能被 internal tokenizer 处理。
+    let content: String = set.into_iter().collect::<Vec<_>>().join("\n");
+    let path = config_dir().join("local_hotwords.txt");
+    std::fs::write(&path, content)?;
+    Ok(path)
+}
+
+#[cfg(feature = "local-asr")]
+struct CachedRecognizer {
+    signature: String,
+    inner: sherpa_onnx::OfflineRecognizer,
+}
+
+#[cfg(feature = "local-asr")]
+fn cache() -> &'static parking_lot::Mutex<Option<CachedRecognizer>> {
+    use std::sync::OnceLock;
+    static CELL: OnceLock<parking_lot::Mutex<Option<CachedRecognizer>>> = OnceLock::new();
+    CELL.get_or_init(|| parking_lot::Mutex::new(None))
+}
+
+/// 在 mutex 守卫内执行 f(&recognizer)。配置变了重建并缓存。
+#[cfg(feature = "local-asr")]
+fn with_recognizer<F, R>(
+    signature: &str,
+    model_file: &str,
+    tokens_file: &str,
+    provider: &str,
+    hotwords_path: Option<&std::path::Path>,
+    f: F,
+) -> Result<R>
+where
+    F: FnOnce(&sherpa_onnx::OfflineRecognizer) -> Result<R>,
+{
+    use anyhow::anyhow;
+    use sherpa_onnx::OfflineRecognizerConfig;
+    let mut guard = cache().lock();
+
+    let needs_rebuild = match guard.as_ref() {
+        Some(cached) if cached.signature == signature => false,
+        Some(cached) => {
+            tracing::info!(
+                old = %cached.signature,
+                new = %signature,
+                "SenseVoice 配置变化,重建 recognizer"
+            );
+            true
+        }
+        None => {
+            tracing::info!(
+                provider,
+                model = model_file,
+                "首次构建 SenseVoice recognizer"
+            );
+            true
+        }
+    };
+
+    if needs_rebuild {
+        // drop 老的(释放 ONNX session 内存)再建新的,峰值内存不叠加
+        *guard = None;
+        let mut sconf = OfflineRecognizerConfig::default();
+        sconf.model_config.sense_voice.model = Some(model_file.to_string());
+        sconf.model_config.sense_voice.language = Some("zh".to_string());
+        sconf.model_config.sense_voice.use_itn = true;
+        sconf.model_config.tokens = Some(tokens_file.to_string());
+        sconf.model_config.num_threads = std::thread::available_parallelism()
+            .map(|n| n.get().min(8) as i32)
+            .unwrap_or(2);
+        sconf.model_config.provider = Some(provider.to_string());
+        sconf.decoding_method = Some("greedy_search".to_string());
+        if let Some(p) = hotwords_path {
+            sconf.hotwords_file = Some(p.to_string_lossy().into_owned());
+            sconf.hotwords_score = 1.5;
+        }
+        let recognizer = sherpa_onnx::OfflineRecognizer::create(&sconf)
+            .ok_or_else(|| anyhow!("SenseVoice 初始化失败"))?;
+        *guard = Some(CachedRecognizer {
+            signature: signature.to_string(),
+            inner: recognizer,
+        });
+    } else {
+        tracing::debug!("SenseVoice recognizer 命中缓存");
+    }
+
+    let cached = guard.as_ref().expect("just inserted or kept");
+    f(&cached.inner)
 }
 
 /// 下载模型。流式拉 + 字节级进度回调 (downloaded, total)。

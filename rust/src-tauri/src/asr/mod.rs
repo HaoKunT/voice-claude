@@ -34,7 +34,7 @@ pub async fn transcribe_stream(
 /// 批处理 ASR：录完再识别。
 pub async fn transcribe_batch(cfg: &Config, wav: &[u8]) -> Result<String> {
     match cfg.asr_provider.as_str() {
-        ASR_PROVIDER_LOCAL => local::transcribe(wav).await,
+        ASR_PROVIDER_LOCAL => local::transcribe(cfg, wav).await,
         ASR_PROVIDER_OPENROUTER => openrouter::transcribe(cfg, wav).await,
         _ => zhipu::transcribe(cfg, wav).await,
     }
