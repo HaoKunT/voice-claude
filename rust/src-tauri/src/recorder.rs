@@ -204,7 +204,7 @@ async fn run(
     let (reason, raw_text, asr_ms) = if is_streaming(&cfg.asr_provider) {
         run_stream(app.clone(), &rec, &cfg, signal_rx).await?
     } else {
-        run_batch(&rec, &cfg, signal_rx).await?
+        run_batch(app.clone(), &rec, &cfg, signal_rx).await?
     };
 
     // 取消路径:悬浮窗直接消失 (guard drop 里 hide),不走 processing/result,不写历史
@@ -213,10 +213,8 @@ async fn run(
         return Ok(());
     }
 
-    // 录音 + ASR 已结束，进入后处理（润色 / 热词）阶段；panel 模式下
-    // 悬浮窗切到 processing view。必须在 asr-final-text 之前发，否则 event
-    // 顺序错位会让用户看到悬浮窗最终停在 processing（而不是 result）
-    let _ = app.emit("recording-stopped", ());
+    // recording-stopped 已经由 run_stream / run_batch 在收到 stop 信号后立刻
+    // emit 了 —— 不要在这等 ASR 跑完才发,会让用户盯着"录音中"画面等 5–10s。
 
     // guard drop 时自动做：level_stop + hide indicator
 
@@ -276,10 +274,11 @@ async fn run(
     }
 
     let duration_ms = started_at.elapsed().as_millis() as i64;
+    let stats_provider = cfg.provider_id_for_stats();
     history::save(history::SaveEntry {
         raw: &raw_text,
         corrected: &final_text,
-        provider: &cfg.asr_provider,
+        provider: &stats_provider,
         duration_ms,
         asr_ms,
         polish_ms,
@@ -534,8 +533,6 @@ async fn run_stream(
 
     // 等用户停止或取消
     let reason = signal_rx.await.unwrap_or(StopReason::Stop);
-    // 从用户停止说话开始算 ASR"尾包延时"(stop → final 就绪),这是用户感知的 ASR 等待
-    let asr_start = std::time::Instant::now();
     crate::beep::stop();
     rec.stop_stream();
     rec.stop();
@@ -551,12 +548,21 @@ async fn run_stream(
         return Ok((reason, String::new(), 0));
     }
 
+    // 用户按了停止 + 不是取消 → 立刻让悬浮窗切 processing view,不要让用户
+    // 等 asr_task 收尾包(可能 200ms-1s)才看到状态变化
+    let _ = app.emit("recording-stopped", ());
+
+    // asr_ms 跟 run_batch 对齐:只测纯 ASR 调用(等 asr_task 收尾包 + 出
+    // final),不含 rec.stop_stream / rec.stop / delete_chars 等基础开销 ——
+    // 否则两边一比 stream 数字偏大几十 ms,失去可比性。
+    let asr_start = std::time::Instant::now();
     let final_text = asr_task.await??;
     let asr_ms = asr_start.elapsed().as_millis() as i64;
     Ok((reason, final_text, asr_ms))
 }
 
 async fn run_batch(
+    app: AppHandle,
     rec: &Arc<Recorder>,
     cfg: &crate::config::Config,
     signal_rx: tokio::sync::oneshot::Receiver<StopReason>,
@@ -569,6 +575,10 @@ async fn run_batch(
     if reason == StopReason::Cancel {
         return Ok((reason, String::new(), 0));
     }
+
+    // 用户按了停止 + 不是取消 → 立刻让悬浮窗切到 processing view,不要让用户
+    // 等 transcribe_batch 跑完(本地大模型可能 5–10s)才看到状态变化
+    let _ = app.emit("recording-stopped", ());
 
     let wav = to_wav(&pcm, cfg.voice_enhance);
     if wav.len() < 100 {

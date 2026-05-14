@@ -165,7 +165,9 @@ listen<RecordingStartedPayload>("recording-started", (e) => {
   partialEl.textContent = "等待语音…";
   partialEl.classList.add("empty");
   timerEl.style.color = "";
-  renderHotkeyHint(e.payload?.hotkey ?? "cmd+shift+f5");
+  // 后端 recording-started 永远会带 hotkey,这里 fallback 给空字符串
+  // 仅是 defensive —— renderHotkeyHint("") 渲染空,比硬编码具体热键更安全
+  renderHotkeyHint(e.payload?.hotkey ?? "");
 });
 
 listen("recording-stopped", () => {

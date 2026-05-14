@@ -26,9 +26,17 @@ pub fn get_config(state: State<'_, AppState>) -> Config {
 
 #[tauri::command]
 pub fn save_config(cfg: Config, state: State<'_, AppState>, app: AppHandle) -> Result<(), String> {
+    use crate::asr::local;
+    use crate::config::ASR_PROVIDER_LOCAL;
+
     let prev = state.snapshot();
     let prev_hotkey = prev.hotkey.clone();
     let prev_log_level = prev.log_level.clone();
+    let prev_asr_provider = prev.asr_provider.clone();
+    let prev_local_engine = prev.local_engine.clone();
+    let prev_local_coreml = prev.local_use_coreml;
+    let prev_hotwords = prev.hotwords.clone();
+
     let new_hotkey = cfg.hotkey.clone();
     let new_log_level = cfg.log_level.clone();
     // 热键变了就重新注册全局热键，否则老 accelerator 还挂着、新的没生效
@@ -49,6 +57,29 @@ pub fn save_config(cfg: Config, state: State<'_, AppState>, app: AppHandle) -> R
     if new_log_level != prev_log_level {
         crate::logger::reload(&new_log_level);
     }
+
+    // 本地模型生命周期:
+    //   - 切到非 local 后端 → unload 释放内存(SenseVoice 几百 MB / FireRed 几 GB)
+    //   - 切到 local / 换 engine / 换 coreml / 改热词 → 后台预热新模型
+    let new_cfg = state.snapshot();
+    let now_local = new_cfg.asr_provider == ASR_PROVIDER_LOCAL;
+    let was_local = prev_asr_provider == ASR_PROVIDER_LOCAL;
+    if was_local && !now_local {
+        local::unload();
+    } else if now_local
+        && (prev_asr_provider != new_cfg.asr_provider
+            || prev_local_engine != new_cfg.local_engine
+            || prev_local_coreml != new_cfg.local_use_coreml
+            || prev_hotwords != new_cfg.hotwords)
+    {
+        let cfg_for_warm = (*new_cfg).clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Err(e) = local::warm_up(&cfg_for_warm) {
+                tracing::warn!(error = ?e, "save_config 后预热失败");
+            }
+        });
+    }
+
     // 广播给其他前端组件（比如主窗口 sidebar 显示的快捷键）刷新自己的 cfg 副本
     let _ = app.emit("config-updated", ());
     Ok(())
@@ -378,6 +409,105 @@ pub async fn import_local_engine_tarball(id: String, path: String) -> Result<(),
     local::import_engine_tarball(engine, std::path::PathBuf::from(path))
         .await
         .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+pub struct PunctModelInfo {
+    pub label: String,
+    pub description: String,
+    pub url: String,
+    pub sha256: String,
+    pub model_dir: String,
+    pub available: bool,
+    pub size_mb: u32,
+}
+
+/// 标点模型信息(给 UI 状态卡)。
+#[tauri::command]
+pub fn get_punct_model_info() -> PunctModelInfo {
+    PunctModelInfo {
+        label: local::punct_model_label().to_string(),
+        description: local::punct_model_description().to_string(),
+        url: local::punct_model_url(),
+        sha256: local::punct_model_sha256().to_string(),
+        model_dir: local::punct_model_install_path().to_string_lossy().into_owned(),
+        available: local::punct_model_is_available(),
+        size_mb: local::punct_model_size_mb(),
+    }
+}
+
+#[derive(Serialize, Clone)]
+pub struct PunctDownloadProgress {
+    pub downloaded: u64,
+    pub total: u64,
+}
+
+/// 下载标点模型,进度通过 `punct-model-download-progress` 事件推送。
+#[tauri::command]
+pub async fn download_punct_model(app: AppHandle) -> Result<(), String> {
+    local::download_punct_model(move |downloaded, total| {
+        let _ = app.emit(
+            "punct-model-download-progress",
+            PunctDownloadProgress { downloaded, total },
+        );
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// 从本地 tar.bz2 导入标点模型。
+#[tauri::command]
+pub async fn import_punct_model_tarball(path: String) -> Result<(), String> {
+    local::import_punct_tarball(std::path::PathBuf::from(path))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 横向 ASR 测试:传文件 + 多选后端 → 跑识别 → emit "bench-result" 事件。
+/// command 一返回意味着调度结束(云端 spawn 出去 + 本地 task 已开始);具体
+/// 每个后端的结果通过 event 流式回报,前端 listen 填表格。
+#[tauri::command]
+pub async fn bench_transcribe_file(
+    path: String,
+    provider_ids: Vec<String>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    use crate::asr::bench;
+    use std::sync::Arc;
+
+    let cfg = state.snapshot();
+    let path_buf = std::path::PathBuf::from(&path);
+
+    // 解码可能耗几百 ms(尤其 mp3),放 spawn_blocking 别堵 tokio runtime
+    let wav = tokio::task::spawn_blocking(move || bench::decode_to_pcm16k_mono_wav(&path_buf))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("解码失败:{}", e))?;
+    let wav = Arc::new(wav);
+
+    let (cloud_ids, local_ids) = bench::split_cloud_local(&provider_ids);
+
+    // 云端可并行 —— 各开一个 task,谁好了谁先 emit
+    for id in cloud_ids {
+        let cfg = cfg.clone();
+        let wav = wav.clone();
+        let app = app.clone();
+        tokio::spawn(async move {
+            bench::run_one_and_emit(id, cfg, wav, app).await;
+        });
+    }
+
+    // 本地引擎共享 OfflineRecognizer cache mutex —— 必须串行,否则会反复
+    // rebuild 模型,加载开销叠加且无意义。一个 task 顺序跑完所有 local id。
+    if !local_ids.is_empty() {
+        tokio::spawn(async move {
+            for id in local_ids {
+                bench::run_one_and_emit(id, cfg.clone(), wav.clone(), app.clone()).await;
+            }
+        });
+    }
+    Ok(())
 }
 
 /// 把当前热词导出为 CSV 字符串（前端用 save dialog 保存）

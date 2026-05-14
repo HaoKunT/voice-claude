@@ -134,13 +134,7 @@ pub struct Config {
     /// 改善气声(耳语、气声输入)的识别率。对正常说话也无副作用,默认开启。
     #[serde(default = "default_voice_enhance")]
     pub voice_enhance: bool,
-    /// 本地 SenseVoice 用 fp32 完整模型(model.onnx, ~894MB)还是 int8 量化
-    /// (model.int8.onnx, ~228MB)。fp32 精度更高;实测在 ARM Mac 上推理还
-    /// 略快(ORT 对 fp32 走 Accelerate/NEON,int8 没占便宜),代价是内存。
-    /// 仅 SenseVoice 引擎支持,其他引擎只发布 int8。
-    #[serde(default)]
-    pub local_use_fp32_model: bool,
-    /// 本地 ASR 引擎选择:sense_voice / fire_red_aed / fire_red_ctc2 / qwen3_asr。
+    /// 本地 ASR 引擎选择:sense_voice / fire_red_aed / qwen3_asr。
     /// 未知字符串回退到 sense_voice。每个引擎独立模型目录,切换需对应模型已下载。
     #[serde(default = "default_local_engine")]
     pub local_engine: String,
@@ -248,7 +242,6 @@ impl Default for Config {
             output_mode: default_output_mode(),
             push_to_talk: false,
             voice_enhance: default_voice_enhance(),
-            local_use_fp32_model: false,
             local_engine: default_local_engine(),
             local_use_coreml: false,
         }
@@ -339,6 +332,22 @@ impl Config {
             fs::set_permissions(&path, perms).ok();
         }
         Ok(())
+    }
+
+    /// 写入 history / 状态统计用的 provider id。
+    /// 云端后端直接返回 cfg.asr_provider;选了 "local" 时展开成具体本地引擎 id
+    /// (sense_voice / fire_red_aed / fire_red_ctc2 / qwen3_asr),让 4 个本地
+    /// 引擎在统计里分开,而不是混作一坨 "local"。
+    pub fn provider_id_for_stats(&self) -> String {
+        if self.asr_provider == ASR_PROVIDER_LOCAL {
+            if self.local_engine.is_empty() {
+                "sense_voice".to_string()
+            } else {
+                self.local_engine.clone()
+            }
+        } else {
+            self.asr_provider.clone()
+        }
     }
 
     /// 纠错超时时间，0 或负值时返回 10 秒。

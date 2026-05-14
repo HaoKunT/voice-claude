@@ -43,7 +43,6 @@ export interface Config {
   output_mode: string;
   push_to_talk: boolean;
   voice_enhance: boolean;
-  local_use_fp32_model: boolean;
   /** UI 暂未暴露开关 —— sherpa-onnx crate 升级前手动改 config.json 才能开 */
   local_use_coreml: boolean;
   /** 本地 ASR 引擎:sense_voice / fire_red_aed / fire_red_ctc2 / qwen3_asr */
@@ -112,6 +111,28 @@ export interface DownloadProgress {
   engine_id: string;
 }
 
+export interface PunctModelInfo {
+  label: string;
+  description: string;
+  url: string;
+  sha256: string;
+  model_dir: string;
+  available: boolean;
+  size_mb: number;
+}
+
+export interface PunctDownloadProgress {
+  downloaded: number;
+  total: number;
+}
+
+export interface BenchResult {
+  provider_id: string;
+  text: string;
+  error: string | null;
+  ms: number;
+}
+
 export interface AppInfo {
   name: string;
   version: string;
@@ -149,6 +170,12 @@ export const api = {
     invoke<void>("download_local_engine", { id }),
   importLocalEngineTarball: (id: string, path: string) =>
     invoke<void>("import_local_engine_tarball", { id, path }),
+  getPunctModelInfo: () => invoke<PunctModelInfo>("get_punct_model_info"),
+  downloadPunctModel: () => invoke<void>("download_punct_model"),
+  importPunctModelTarball: (path: string) =>
+    invoke<void>("import_punct_model_tarball", { path }),
+  benchTranscribeFile: (path: string, providerIds: string[]) =>
+    invoke<void>("bench_transcribe_file", { path, providerIds }),
   getAppInfo: () => invoke<AppInfo>("get_app_info"),
   exportHotwordsCsv: () => invoke<string>("export_hotwords_csv"),
   importHotwordsCsv: (csv: string, merge: boolean) =>
@@ -160,11 +187,11 @@ export const api = {
 };
 
 export const ASR_PROVIDERS = [
-  { value: "volc", label: "豆包 / 火山引擎（实时）" },
-  { value: "xfyun", label: "讯飞（实时）" },
-  { value: "zhipu", label: "智谱（准确优先）" },
-  { value: "openrouter", label: "OpenRouter Whisper（准确优先）" },
-  { value: "local", label: "本地 SenseVoice（离线 / 隐私）" },
+  { value: "volc", label: "豆包(流式)" },
+  { value: "xfyun", label: "讯飞(流式)" },
+  { value: "zhipu", label: "智谱 GLM-ASR" },
+  { value: "openrouter", label: "OpenRouter Whisper" },
+  { value: "local", label: "本地引擎(离线)" },
 ];
 
 // 和 Rust config.rs 里 POLISH_MODE_* / OUTPUT_MODE_* 常量保持一致
@@ -174,10 +201,10 @@ export const POLISH_MODE_OPENROUTER = "openrouter";
 export const POLISH_MODE_CLOUD = "cloud";
 
 export const POLISH_MODES = [
-  { value: POLISH_MODE_OFF, label: "关闭（原文直出）" },
+  { value: POLISH_MODE_OFF, label: "关闭(原文直出)" },
   { value: POLISH_MODE_OLLAMA, label: "Ollama 本地" },
   { value: POLISH_MODE_OPENROUTER, label: "OpenRouter 云端" },
-  { value: POLISH_MODE_CLOUD, label: "兼容 OpenAI API 的云端" },
+  { value: POLISH_MODE_CLOUD, label: "OpenAI 兼容 API" },
 ];
 
 export const OUTPUT_MODE_INPUT = "input";
@@ -187,12 +214,12 @@ export const OUTPUT_MODE_PANEL = "panel";
 export const OUTPUT_MODES = [
   {
     value: OUTPUT_MODE_INPUT,
-    label: "自动输入到当前焦点窗口（默认）",
-    description: "自动模拟键盘输入到当前焦点窗口，最省事（默认）。",
+    label: "自动输入到焦点窗口(默认)",
+    description: "模拟键盘输入到当前焦点窗口,省事。",
   },
   {
     value: OUTPUT_MODE_PANEL,
-    label: "显示在悬浮窗，手动编辑 / 复制",
-    description: "识别结果停留在悬浮窗里，文字可再编辑；点「复制」后自己粘贴到目标位置。",
+    label: "显示在悬浮窗,手动复制",
+    description: "结果停在悬浮窗里可再编辑,点「复制」后自己粘贴。",
   },
 ];
