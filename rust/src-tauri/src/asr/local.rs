@@ -29,11 +29,7 @@ const RELEASE_BASE: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/downl
 
 impl LocalEngine {
     /// 全部引擎列表(给前端 dropdown 用)。
-    pub const ALL: &'static [Self] = &[
-        Self::SenseVoice,
-        Self::FireRedAed,
-        Self::Qwen3Asr,
-    ];
+    pub const ALL: &'static [Self] = &[Self::SenseVoice, Self::FireRedAed, Self::Qwen3Asr];
 
     /// 从 config 字符串 id 解析,未知/空字符串回退到 SenseVoice。
     pub fn from_id(id: &str) -> Self {
@@ -141,7 +137,8 @@ impl LocalEngine {
 const PUNCT_DIR_NAME: &str = "sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12";
 const PUNCT_SHA256: &str = "50f73f8cccffc2303999fda28b785ffcffbd7ea442c47385c30b9d045ee6afc3";
 const PUNCT_LABEL: &str = "中英标点模型(ct-transformer)";
-const PUNCT_DESCRIPTION: &str = "279MB,FireRedASR 系列输出无标点,挂这个模型补全。SenseVoice / Qwen3-ASR 自带标点,不需要装。";
+const PUNCT_DESCRIPTION: &str =
+    "279MB,FireRedASR 系列输出无标点,挂这个模型补全。SenseVoice / Qwen3-ASR 自带标点,不需要装。";
 const PUNCT_SIZE_MB: u32 = 279;
 
 pub fn punct_model_url() -> String {
@@ -285,7 +282,11 @@ pub fn warm_up(cfg: &crate::config::Config) -> Result<()> {
     }
 
     let signature = build_signature(cfg, engine);
-    let provider = if cfg.local_use_coreml { "coreml" } else { "cpu" };
+    let provider = if cfg.local_use_coreml {
+        "coreml"
+    } else {
+        "cpu"
+    };
     let hotwords_path = if cfg.hotwords.is_empty() {
         None
     } else {
@@ -594,12 +595,7 @@ pub async fn import_tarball(path: PathBuf) -> Result<()> {
 
 /// 校验 SHA256 → 解压 tar.bz2 到临时目录 → 原子替换到 config_dir/<dir_name>。
 /// LocalEngine 和 PunctModel 共用这一套。
-fn install_tarball(
-    bytes: &[u8],
-    expected_sha: &str,
-    dir_name: &str,
-    label: &str,
-) -> Result<()> {
+fn install_tarball(bytes: &[u8], expected_sha: &str, dir_name: &str, label: &str) -> Result<()> {
     use anyhow::{bail, Context};
     use bzip2::read::MultiBzDecoder;
     use sha2::{Digest, Sha256};

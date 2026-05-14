@@ -430,7 +430,9 @@ pub fn get_punct_model_info() -> PunctModelInfo {
         description: local::punct_model_description().to_string(),
         url: local::punct_model_url(),
         sha256: local::punct_model_sha256().to_string(),
-        model_dir: local::punct_model_install_path().to_string_lossy().into_owned(),
+        model_dir: local::punct_model_install_path()
+            .to_string_lossy()
+            .into_owned(),
         available: local::punct_model_is_available(),
         size_mb: local::punct_model_size_mb(),
     }

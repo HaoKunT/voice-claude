@@ -57,8 +57,8 @@ pub fn decode_to_pcm16k_mono_wav(path: &Path) -> Result<Vec<u8>> {
     let mut source_rate: u32 = codec_params.sample_rate.unwrap_or(0);
     let mut channels: usize = codec_params.channels.map(|c| c.count()).unwrap_or(0);
 
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&codec_params, &DecoderOptions::default())?;
+    let mut decoder =
+        symphonia::default::get_codecs().make(&codec_params, &DecoderOptions::default())?;
 
     // 解码累积 f32 mono samples
     let mut samples: Vec<f32> = Vec::new();

@@ -121,8 +121,7 @@ fn apply_windows_indicator_chrome(w: &tauri::WebviewWindow) {
     match w.hwnd() {
         Ok(hwnd) => unsafe {
             let cur = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-            let new_style =
-                cur | (WS_EX_NOACTIVATE.0 as isize) | (WS_EX_TOOLWINDOW.0 as isize);
+            let new_style = cur | (WS_EX_NOACTIVATE.0 as isize) | (WS_EX_TOOLWINDOW.0 as isize);
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_style);
         },
         Err(e) => {
