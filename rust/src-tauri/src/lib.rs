@@ -30,6 +30,7 @@ pub mod logger;
 pub mod recorder;
 pub mod result;
 pub mod tray;
+pub mod vad;
 
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -159,6 +160,9 @@ pub fn run() {
     }
 
     let hotkey_str = cfg.hotkey.clone();
+    // setup 闭包里需要一份 cfg 副本来后台预热当前选中的本地引擎,避免用户
+    // 启动后第一次按热键触发 4-5s 冷启动(尤其 FireRed/Qwen3 这种大模型)
+    let cfg_for_warm = cfg.clone();
     let state = AppState::new(cfg);
 
     let builder = tauri::Builder::default()
@@ -216,6 +220,18 @@ pub fn run() {
             // 必须是普通 WebviewWindow（非 NSPanel），否则 IME 候选窗挂不上。
             result::prebuild(app.handle());
 
+            // 后台预热当前选中的本地引擎 —— 避免首次按热键时 4-5s 冷启动卡顿。
+            // 仅 cfg.asr_provider == "local" 时才有意义;非 local 后端没什么可预热。
+            // spawn_blocking 走线程池,不阻塞 setup 也不影响 tokio runtime 调度。
+            let warm_cfg = cfg_for_warm;
+            if warm_cfg.asr_provider == config::ASR_PROVIDER_LOCAL {
+                tauri::async_runtime::spawn_blocking(move || {
+                    if let Err(e) = asr::local::warm_up(&warm_cfg) {
+                        tracing::warn!(error = ?e, "启动预热失败");
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -238,10 +254,14 @@ pub fn run() {
             commands::resume_hotkey,
             commands::read_recent_logs,
             commands::open_config_dir,
-            commands::is_sense_voice_available,
-            commands::get_sense_voice_info,
-            commands::download_sense_voice,
-            commands::import_sense_voice_tarball,
+            commands::list_local_engines,
+            commands::get_local_engine_info,
+            commands::download_local_engine,
+            commands::import_local_engine_tarball,
+            commands::get_punct_model_info,
+            commands::download_punct_model,
+            commands::import_punct_model_tarball,
+            commands::bench_transcribe_file,
             commands::get_app_info,
             commands::export_hotwords_csv,
             commands::import_hotwords_csv,

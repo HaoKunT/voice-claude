@@ -134,11 +134,10 @@ pub struct Config {
     /// 改善气声(耳语、气声输入)的识别率。对正常说话也无副作用,默认开启。
     #[serde(default = "default_voice_enhance")]
     pub voice_enhance: bool,
-    /// 本地 SenseVoice 用 fp32 完整模型(model.onnx, ~894MB)还是 int8 量化
-    /// (model.int8.onnx, ~228MB)。fp32 精度更高;实测在 ARM Mac 上推理还
-    /// 略快(ORT 对 fp32 走 Accelerate/NEON,int8 没占便宜),代价是内存。
-    #[serde(default)]
-    pub local_use_fp32_model: bool,
+    /// 本地 ASR 引擎选择:sense_voice / fire_red_aed / qwen3_asr。
+    /// 未知字符串回退到 sense_voice。每个引擎独立模型目录,切换需对应模型已下载。
+    #[serde(default = "default_local_engine")]
+    pub local_engine: String,
     /// 本地 SenseVoice 用 CoreML execution provider(macOS Apple Neural Engine
     /// 加速)。当前 sherpa-onnx 1.13.x 的 crate 预编译产物用的 ONNX Runtime
     /// 不带 CoreML EP,设了会静默 fallback 到 cpu —— 所以 UI 上暂时不开放
@@ -189,8 +188,14 @@ fn default_vad_enabled() -> bool {
 fn default_vad_silence_ms() -> u32 {
     1500
 }
+fn default_local_engine() -> String {
+    "sense_voice".into()
+}
+/// silero-vad 概率阈值默认 0.5(0-1 范围)。
+/// 老 RMS 时代用的是能量值(典型 0.005-0.05),比 silero 阈值小一个数量级。
+/// 如果加载到老 config 的 < 0.1 值,migrate_vad_threshold 会重置成 0.5。
 fn default_vad_threshold() -> f32 {
-    0.015
+    0.5
 }
 fn default_output_mode() -> String {
     OUTPUT_MODE_INPUT.into()
@@ -237,7 +242,7 @@ impl Default for Config {
             output_mode: default_output_mode(),
             push_to_talk: false,
             voice_enhance: default_voice_enhance(),
-            local_use_fp32_model: false,
+            local_engine: default_local_engine(),
             local_use_coreml: false,
         }
     }
@@ -253,7 +258,20 @@ impl Config {
             Err(_) => Self::default(),
         };
         cfg.migrate_polish_profiles();
+        cfg.migrate_vad_threshold();
         cfg
+    }
+
+    /// silero VAD 阈值是 0-1 概率,老 RMS 时代用的是能量值(典型 0.005-0.05)。
+    /// 加载老 config 时 < 0.1 视为遗留 RMS 值,重置成 0.5(silero 默认)。
+    fn migrate_vad_threshold(&mut self) {
+        if self.vad_threshold > 0.0 && self.vad_threshold < 0.1 {
+            tracing::info!(
+                old = self.vad_threshold,
+                "vad_threshold 是老 RMS 能量值,迁移到 silero 概率默认 0.5"
+            );
+            self.vad_threshold = 0.5;
+        }
     }
 
     /// 首次升级到多 profile 版本时，把老的 correct_* 字段迁成一个「默认」profile。
@@ -314,6 +332,22 @@ impl Config {
             fs::set_permissions(&path, perms).ok();
         }
         Ok(())
+    }
+
+    /// 写入 history / 状态统计用的 provider id。
+    /// 云端后端直接返回 cfg.asr_provider;选了 "local" 时展开成具体本地引擎 id
+    /// (sense_voice / fire_red_aed / fire_red_ctc2 / qwen3_asr),让 4 个本地
+    /// 引擎在统计里分开,而不是混作一坨 "local"。
+    pub fn provider_id_for_stats(&self) -> String {
+        if self.asr_provider == ASR_PROVIDER_LOCAL {
+            if self.local_engine.is_empty() {
+                "sense_voice".to_string()
+            } else {
+                self.local_engine.clone()
+            }
+        } else {
+            self.asr_provider.clone()
+        }
     }
 
     /// 纠错超时时间，0 或负值时返回 10 秒。

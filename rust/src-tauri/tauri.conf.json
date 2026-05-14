@@ -56,7 +56,11 @@
       "minimumSystemVersion": "10.15",
       "exceptionDomain": "",
       "signingIdentity": null,
-      "entitlements": "entitlements.plist"
+      "entitlements": "entitlements.plist",
+      "files": {
+        "Frameworks/libsherpa-onnx-c-api.dylib": "target/release/libsherpa-onnx-c-api.dylib",
+        "Frameworks/libonnxruntime.1.24.4.dylib": "target/release/libonnxruntime.1.24.4.dylib"
+      }
     },
     "windows": {
       "certificateThumbprint": null,

@@ -180,15 +180,31 @@ async fn run(
         let vad_stop_cb = Arc::clone(&level_stop);
         let vad_silence_ms = cfg.vad_silence_ms as u64;
         let vad_threshold = cfg.vad_threshold;
+        // silero 模型按需下载(~640KB,首次进设置/启用 VAD 应当已经触发);
+        // 没下载就回退到 RMS,体感差但不崩
+        let model_ready = crate::vad::is_available();
+        if !model_ready {
+            // 后台尝试下载,本次录音先用 RMS 兜底
+            tokio::spawn(async {
+                if let Err(e) = crate::vad::download_if_needed().await {
+                    tracing::warn!(error = ?e, "silero-vad 下载失败,本次 VAD 走 RMS 兜底");
+                }
+            });
+        }
         tokio::spawn(async move {
-            run_vad(vad_rec, vad_stop_cb, vad_silence_ms, vad_threshold).await;
+            if model_ready {
+                run_vad_silero(vad_rec, vad_stop_cb, vad_silence_ms, vad_threshold).await;
+            } else {
+                tracing::info!("silero-vad 模型未就绪,本次 VAD 走 RMS 兜底");
+                run_vad_rms(vad_rec, vad_stop_cb, vad_silence_ms, 0.015).await;
+            }
         });
     }
 
     let (reason, raw_text, asr_ms) = if is_streaming(&cfg.asr_provider) {
         run_stream(app.clone(), &rec, &cfg, signal_rx).await?
     } else {
-        run_batch(&rec, &cfg, signal_rx).await?
+        run_batch(app.clone(), &rec, &cfg, signal_rx).await?
     };
 
     // 取消路径:悬浮窗直接消失 (guard drop 里 hide),不走 processing/result,不写历史
@@ -197,10 +213,8 @@ async fn run(
         return Ok(());
     }
 
-    // 录音 + ASR 已结束，进入后处理（润色 / 热词）阶段；panel 模式下
-    // 悬浮窗切到 processing view。必须在 asr-final-text 之前发，否则 event
-    // 顺序错位会让用户看到悬浮窗最终停在 processing（而不是 result）
-    let _ = app.emit("recording-stopped", ());
+    // recording-stopped 已经由 run_stream / run_batch 在收到 stop 信号后立刻
+    // emit 了 —— 不要在这等 ASR 跑完才发,会让用户盯着"录音中"画面等 5–10s。
 
     // guard drop 时自动做：level_stop + hide indicator
 
@@ -260,10 +274,11 @@ async fn run(
     }
 
     let duration_ms = started_at.elapsed().as_millis() as i64;
+    let stats_provider = cfg.provider_id_for_stats();
     history::save(history::SaveEntry {
         raw: &raw_text,
         corrected: &final_text,
-        provider: &cfg.asr_provider,
+        provider: &stats_provider,
         duration_ms,
         asr_ms,
         polish_ms,
@@ -309,13 +324,103 @@ async fn run(
     Ok(())
 }
 
-/// VAD：检测到说话起点后，连续 silence_ms 毫秒低于 threshold 自动触发停止。
-/// 起点判定：累计 300ms 高于阈值才算"开始说话"，避免用户还没开口就停。
+/// 编译时关掉 local-asr feature 时,silero 不可用,直接 fallback 到 RMS。
+#[cfg(not(feature = "local-asr"))]
+async fn run_vad_silero(
+    rec: Arc<Recorder>,
+    stop_signal: Arc<AtomicBool>,
+    silence_ms: u64,
+    _threshold: f32,
+) {
+    run_vad_rms(rec, stop_signal, silence_ms, 0.015).await;
+}
+
+/// silero-vad VAD:用神经网络判断当前是否在说话,持续静音超过 silence_ms 自动停。
+/// 比 RMS 门限对气声/键盘噪声鲁棒得多(silero ROC-AUC 0.96 vs WebRTC 0.73)。
 ///
-/// 诊断日志：
-///   - info：启动参数、说话起点、静音触发、退出原因
-///   - debug：每 1s 打印一次 RMS 和状态（开 log_level=debug 看）
-async fn run_vad(
+/// 实现:从 Recorder buffer 周期 peek 增量 PCM 喂给 detector,detector.detected()
+/// 是当前是否在说话的硬判定。silence_ms 由外层累计触发(沿用现有语义)。
+#[cfg(feature = "local-asr")]
+async fn run_vad_silero(
+    rec: Arc<Recorder>,
+    stop_signal: Arc<AtomicBool>,
+    silence_ms: u64,
+    threshold: f32,
+) {
+    const TICK_MS: u64 = 50;
+    const SPEECH_START_MS: u64 = 300;
+
+    let detector = match crate::vad::create_detector(threshold, 700) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(error = ?e, "silero-vad 初始化失败,回退到 RMS");
+            run_vad_rms(rec, stop_signal, silence_ms, 0.015).await;
+            return;
+        }
+    };
+
+    tracing::info!(threshold, silence_ms, "VAD: silero 启动");
+
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(TICK_MS));
+    let mut consumed_bytes: usize = 0;
+    let mut started_speaking = false;
+    let mut speech_accum_ms: u64 = 0;
+    let mut silence_accum_ms: u64 = 0;
+    let mut log_accum_ms: u64 = 0;
+
+    while !stop_signal.load(Ordering::Relaxed) {
+        interval.tick().await;
+        let (new_bytes, total) = rec.peek_pcm_since(consumed_bytes);
+        consumed_bytes = total;
+        if !new_bytes.is_empty() {
+            // i16 LE → f32 [-1, 1]
+            let f32_samples: Vec<f32> = new_bytes
+                .chunks_exact(2)
+                .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+                .collect();
+            detector.accept_waveform(&f32_samples);
+        }
+        let detected = detector.detected();
+
+        log_accum_ms += TICK_MS;
+        if log_accum_ms >= 1000 {
+            tracing::debug!(
+                detected,
+                started_speaking,
+                silence_accum_ms,
+                "VAD silero tick",
+            );
+            log_accum_ms = 0;
+        }
+
+        if !started_speaking {
+            if detected {
+                speech_accum_ms += TICK_MS;
+                if speech_accum_ms >= SPEECH_START_MS {
+                    started_speaking = true;
+                    tracing::info!("VAD silero: 检测到说话起点");
+                }
+            } else {
+                speech_accum_ms = 0;
+            }
+        } else if detected {
+            // 类比老 RMS spike 惩罚:detected 时给 silence accumulator 扣 2*TICK_MS
+            silence_accum_ms = silence_accum_ms.saturating_sub(2 * TICK_MS);
+        } else {
+            silence_accum_ms += TICK_MS;
+            if silence_accum_ms >= silence_ms {
+                tracing::info!(silence_ms, "VAD silero: 静音超时,自动停止");
+                stop();
+                return;
+            }
+        }
+    }
+    tracing::info!(started_speaking, "VAD silero: 随录音一起结束");
+}
+
+/// 老 RMS 门限 VAD,作为 silero 不可用(模型没下载/初始化失败)的兜底。
+/// 起点判定:累计 300ms 高于阈值才算"开始说话",避免还没开口就停。
+async fn run_vad_rms(
     rec: Arc<Recorder>,
     stop_signal: Arc<AtomicBool>,
     silence_ms: u64,
@@ -428,8 +533,6 @@ async fn run_stream(
 
     // 等用户停止或取消
     let reason = signal_rx.await.unwrap_or(StopReason::Stop);
-    // 从用户停止说话开始算 ASR"尾包延时"(stop → final 就绪),这是用户感知的 ASR 等待
-    let asr_start = std::time::Instant::now();
     crate::beep::stop();
     rec.stop_stream();
     rec.stop();
@@ -445,12 +548,21 @@ async fn run_stream(
         return Ok((reason, String::new(), 0));
     }
 
+    // 用户按了停止 + 不是取消 → 立刻让悬浮窗切 processing view,不要让用户
+    // 等 asr_task 收尾包(可能 200ms-1s)才看到状态变化
+    let _ = app.emit("recording-stopped", ());
+
+    // asr_ms 跟 run_batch 对齐:只测纯 ASR 调用(等 asr_task 收尾包 + 出
+    // final),不含 rec.stop_stream / rec.stop / delete_chars 等基础开销 ——
+    // 否则两边一比 stream 数字偏大几十 ms,失去可比性。
+    let asr_start = std::time::Instant::now();
     let final_text = asr_task.await??;
     let asr_ms = asr_start.elapsed().as_millis() as i64;
     Ok((reason, final_text, asr_ms))
 }
 
 async fn run_batch(
+    app: AppHandle,
     rec: &Arc<Recorder>,
     cfg: &crate::config::Config,
     signal_rx: tokio::sync::oneshot::Receiver<StopReason>,
@@ -463,6 +575,10 @@ async fn run_batch(
     if reason == StopReason::Cancel {
         return Ok((reason, String::new(), 0));
     }
+
+    // 用户按了停止 + 不是取消 → 立刻让悬浮窗切到 processing view,不要让用户
+    // 等 transcribe_batch 跑完(本地大模型可能 5–10s)才看到状态变化
+    let _ = app.emit("recording-stopped", ());
 
     let wav = to_wav(&pcm, cfg.voice_enhance);
     if wav.len() < 100 {

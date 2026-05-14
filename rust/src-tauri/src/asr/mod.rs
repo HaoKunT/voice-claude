@@ -1,5 +1,6 @@
 //! ASR 后端模块：每个后端一个子模块，共享基础工具。
 
+pub mod bench;
 pub mod local;
 pub mod openrouter;
 pub mod volc;

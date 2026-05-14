@@ -10,7 +10,9 @@ import {
   DeviceInfo,
   DownloadProgress,
   PolishProfile,
-  SenseVoiceInfo,
+  LocalEngineInfo,
+  PunctModelInfo,
+  PunctDownloadProgress,
 } from "../api";
 import {
   parseHotkeyKeys,
@@ -40,6 +42,7 @@ export function SettingsView({ section }: { section: SettingsSection }) {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [errMsg, setErrMsg] = useState("");
+  const [benchOpen, setBenchOpen] = useState(false);
 
   useEffect(() => {
     api.getConfig().then(setCfg);
@@ -103,6 +106,17 @@ export function SettingsView({ section }: { section: SettingsSection }) {
 
       {section === "asr" && (
         <section className="card space-y-3.5">
+          <div className="flex items-center justify-between -mt-1">
+            <span className="text-[11px] text-gray-500">
+              不确定选哪个?传段音频横向对比
+            </span>
+            <button
+              className="btn-ghost !py-1 !px-2.5 text-[11px]"
+              onClick={() => setBenchOpen(true)}
+            >
+              🎯 横向测试
+            </button>
+          </div>
           <Field label="识别后端">
             <select
               className="input"
@@ -206,31 +220,7 @@ export function SettingsView({ section }: { section: SettingsSection }) {
           )}
 
           {cfg.asr_provider === "local" && (
-            <>
-              <Field
-                label={
-                  <>
-                    <span>模型精度</span>
-                    <label className="ml-auto flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={cfg.local_use_fp32_model}
-                        onChange={(e) => update("local_use_fp32_model", e.target.checked)}
-                        className="accent-accent"
-                      />
-                      {cfg.local_use_fp32_model ? "fp32 完整" : "int8 量化"}
-                    </label>
-                  </>
-                }
-              >
-                <p className="text-[11px] text-gray-500 leading-relaxed mt-0.5">
-                  fp32 完整(model.onnx, ~894MB)精度更高,适合气声 / 复杂场景。
-                  int8 量化(~228MB)速度快、内存小,普通场景够用。模型目录里
-                  两个文件都存在,切换不需重下载。
-                </p>
-              </Field>
-              <LocalSenseVoicePanel />
-            </>
+            <LocalEnginePanel cfg={cfg} update={update} />
           )}
         </section>
       )}
@@ -397,31 +387,33 @@ export function SettingsView({ section }: { section: SettingsSection }) {
                 <Field
                   label={
                     <>
-                      <span>音量触发阈值</span>
+                      <span>说话概率阈值</span>
                       <span className="ml-auto font-mono text-accent">
-                        {cfg.vad_threshold.toFixed(3)}
+                        {cfg.vad_threshold.toFixed(2)}
                       </span>
                     </>
                   }
                 >
                   <input
                     type="range"
-                    min={5}
-                    max={50}
-                    step={1}
-                    value={Math.round(cfg.vad_threshold * 1000)}
+                    min={20}
+                    max={80}
+                    step={5}
+                    value={Math.round(cfg.vad_threshold * 100)}
                     onChange={(e) =>
-                      update("vad_threshold", parseInt(e.target.value) / 1000)
+                      update("vad_threshold", parseInt(e.target.value) / 100)
                     }
                     className="w-full accent-accent"
                   />
                   <div className="flex justify-between text-[10px] text-gray-600 mt-1 font-mono">
-                    <span>0.005（安静环境）</span>
-                    <span>0.015</span>
-                    <span>0.050（嘈杂环境）</span>
+                    <span>0.20（敏感）</span>
+                    <span>0.50</span>
+                    <span>0.80（保守）</span>
                   </div>
                   <p className="text-[11px] text-gray-500 leading-relaxed mt-1.5">
-                    如果在吵的环境里 VAD 不停，调高；如果说话不够响被误判为静音提前停了，调低。
+                    silero 神经网络 VAD 输出的"是说话"概率门槛(0-1)。
+                    嘈杂环境 / 误触发频繁 → 调高;气声 / 轻声被误切 → 调低。
+                    模型 ~640KB,首次启用 VAD 时自动下载。
                   </p>
                 </Field>
               </>
@@ -489,6 +481,8 @@ export function SettingsView({ section }: { section: SettingsSection }) {
           <LogViewer />
         </section>
       )}
+
+      {benchOpen && <BenchModal onClose={() => setBenchOpen(false)} cfg={cfg} />}
     </div>
   );
 }
@@ -1189,36 +1183,45 @@ function KbdCombo({ combo }: { combo: string }) {
   );
 }
 
-function LocalSenseVoicePanel() {
-  const [info, setInfo] = useState<SenseVoiceInfo | null>(null);
+function LocalEnginePanel({
+  cfg,
+  update,
+}: {
+  cfg: Config;
+  update: <K extends keyof Config>(key: K, val: Config[K]) => void;
+}) {
+  const [engines, setEngines] = useState<LocalEngineInfo[]>([]);
   const [downloading, setDownloading] = useState(false);
   const [downloaded, setDownloaded] = useState(0);
   const [total, setTotal] = useState(0);
-  // 计算速率用：上一次 tick 的 { ts, bytes }
   const speedStateRef = useRef<{ ts: number; bytes: number } | null>(null);
-  const [speedBps, setSpeedBps] = useState(0); // bytes per second
+  const [speedBps, setSpeedBps] = useState(0);
   const [msg, setMsg] = useState("");
 
+  // 当前选中 engine id(从 cfg 来,自然响应外部 dropdown)
+  const selectedId = cfg.local_engine || "sense_voice";
+  const info = engines.find((e) => e.id === selectedId) ?? null;
+
   const refresh = useCallback(() => {
-    api.getSenseVoiceInfo().then(setInfo);
+    api.listLocalEngines().then(setEngines);
   }, []);
 
   useEffect(() => {
     refresh();
     const unlisten = listen<DownloadProgress>(
-      "sense-voice-download-progress",
+      "local-engine-download-progress",
       (e) => {
+        // 只接收"当前选中 engine"的进度,避免切换 engine 时旧下载的事件污染
+        if (e.payload.engine_id !== selectedId) return;
         const { downloaded: d, total: t } = e.payload;
         setDownloaded(d);
         setTotal(t);
-        // 计算速率：相对上一次 tick
         const now = Date.now();
         const prev = speedStateRef.current;
         if (prev) {
           const dt = (now - prev.ts) / 1000;
           if (dt > 0.2) {
-            const bps = (d - prev.bytes) / dt;
-            setSpeedBps(bps);
+            setSpeedBps((d - prev.bytes) / dt);
             speedStateRef.current = { ts: now, bytes: d };
           }
         } else {
@@ -1229,9 +1232,10 @@ function LocalSenseVoicePanel() {
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [refresh]);
+  }, [refresh, selectedId]);
 
   const onDownload = async () => {
+    if (!info) return;
     setDownloading(true);
     setMsg("");
     setDownloaded(0);
@@ -1239,7 +1243,7 @@ function LocalSenseVoicePanel() {
     setSpeedBps(0);
     speedStateRef.current = null;
     try {
-      await api.downloadSenseVoice();
+      await api.downloadLocalEngine(info.id);
       setMsg("下载完成 ✓");
       refresh();
     } catch (e) {
@@ -1250,9 +1254,10 @@ function LocalSenseVoicePanel() {
   };
 
   const onImport = async () => {
+    if (!info) return;
     const selected = await openDialog({
       filters: [
-        { name: "SenseVoice 压缩包", extensions: ["bz2", "tar.bz2"] },
+        { name: `${info.label} 压缩包`, extensions: ["bz2", "tar.bz2"] },
         { name: "All", extensions: ["*"] },
       ],
       multiple: false,
@@ -1261,7 +1266,7 @@ function LocalSenseVoicePanel() {
     setDownloading(true);
     setMsg("校验 + 解压中…");
     try {
-      await api.importSenseVoiceTarball(selected);
+      await api.importLocalEngineTarball(info.id, selected);
       setMsg("导入完成 ✓");
       refresh();
     } catch (e) {
@@ -1271,8 +1276,11 @@ function LocalSenseVoicePanel() {
     }
   };
 
+  if (engines.length === 0) {
+    return <div className="text-xs text-gray-500">加载引擎列表中…</div>;
+  }
   if (!info) {
-    return <div className="text-xs text-gray-500">加载中…</div>;
+    return <div className="text-xs text-gray-500">未找到引擎 {selectedId}</div>;
   }
 
   const percent = total > 0 ? Math.min(100, (downloaded / total) * 100) : 0;
@@ -1280,8 +1288,30 @@ function LocalSenseVoicePanel() {
 
   return (
     <div className="rounded-xl bg-white/[0.03] border border-white/[0.06] p-4 space-y-3">
+      {/* 引擎选择 */}
+      <div>
+        <label className="text-[11px] text-gray-500 mb-1 block">本地引擎</label>
+        <select
+          className="input"
+          value={selectedId}
+          onChange={(e) => update("local_engine", e.target.value)}
+          disabled={downloading}
+        >
+          {engines.map((e) => (
+            <option key={e.id} value={e.id}>
+              {e.label} · {e.size_mb >= 1024 ? `${(e.size_mb / 1024).toFixed(1)} GB` : `${e.size_mb} MB`}
+              {e.available ? " ✓" : ""}
+            </option>
+          ))}
+        </select>
+        <p className="text-[11px] text-gray-500 mt-1.5 leading-relaxed">{info.description}</p>
+        <p className="text-[10.5px] text-amber-300/70 mt-1 leading-relaxed">
+          💾 选中引擎会驻留内存(几百 MB ~ 几 GB),切回云端后端时自动卸载释放
+        </p>
+      </div>
+
       {/* 状态行 */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 pt-2 border-t border-white/[0.04]">
         <div
           className={`w-2 h-2 rounded-full ${
             info.available
@@ -1299,7 +1329,7 @@ function LocalSenseVoicePanel() {
         <span className="text-xs text-gray-500 ml-auto font-mono">
           {total > 0
             ? `${formatBytes(downloaded)} / ${formatBytes(total)}`
-            : "约 1 GB"}
+            : `约 ${info.size_mb >= 1024 ? `${(info.size_mb / 1024).toFixed(1)} GB` : `${info.size_mb} MB`}`}
         </span>
       </div>
 
@@ -1373,6 +1403,158 @@ function LocalSenseVoicePanel() {
           </div>
         </div>
       )}
+
+      {/* FireRed 系列没自带标点,引导挂独立标点模型 */}
+      {(selectedId === "fire_red_aed" || selectedId === "fire_red_ctc2") && (
+        <PunctModelPanel />
+      )}
+    </div>
+  );
+}
+
+/// 独立标点模型(ct-transformer zh+en)。仅 FireRedASR 系列需要 ——
+/// SenseVoice / Qwen3-ASR 自带标点。
+function PunctModelPanel() {
+  const [info, setInfo] = useState<PunctModelInfo | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloaded, setDownloaded] = useState(0);
+  const [total, setTotal] = useState(0);
+  const speedStateRef = useRef<{ ts: number; bytes: number } | null>(null);
+  const [speedBps, setSpeedBps] = useState(0);
+  const [msg, setMsg] = useState("");
+
+  const refresh = useCallback(() => {
+    api.getPunctModelInfo().then(setInfo);
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const unlisten = listen<PunctDownloadProgress>(
+      "punct-model-download-progress",
+      (e) => {
+        const { downloaded: d, total: t } = e.payload;
+        setDownloaded(d);
+        setTotal(t);
+        const now = Date.now();
+        const prev = speedStateRef.current;
+        if (prev) {
+          const dt = (now - prev.ts) / 1000;
+          if (dt > 0.2) {
+            setSpeedBps((d - prev.bytes) / dt);
+            speedStateRef.current = { ts: now, bytes: d };
+          }
+        } else {
+          speedStateRef.current = { ts: now, bytes: d };
+        }
+      },
+    );
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [refresh]);
+
+  const onDownload = async () => {
+    setDownloading(true);
+    setMsg("");
+    setDownloaded(0);
+    setTotal(0);
+    setSpeedBps(0);
+    speedStateRef.current = null;
+    try {
+      await api.downloadPunctModel();
+      setMsg("下载完成 ✓");
+      refresh();
+    } catch (e) {
+      setMsg(`下载失败：${e}`);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const onImport = async () => {
+    const selected = await openDialog({
+      filters: [
+        { name: "标点模型压缩包", extensions: ["bz2", "tar.bz2"] },
+        { name: "All", extensions: ["*"] },
+      ],
+      multiple: false,
+    });
+    if (!selected || typeof selected !== "string") return;
+    setDownloading(true);
+    setMsg("校验 + 解压中…");
+    try {
+      await api.importPunctModelTarball(selected);
+      setMsg("导入完成 ✓");
+      refresh();
+    } catch (e) {
+      setMsg(`导入失败：${e}`);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  if (!info) return null;
+  const percent = total > 0 ? Math.min(100, (downloaded / total) * 100) : 0;
+  const etaSec = speedBps > 0 && total > downloaded ? (total - downloaded) / speedBps : 0;
+
+  return (
+    <div className="rounded-xl bg-white/[0.02] border border-white/[0.05] p-3 space-y-2 mt-2">
+      <div className="flex items-center gap-2">
+        <span className="text-xs font-medium text-gray-200">📝 {info.label}</span>
+        <span className="text-[10px] text-gray-500 ml-auto">{info.size_mb} MB</span>
+      </div>
+      <p className="text-[11px] text-gray-500 leading-relaxed">{info.description}</p>
+
+      <div className="flex items-center gap-2">
+        <div
+          className={`w-1.5 h-1.5 rounded-full ${
+            info.available ? "bg-green-400" : "bg-amber-400"
+          } ${downloading ? "animate-pulse" : ""}`}
+        />
+        <span className="text-[11px] text-gray-400">
+          {downloading
+            ? "下载中…"
+            : info.available
+              ? "标点模型已就绪 ✓"
+              : "标点模型未下载(FireRed 输出无标点)"}
+        </span>
+      </div>
+
+      {downloading && total > 0 && (
+        <div>
+          <div className="h-1 bg-bg-900 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-accent to-brand-purple transition-all"
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+          <div className="flex justify-between text-[10px] text-gray-500 mt-1 font-mono">
+            <span>{percent.toFixed(0)}%</span>
+            <span>
+              {speedBps > 0 ? `${formatBytes(speedBps)}/s` : "…"}
+              {etaSec > 0 && etaSec < 3600 * 24 ? ` · 剩余 ${formatDuration(etaSec)}` : ""}
+            </span>
+          </div>
+        </div>
+      )}
+
+      <div className="flex gap-2 flex-wrap">
+        <button
+          className="btn-primary disabled:opacity-50 text-[11px] py-1"
+          disabled={downloading}
+          onClick={onDownload}
+        >
+          {info.available ? "重新下载" : "下载标点模型"}
+        </button>
+        <button
+          className="btn-ghost text-[11px] py-1"
+          disabled={downloading}
+          onClick={onImport}
+        >
+          📦 导入压缩包
+        </button>
+      </div>
+      {msg && <div className="text-[11px] text-gray-400">{msg}</div>}
     </div>
   );
 }
@@ -1434,4 +1616,411 @@ function formatDuration(seconds: number): string {
   const h = Math.floor(m / 60);
   const mm = m % 60;
   return `${h} 小时 ${mm} 分`;
+}
+
+// ============================================================================
+// 横向 ASR 测试 modal
+// ============================================================================
+
+import type { BenchResult } from "../api";
+
+/// 判定一个 provider 当前是否能跑;不能跑就返回简短原因(给 UI 当 badge),
+/// 能跑返回 null。云端看 cfg 里的密钥是否齐;本地看模型文件是否存在。
+function unavailableReason(
+  id: string,
+  cfg: Config,
+  locals: LocalEngineInfo[],
+): string | null {
+  switch (id) {
+    case "zhipu":
+      return cfg.asr_api_key ? null : "未配 API Key";
+    case "openrouter":
+      return cfg.openrouter_api_key ? null : "未配 API Key";
+    case "xfyun":
+      if (!cfg.xfyun_app_id || !cfg.xfyun_access_key_id || !cfg.xfyun_access_key_secret) {
+        return "未配讯飞三件套";
+      }
+      return null;
+    case "volc":
+      if (!cfg.volc_app_key || !cfg.volc_access_token) {
+        return "未配豆包密钥";
+      }
+      return null;
+    case "sense_voice":
+    case "fire_red_aed":
+    case "qwen3_asr": {
+      const info = locals.find((e) => e.id === id);
+      if (!info) return "信息加载中";
+      return info.available ? null : "模型未下载";
+    }
+    default:
+      return "未知后端";
+  }
+}
+
+const BENCH_PROVIDERS: { id: string; label: string; group: "cloud" | "local" }[] = [
+  { id: "zhipu", label: "智谱 GLM-ASR", group: "cloud" },
+  { id: "openrouter", label: "OpenRouter Whisper", group: "cloud" },
+  { id: "xfyun", label: "讯飞(流式)", group: "cloud" },
+  { id: "volc", label: "豆包(流式)", group: "cloud" },
+  { id: "sense_voice", label: "SenseVoice · 极速", group: "local" },
+  { id: "fire_red_aed", label: "FireRedASR-AED-L · 中文最准", group: "local" },
+  { id: "qwen3_asr", label: "Qwen3-ASR · LLM", group: "local" },
+];
+
+type BenchRowState = "pending" | "running" | "done" | "error";
+
+interface BenchRow {
+  id: string;
+  state: BenchRowState;
+  ms: number;
+  text: string;
+  error: string;
+}
+
+function BenchModal({ onClose, cfg }: { onClose: () => void; cfg: Config }) {
+  const [filePath, setFilePath] = useState<string>("");
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [running, setRunning] = useState(false);
+  const [rows, setRows] = useState<Record<string, BenchRow>>({});
+  const [topErr, setTopErr] = useState<string>("");
+  const [localEngines, setLocalEngines] = useState<LocalEngineInfo[]>([]);
+
+  // 拉本地 4 引擎的 available 状态(每次开 modal 刷新一次,期间下载不更新)
+  useEffect(() => {
+    api.listLocalEngines().then(setLocalEngines).catch(() => setLocalEngines([]));
+  }, []);
+
+  // 每个 provider 的不可用原因(null = 可用)
+  const reasons = useMemo(() => {
+    const m: Record<string, string | null> = {};
+    for (const p of BENCH_PROVIDERS) {
+      m[p.id] = unavailableReason(p.id, cfg, localEngines);
+    }
+    return m;
+  }, [cfg, localEngines]);
+
+  // 监听后端 emit 的 bench-started / bench-result,逐行更新表格
+  useEffect(() => {
+    const u1 = listen<string>("bench-started", (e) => {
+      const id = e.payload;
+      setRows((r) => ({
+        ...r,
+        [id]: { ...(r[id] ?? { id, ms: 0, text: "", error: "" }), state: "running" },
+      }));
+    });
+    const u2 = listen<BenchResult>("bench-result", (e) => {
+      const p = e.payload;
+      setRows((r) => ({
+        ...r,
+        [p.provider_id]: {
+          id: p.provider_id,
+          state: p.error ? "error" : "done",
+          ms: p.ms,
+          text: p.text,
+          error: p.error ?? "",
+        },
+      }));
+    });
+    return () => {
+      u1.then((fn) => fn());
+      u2.then((fn) => fn());
+    };
+  }, []);
+
+  // 选完所有后端都跑完后,running 置 false
+  useEffect(() => {
+    if (!running) return;
+    const all = Array.from(selected);
+    if (all.length === 0) return;
+    const settled = all.every((id) => {
+      const row = rows[id];
+      return row && (row.state === "done" || row.state === "error");
+    });
+    if (settled) setRunning(false);
+  }, [rows, running, selected]);
+
+  const toggle = (id: string) => {
+    if (reasons[id]) return; // 不可用的禁止勾选
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelected(next);
+  };
+  // 全选 / 仅云端 / 仅本地 都跳过不可用的(密钥未配 / 模型未下载)
+  const selectGroup = (group: "all" | "cloud" | "local") => {
+    const ids = BENCH_PROVIDERS.filter(
+      (p) => (group === "all" || p.group === group) && !reasons[p.id],
+    ).map((p) => p.id);
+    setSelected(new Set(ids));
+  };
+  const clearSelection = () => setSelected(new Set());
+
+  const pickFile = async () => {
+    const sel = await openDialog({
+      filters: [
+        { name: "音频", extensions: ["wav", "mp3", "m4a", "aac"] },
+        { name: "All", extensions: ["*"] },
+      ],
+      multiple: false,
+    });
+    if (typeof sel === "string") setFilePath(sel);
+  };
+
+  const start = async () => {
+    setTopErr("");
+    if (!filePath) {
+      setTopErr("请先选择音频文件");
+      return;
+    }
+    if (selected.size === 0) {
+      setTopErr("至少选一个后端");
+      return;
+    }
+    // 上一次结果清掉,新一批 row 全部 pending
+    const init: Record<string, BenchRow> = {};
+    for (const id of selected) init[id] = { id, state: "pending", ms: 0, text: "", error: "" };
+    setRows(init);
+    setRunning(true);
+    try {
+      await api.benchTranscribeFile(filePath, Array.from(selected));
+    } catch (e) {
+      setTopErr(`调度失败:${e}`);
+      setRunning(false);
+    }
+  };
+
+  // 当前选了的后端,表格里按这个顺序显示;未选的不显示
+  const orderedRows = BENCH_PROVIDERS.filter((p) => selected.has(p.id)).map(
+    (p) => rows[p.id] ?? { id: p.id, state: "pending" as BenchRowState, ms: 0, text: "", error: "" },
+  );
+
+  // 默认勾选 cfg 当前在用的后端 —— 仅在该后端可用时勾。不可用的(罕见,
+  // 比如刚把模型删了)就不勾,让用户自己挑。
+  useEffect(() => {
+    const current = cfg.asr_provider === "local" ? cfg.local_engine || "sense_voice" : cfg.asr_provider;
+    if (BENCH_PROVIDERS.some((p) => p.id === current) && !reasons[current]) {
+      setSelected(new Set([current]));
+    }
+  }, [cfg.asr_provider, cfg.local_engine, reasons]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col rounded-2xl bg-bg-800 border border-white/10 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.06]">
+          <div>
+            <h2 className="text-base font-semibold text-gray-100">🎯 横向测试</h2>
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              传音频 + 选后端 → 对比识别质量。云端并行,本地串行。
+            </p>
+          </div>
+          <button
+            className="w-8 h-8 rounded-lg hover:bg-white/[0.06] text-gray-400 hover:text-gray-200 transition"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4 overflow-y-auto">
+          {/* 文件选择 */}
+          <div className="flex items-center gap-2">
+            <button className="btn-ghost text-xs" onClick={pickFile} disabled={running}>
+              📁 选择音频文件
+            </button>
+            <span className="text-xs text-gray-400 font-mono break-all">
+              {filePath || "未选择(支持 wav / mp3 / m4a / aac)"}
+            </span>
+          </div>
+
+          {/* 后端勾选 */}
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xs text-gray-400">后端:</span>
+              <button
+                className="btn-ghost !py-0.5 !px-2 text-[11px]"
+                onClick={() => selectGroup("all")}
+                disabled={running}
+              >
+                全选
+              </button>
+              <button
+                className="btn-ghost !py-0.5 !px-2 text-[11px]"
+                onClick={() => selectGroup("cloud")}
+                disabled={running}
+              >
+                仅云端
+              </button>
+              <button
+                className="btn-ghost !py-0.5 !px-2 text-[11px]"
+                onClick={() => selectGroup("local")}
+                disabled={running}
+              >
+                仅本地
+              </button>
+              <button
+                className="btn-ghost !py-0.5 !px-2 text-[11px]"
+                onClick={clearSelection}
+                disabled={running}
+              >
+                清空
+              </button>
+              <span className="ml-auto text-[11px] text-gray-500">已选 {selected.size}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              {BENCH_PROVIDERS.map((p) => {
+                const reason = reasons[p.id];
+                const disabled = running || reason != null;
+                return (
+                  <label
+                    key={p.id}
+                    title={reason ?? ""}
+                    className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-xs transition ${
+                      reason
+                        ? "bg-white/[0.01] border-white/[0.04] text-gray-600 cursor-not-allowed"
+                        : selected.has(p.id)
+                          ? "bg-accent/10 border-accent/40 text-gray-100 cursor-pointer"
+                          : "bg-white/[0.02] border-white/[0.06] text-gray-400 hover:bg-white/[0.04] cursor-pointer"
+                    } ${running ? "opacity-60 cursor-not-allowed" : ""}`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="accent-accent"
+                      checked={selected.has(p.id)}
+                      onChange={() => toggle(p.id)}
+                      disabled={disabled}
+                    />
+                    <span className={reason ? "line-through" : ""}>{p.label}</span>
+                    {reason ? (
+                      <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400/80">
+                        {reason}
+                      </span>
+                    ) : (
+                      <span
+                        className={`ml-auto text-[10px] px-1.5 py-0.5 rounded ${
+                          p.group === "cloud"
+                            ? "bg-blue-500/10 text-blue-300"
+                            : "bg-purple-500/10 text-purple-300"
+                        }`}
+                      >
+                        {p.group === "cloud" ? "云端" : "本地"}
+                      </span>
+                    )}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* 跑按钮 */}
+          <div className="flex items-center gap-2">
+            <button
+              className="btn-primary text-xs"
+              onClick={start}
+              disabled={running || !filePath || selected.size === 0}
+            >
+              {running ? "运行中…" : "▶ 运行"}
+            </button>
+            {topErr && <span className="text-xs text-red-400">{topErr}</span>}
+          </div>
+
+          {/* 结果表格 */}
+          {orderedRows.length > 0 && (
+            <div className="rounded-xl border border-white/[0.06] overflow-hidden">
+              <div className="px-3 py-2 bg-amber-500/[0.06] border-b border-amber-500/20 text-[10.5px] text-amber-300/80 leading-relaxed space-y-0.5">
+                <div>ⓘ 本地耗时 = 纯推理(模型加载不计入)</div>
+                <div>
+                  ⚠ 流式(讯飞 / 豆包)耗时含 chunk 实时喂送 delay,失真;仅供识别质量参考
+                </div>
+              </div>
+              <table className="w-full text-xs">
+                <thead className="bg-white/[0.03] text-[11px] text-gray-500 uppercase tracking-wider">
+                  <tr>
+                    <th className="text-left px-3 py-2 font-medium w-48">后端</th>
+                    <th className="text-left px-3 py-2 font-medium w-20">状态</th>
+                    <th className="text-right px-3 py-2 font-medium w-20">耗时</th>
+                    <th className="text-left px-3 py-2 font-medium">输出</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {orderedRows.map((row, i) => {
+                    const meta = BENCH_PROVIDERS.find((p) => p.id === row.id);
+                    return (
+                      <tr
+                        key={row.id}
+                        className={`align-top ${i % 2 === 0 ? "" : "bg-white/[0.02]"}`}
+                      >
+                        <td className="px-3 py-2 text-gray-200">{meta?.label ?? row.id}</td>
+                        <td className="px-3 py-2">
+                          <BenchStateBadge state={row.state} />
+                        </td>
+                        <td className="px-3 py-2 text-right text-gray-400 font-mono">
+                          {row.state === "done" || row.state === "error"
+                            ? row.ms < 1000
+                              ? `${row.ms} ms`
+                              : `${(row.ms / 1000).toFixed(2)} s`
+                            : "—"}
+                        </td>
+                        <td className="px-3 py-2 text-gray-300 leading-relaxed break-words">
+                          {row.state === "error" ? (
+                            <span className="text-red-400">{row.error}</span>
+                          ) : row.state === "done" ? (
+                            <div className="flex items-start gap-2">
+                              <span className="flex-1">{row.text || "(空)"}</span>
+                              {row.text && <CopyTinyButton value={row.text} />}
+                            </div>
+                          ) : (
+                            <span className="text-gray-600">…</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BenchStateBadge({ state }: { state: BenchRowState }) {
+  const map: Record<BenchRowState, { label: string; cls: string }> = {
+    pending: { label: "等待", cls: "bg-white/[0.04] text-gray-500" },
+    running: { label: "跑中", cls: "bg-amber-500/10 text-amber-400 animate-pulse" },
+    done: { label: "完成", cls: "bg-green-500/10 text-green-400" },
+    error: { label: "失败", cls: "bg-red-500/10 text-red-400" },
+  };
+  const m = map[state];
+  return <span className={`px-2 py-0.5 rounded text-[10px] ${m.cls}`}>{m.label}</span>;
+}
+
+function CopyTinyButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* ignore */
+    }
+  };
+  return (
+    <button
+      className="flex-shrink-0 px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-gray-400 hover:bg-white/10 hover:text-gray-200 transition text-[10px] font-mono"
+      onClick={copy}
+      title="复制"
+    >
+      {copied ? "✓" : "⎘"}
+    </button>
+  );
 }

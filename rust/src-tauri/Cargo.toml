@@ -79,8 +79,18 @@ url = "2"
 bzip2 = "0.4"
 tar = "0.4"
 
+# 横向 ASR 测试功能(asr/bench.rs)用 —— 解码 wav/mp3/m4a 到 PCM。
+# 纯 Rust 解码,不引入 ffmpeg / 系统库依赖。default-features 关掉再 opt-in
+# 我们要的格式 + simd,避免拖入一堆没用的 codec(如 vorbis / flac)增大体积。
+symphonia = { version = "0.5", default-features = false, features = ["wav", "mp3", "isomp4", "aac", "alac", "pcm"] }
+# Audio resampling(rubato 是 Rust 生态里 sinc/polynomial resampler 的事实
+# 标准,避免自己手搓线性插值 / anti-aliasing filter)
+rubato = "0.16"
+
 [dependencies.sherpa-onnx]
-version = "1.13"
+version = "1.13.1"
+default-features = false
+features = ["shared"]
 optional = true
 
 # macOS 专用：用 NSPanel 做真·不抢焦点浮窗（对应 type4me 的 FloatingBarPanel 方案）
