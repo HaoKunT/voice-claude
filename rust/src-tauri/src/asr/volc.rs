@@ -117,20 +117,77 @@ struct VolcPayload {
 /// 解码服务端响应，返回 (文本, 是否 final)。
 fn decode_response(data: &[u8]) -> Result<(String, bool)> {
     if data.len() < 8 {
-        anyhow::bail!("响应数据过短");
+        anyhow::bail!("响应数据过短 len={}", data.len());
     }
     let msg_type = (data[1] >> 4) & 0x0F;
     let flags = data[1] & 0x0F;
-    if msg_type == MSG_SERVER_ERROR {
-        anyhow::bail!("服务端错误");
-    }
     let payload_size = u32::from_be_bytes([data[4], data[5], data[6], data[7]]) as usize;
-    if data.len() < 8 + payload_size {
-        anyhow::bail!("payload 不完整");
+    // 调试用:dump 每个收到的服务端帧的头信息 + payload 前 256 字节 hex,定位
+    // 火山协议里 server 发的具体 msg_type(0x09=FullResponse / 0x0B=Ack / 0x0F=Error)。
+    let payload_preview: String = data
+        .iter()
+        .skip(8)
+        .take(256)
+        .map(|b| format!("{:02x}", b))
+        .collect::<Vec<_>>()
+        .join("");
+    let payload_text: String = data
+        .iter()
+        .skip(8)
+        .take(256)
+        .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' })
+        .collect();
+    tracing::debug!(
+        msg_type = format_args!("0x{:02x}", msg_type),
+        flags = format_args!("0x{:02x}", flags),
+        total_len = data.len(),
+        payload_size,
+        hex = %payload_preview,
+        text = %payload_text,
+        "豆包响应帧"
+    );
+    if msg_type == MSG_SERVER_ERROR {
+        anyhow::bail!("服务端错误 msg_type=0x{:02x}", msg_type);
     }
-    let payload = &data[8..8 + payload_size];
-    let parsed: VolcPayload = serde_json::from_slice(payload)?;
-    Ok((parsed.result.text, flags == FLAG_ASYNC_FINAL))
+    // 火山协议:flags & 0x01 = 1 表示帧带 sequence number(4 字节,跟在 header 后),
+    // 真正的 payload_size 在 sequence 之后。flags=0x00 时无 sequence,payload 紧跟 header。
+    let has_sequence = (flags & 0x01) != 0;
+    let size_offset = if has_sequence { 8 } else { 4 };
+    let payload_offset = size_offset + 4;
+    if data.len() < payload_offset {
+        anyhow::bail!(
+            "数据不足以读取 payload size has_sequence={} got={}",
+            has_sequence,
+            data.len()
+        );
+    }
+    let real_payload_size = u32::from_be_bytes([
+        data[size_offset],
+        data[size_offset + 1],
+        data[size_offset + 2],
+        data[size_offset + 3],
+    ]) as usize;
+    if data.len() < payload_offset + real_payload_size {
+        anyhow::bail!(
+            "payload 不完整 expect={} got={}",
+            payload_offset + real_payload_size,
+            data.len()
+        );
+    }
+    let payload = &data[payload_offset..payload_offset + real_payload_size];
+    let parsed: VolcPayload = serde_json::from_slice(payload).map_err(|e| {
+        anyhow::anyhow!(
+            "JSON 解析失败 msg_type=0x{:02x} flags=0x{:02x} payload_size={}: {}",
+            msg_type,
+            flags,
+            real_payload_size,
+            e
+        )
+    })?;
+    // final 判定:flags 的 bit 1 (0x02 = LAST_PACKET) 或 bit 2 (0x04 = ASYNC_FINAL,
+    // 不同 endpoint 可能用不同位)。bigmodel_async 实测用 0x02,保留 0x04 兼容其他 endpoint。
+    let is_final = (flags & 0x02) != 0 || (flags & FLAG_ASYNC_FINAL) != 0;
+    Ok((parsed.result.text, is_final))
 }
 
 pub async fn transcribe_stream(
@@ -165,9 +222,34 @@ pub async fn transcribe_stream(
         .header("Upgrade", "websocket")
         .body(())?;
 
-    let (ws_stream, _) = tokio_tungstenite::connect_async(req)
-        .await
-        .context("豆包连接失败")?;
+    let (ws_stream, _) = match tokio_tungstenite::connect_async(req).await {
+        Ok(v) => v,
+        Err(e) => {
+            // 握手失败时,把火山返回的 HTTP 状态码 / response body / 关键 header 完整打出来,
+            // 方便定位 403 / 应用未开通 / resource_id 不匹配等业务错误码。
+            // tokio-tungstenite 默认会丢掉 response body,这里显式抓取。
+            if let tokio_tungstenite::tungstenite::Error::Http(response) = &e {
+                let status = response.status();
+                let body = response
+                    .body()
+                    .as_ref()
+                    .map(|b| String::from_utf8_lossy(b).into_owned())
+                    .unwrap_or_default();
+                let logid = response
+                    .headers()
+                    .get("X-Tt-Logid")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                tracing::error!(
+                    status = %status,
+                    body = %body,
+                    logid = %logid,
+                    "豆包 WebSocket 握手失败"
+                );
+            }
+            return Err(anyhow::Error::new(e).context("豆包连接失败"));
+        }
+    };
     let (mut write, mut read) = ws_stream.split();
 
     // 发送初始化请求
