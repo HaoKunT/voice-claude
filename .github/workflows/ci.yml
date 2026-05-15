@@ -141,7 +141,7 @@ jobs:
         run: pnpm tauri build --target ${{ matrix.target }}
       - name: Upload macOS bundles
         if: startsWith(matrix.platform, 'macos')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: |
@@ -151,7 +151,7 @@ jobs:
           if-no-files-found: warn
       - name: Upload Windows installer
         if: matrix.platform == 'windows-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: |
