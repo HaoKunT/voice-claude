@@ -11,7 +11,8 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use chrono::{FixedOffset, Utc};
 use futures_util::{SinkExt, StreamExt};
-use hmac::{Hmac, Mac};
+// hmac 0.13 把 `new_from_slice` 移到 KeyInit trait,需要显式 import
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use serde_json::json;
 use sha1::Sha1;
