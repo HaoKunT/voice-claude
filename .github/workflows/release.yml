@@ -43,14 +43,10 @@ jobs:
           node-version: 20
           cache: pnpm
           cache-dependency-path: rust/pnpm-lock.yaml
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust/src-tauri -> target
-          # sherpa-onnx build.rs 把预编译 dylib 下载到 target/sherpa-onnx-prebuilt/,
-          # 不在 rust-cache 默认范围。build.rs dep-info 缓存命中时 cargo 跳过 build.rs
-          # 重跑,但 prebuilt 物理文件已被 GH 缓存 prune → linker 找不到 -lsherpa-onnx-c-api。
-          cache-directories: |
-            rust/src-tauri/target/sherpa-onnx-prebuilt
+      # 不用 Swatinem/rust-cache —— release 频率低(每个版本一次),从 0 build
+      # 仅多 3-5 分钟,但避免 cache 假命中(sherpa-onnx-prebuilt 子目录 cache
+      # save 时点不一致导致 linker 找不到 dylib)的反复踩坑。CI 跑得勤,
+      # cache 留在 ci.yml 即可。
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
 
