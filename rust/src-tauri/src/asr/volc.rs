@@ -135,7 +135,13 @@ fn decode_response(data: &[u8]) -> Result<(String, bool)> {
         .iter()
         .skip(8)
         .take(256)
-        .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' })
+        .map(|&b| {
+            if b.is_ascii_graphic() || b == b' ' {
+                b as char
+            } else {
+                '.'
+            }
+        })
         .collect();
     tracing::debug!(
         msg_type = format_args!("0x{:02x}", msg_type),
