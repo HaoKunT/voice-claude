@@ -70,7 +70,11 @@ jobs:
           # 不标 prerelease：否则 GitHub 的 /releases/latest/download/latest.json
           # redirect 不会指向此版本，updater endpoint 取不到 JSON。
           prerelease: false
-          args: --target ${{ matrix.target }}
+          # 不传 --target 让 tauri build 走 runner native default target
+          # (macos-latest=aarch64-apple-darwin / windows-latest=x86_64-pc-windows-msvc),
+          # 产物落到 target/release/ —— 这跟 tauri.conf.json 里 bundle.macOS.files
+          # 配的源路径 target/release/lib*.dylib 对齐(传 --target 会让产物去
+          # target/<target>/release/,bundle 阶段 copy 找不到 dylib 源)。
 
   publish-updater:
     name: Publish latest.json

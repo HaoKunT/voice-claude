@@ -104,7 +104,10 @@ objc = "0.2"
 #   实现 macOS NSPanel 的「不抢焦点」等价行为
 [target.'cfg(target_os = "windows")'.dependencies]
 window-vibrancy = "0.5"
-windows = { version = "0.58", features = [
+# windows 0.61 跟 tauri 2 内部依赖对齐 —— tauri::WebviewWindow::hwnd()
+# 返回的 HWND 是 0.61 的 InterfaceType 风格,如果我们这里 pin 老版本(0.58)
+# 会让调用 GetWindowLongPtrW(hwnd, ...) 出现 type mismatch (CopyType vs InterfaceType)
+windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
 ] }
