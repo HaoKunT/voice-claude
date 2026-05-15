@@ -46,6 +46,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust/src-tauri -> target
+          # sherpa-onnx build.rs 把预编译 dylib 下载到 target/sherpa-onnx-prebuilt/,
+          # 不在 rust-cache 默认范围。build.rs dep-info 缓存命中时 cargo 跳过 build.rs
+          # 重跑,但 prebuilt 物理文件已被 GH 缓存 prune → linker 找不到 -lsherpa-onnx-c-api。
+          cache-directories: |
+            rust/src-tauri/target/sherpa-onnx-prebuilt
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
 
