@@ -120,11 +120,12 @@ fn apply_windows_indicator_chrome(w: &tauri::WebviewWindow) {
 
     match w.hwnd() {
         Ok(hwnd) => unsafe {
-            // windows 0.61 的 HWND 是 InterfaceType(非 Copy),Param<HWND> 给 &T 实现 ——
-            // 两次调用都用 &hwnd 共享借用,不消费 hwnd
-            let cur = GetWindowLongPtrW(&hwnd, GWL_EXSTYLE);
+            // windows 0.61 的 GetWindowLongPtrW / SetWindowLongPtrW 签名是 owned HWND,
+            // HWND 自身 derive(Copy),两次传 owned 没问题。注:不能写 &hwnd —— 0.61
+            // 的签名直接 hwnd: HWND 而非 P0: Param<HWND>,加 borrow 会 type mismatch。
+            let cur = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
             let new_style = cur | (WS_EX_NOACTIVATE.0 as isize) | (WS_EX_TOOLWINDOW.0 as isize);
-            SetWindowLongPtrW(&hwnd, GWL_EXSTYLE, new_style);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_style);
         },
         Err(e) => {
             tracing::warn!(error = ?e, "indicator: 获取 hwnd 失败,跳过 NOACTIVATE 设置");
