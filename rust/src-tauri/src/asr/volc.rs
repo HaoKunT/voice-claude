@@ -6,7 +6,9 @@ use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
+use parking_lot::Mutex;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::handshake::client::Request as HandshakeRequest;
@@ -282,6 +284,11 @@ pub async fn transcribe_stream(
 
     let _ = ready.send(());
 
+    // 跟踪最近一次 partial:豆包的 partial 是累积式(每次 partial 都是从录音
+    // 开头到当前的完整文本),所以最后一次 partial 就是已识别的全部内容。
+    // 服务端某些场景下不会发 is_final=true 帧(比如长录音),用它兜底当 final。
+    let last_partial = Arc::new(Mutex::new(String::new()));
+    let last_partial_for_recv = Arc::clone(&last_partial);
     let recv_task = tokio::spawn(async move {
         let mut final_text = String::new();
         while let Some(msg) = read.next().await {
@@ -303,6 +310,7 @@ pub async fn transcribe_stream(
                         break;
                     } else {
                         tracing::debug!(%text, "豆包中间结果");
+                        *last_partial_for_recv.lock() = text.clone();
                         on_partial(text);
                     }
                 }
@@ -343,10 +351,27 @@ pub async fn transcribe_stream(
 
     let _ = send_task.await;
 
-    let final_text = tokio::time::timeout(Duration::from_secs(10), recv_task)
+    // 等服务端给 is_final=true 帧;长录音(>30s)经常没有,fallback 到 last_partial
+    // (跟用户实际听到的中间结果一致,比交白卷强)。30s 覆盖正常场景的网络抖动 +
+    // server 处理延迟;再不来就走 fallback。
+    const FINAL_WAIT_SECS: u64 = 30;
+    let final_text = match tokio::time::timeout(Duration::from_secs(FINAL_WAIT_SECS), recv_task)
         .await
-        .map(|r| r.unwrap_or_default())
-        .unwrap_or_default();
+    {
+        Ok(Ok(text)) if !text.is_empty() => text,
+        Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
+            let partial = last_partial.lock().clone();
+            if partial.is_empty() {
+                tracing::warn!("豆包未拿到 final 也无 partial,识别结果为空");
+            } else {
+                tracing::info!(
+                    text = %partial,
+                    "豆包未拿到 final 帧,fallback 用最近一次 partial 当结果"
+                );
+            }
+            partial
+        }
+    };
     Ok(final_text)
 }
 
