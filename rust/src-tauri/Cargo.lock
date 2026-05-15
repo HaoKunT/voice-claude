@@ -4490,9 +4490,9 @@ dependencies = [
 
 [[package]]
 name = "sherpa-onnx"
-version = "1.13.1"
+version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26bc6bdd798dd301d4841be9e72d71a8185499ebfaaa2ec995c765509a087891"
+checksum = "f70620e4fa58e4cb1acf4e0a9c2cbc7496ea8284f80e55be23d443b92e563e49"
 dependencies = [
  "serde",
  "serde_json",
@@ -4501,9 +4501,9 @@ dependencies = [
 
 [[package]]
 name = "sherpa-onnx-sys"
-version = "1.13.1"
+version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "835936112d27c9aa7ccf53e5266b77a0847420d2fa57a58ed19d10521dd525c0"
+checksum = "c7f3fe4987367b162336027b5d1ffca6dcd627bee6a324e46f80e82dfcb4365b"
 dependencies = [
  "bzip2",
  "tar",
@@ -5505,9 +5505,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.52.2"
+version = "1.52.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "110a78583f19d5cdb2c5ccf321d1290344e71313c6c37d43520d386027d18386"
+checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
 dependencies = [
  "bytes",
  "libc",
