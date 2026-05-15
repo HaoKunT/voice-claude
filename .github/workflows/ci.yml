@@ -37,15 +37,11 @@ jobs:
           node-version: 20
           cache: pnpm
           cache-dependency-path: rust/pnpm-lock.yaml
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust/src-tauri -> target
-          # sherpa-onnx build.rs 把预编译 dylib 下载到 target/sherpa-onnx-prebuilt/,
-          # rust-cache 默认不缓存这个子目录。但 build.rs dep-info 会被缓存,导致下次
-          # cache-hit 时 cargo 跳过 build.rs 重跑,prebuilt 物理文件丢失 → linker
-          # 找不到 -lsherpa-onnx-c-api。显式把 prebuilt 纳入缓存解决假命中。
-          cache-directories: |
-            rust/src-tauri/target/sherpa-onnx-prebuilt
+      # 不用 Swatinem/rust-cache:sherpa-onnx-prebuilt 子目录跟 build.rs dep-info
+      # 的 cache save 时点不一致(尤其 cache 在失败 run 中 save 时 prebuilt 不完整),
+      # 导致下次 cache hit 时 cargo 跳过 build.rs 重跑、但 prebuilt dylib 缺
+      # → linker 找不到 -lsherpa-onnx-c-api。每次重 build sherpa-onnx 多 ~2 分钟,
+      # 比反复 debug 假命中划算。release.yml 同样处理。
       - name: Install pnpm deps
         run: pnpm install --frozen-lockfile
       - name: Build frontend (need dist/ for tauri::generate_context)
@@ -76,15 +72,11 @@ jobs:
           node-version: 20
           cache: pnpm
           cache-dependency-path: rust/pnpm-lock.yaml
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust/src-tauri -> target
-          # sherpa-onnx build.rs 把预编译 dylib 下载到 target/sherpa-onnx-prebuilt/,
-          # rust-cache 默认不缓存这个子目录。但 build.rs dep-info 会被缓存,导致下次
-          # cache-hit 时 cargo 跳过 build.rs 重跑,prebuilt 物理文件丢失 → linker
-          # 找不到 -lsherpa-onnx-c-api。显式把 prebuilt 纳入缓存解决假命中。
-          cache-directories: |
-            rust/src-tauri/target/sherpa-onnx-prebuilt
+      # 不用 Swatinem/rust-cache:sherpa-onnx-prebuilt 子目录跟 build.rs dep-info
+      # 的 cache save 时点不一致(尤其 cache 在失败 run 中 save 时 prebuilt 不完整),
+      # 导致下次 cache hit 时 cargo 跳过 build.rs 重跑、但 prebuilt dylib 缺
+      # → linker 找不到 -lsherpa-onnx-c-api。每次重 build sherpa-onnx 多 ~2 分钟,
+      # 比反复 debug 假命中划算。release.yml 同样处理。
       - name: Install pnpm deps
         run: pnpm install --frozen-lockfile
       - name: Build frontend (need dist/ for tauri::generate_context)
@@ -126,15 +118,11 @@ jobs:
           node-version: 20
           cache: pnpm
           cache-dependency-path: rust/pnpm-lock.yaml
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust/src-tauri -> target
-          # sherpa-onnx build.rs 把预编译 dylib 下载到 target/sherpa-onnx-prebuilt/,
-          # rust-cache 默认不缓存这个子目录。但 build.rs dep-info 会被缓存,导致下次
-          # cache-hit 时 cargo 跳过 build.rs 重跑,prebuilt 物理文件丢失 → linker
-          # 找不到 -lsherpa-onnx-c-api。显式把 prebuilt 纳入缓存解决假命中。
-          cache-directories: |
-            rust/src-tauri/target/sherpa-onnx-prebuilt
+      # 不用 Swatinem/rust-cache:sherpa-onnx-prebuilt 子目录跟 build.rs dep-info
+      # 的 cache save 时点不一致(尤其 cache 在失败 run 中 save 时 prebuilt 不完整),
+      # 导致下次 cache hit 时 cargo 跳过 build.rs 重跑、但 prebuilt dylib 缺
+      # → linker 找不到 -lsherpa-onnx-c-api。每次重 build sherpa-onnx 多 ~2 分钟,
+      # 比反复 debug 假命中划算。release.yml 同样处理。
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
       - name: Build (Tauri)
