@@ -62,7 +62,7 @@ cpal = "0.15"
 hound = "3.5"  # WAV 读写
 
 # 键盘模拟
-enigo = "0.2"
+enigo = "0.6"
 
 # 目录
 dirs = "6"
