@@ -8,7 +8,6 @@ use anyhow::Result;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use tauri::Emitter;
 
@@ -24,32 +23,6 @@ struct RecordingStartedPayload<'a> {
 pub enum StopReason {
     Stop,
     Cancel,
-}
-
-/// 流式 partial 实时输入的内部状态。
-/// `typed_text`:屏幕上当前 typed 的完整 partial 文本(下次 diff 的基准)
-/// `last_flush_at`:上次 flush 到 OS 键盘事件的时刻,用来节流
-struct PartialInputState {
-    typed_text: String,
-    last_flush_at: Instant,
-}
-
-impl Default for PartialInputState {
-    fn default() -> Self {
-        // 初始化设成 Instant::now() 减一段时间,让第一次 partial 能立即 flush
-        // (而不是被节流等 150ms);Duration::from_secs(1) 远大于任何节流窗口
-        Self {
-            typed_text: String::new(),
-            last_flush_at: Instant::now() - Duration::from_secs(1),
-        }
-    }
-}
-
-/// 按 Unicode 字符(非 byte)算两个字符串的最长公共前缀字符数。
-/// 用在流式 partial 的 diff 输入:只 delete/type 差异部分而非全删全写,
-/// 减少 OS 键盘事件量 + 缩小竞态窗口。
-fn common_char_prefix_count(a: &str, b: &str) -> usize {
-    a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count()
 }
 
 /// 全局录音状态:避免并发录音 + 支持 toggle/cancel
@@ -530,40 +503,14 @@ async fn run_stream(
     let pcm_rx = rec.start_stream();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
 
-    // 启动 ASR 任务
+    // partial 只 emit 给 indicator 预览,不再实时 type 到光标。
+    // 老路径"流式 partial 实时打字 + 停止后 backspace 全删 + 再写最终"会在
+    // 焦点窗口里"跳"两次,开 LLM 润色时尤其明显(润色后的文本跟原文不同,
+    // 全删后又得重写)。统一用"只在 indicator 预览,识别+润色完一次性 type
+    // 最终结果"的 UX,跟 macOS 系统 dictation / type4me 等竞品一致。
     let partial_app = app.clone();
-    // 节流间隔:partial 在间隔内只更新内存状态,不打 OS 键盘事件 ——
-    // 老逻辑每次 partial 都「全删 + 全 retype」,长文本下连发的 backspace
-    // 跟下一段 fast_text 在 OS 事件队列里有时序竞态,会丢字。150ms 对人眼
-    // 还算"实时",但能把 OS 键盘事件量压到原来的 1/3-1/5。
-    const PARTIAL_THROTTLE: Duration = Duration::from_millis(150);
-    let partial_state = Arc::new(Mutex::new(PartialInputState::default()));
-    let partial_state_cb = Arc::clone(&partial_state);
-
     let on_partial = Box::new(move |text: String| {
         let _ = partial_app.emit("asr-partial", &text);
-        let now = Instant::now();
-        // 计算 diff:把屏幕上的 typed_text 跟新 partial 比,只删/补差异部分。
-        // 累积式 partial(豆包)往往尾部追加,common prefix 长,实际只动几个字符;
-        // 句子重置型(讯飞跨句)common prefix=0 退化为全删全写,不会变差。
-        let (chars_to_delete, suffix_to_type) = {
-            let mut g = partial_state_cb.lock();
-            if now.duration_since(g.last_flush_at) < PARTIAL_THROTTLE {
-                return; // 节流跳过 —— 屏幕上保持上次 typed,不影响最终 final 输出
-            }
-            let common = common_char_prefix_count(&g.typed_text, &text);
-            let prev_chars = g.typed_text.chars().count();
-            let chars_to_delete = prev_chars - common;
-            let suffix: String = text.chars().skip(common).collect();
-            g.typed_text = text;
-            g.last_flush_at = now;
-            (chars_to_delete, suffix)
-        };
-        // 锁外做 OS IO,避免持锁期间 enigo fast_text 阻塞下一次回调
-        let _ = input::delete_chars(chars_to_delete);
-        if !suffix_to_type.is_empty() {
-            let _ = input::type_text(&suffix_to_type);
-        }
     });
 
     let cfg_clone = cfg.clone();
@@ -581,11 +528,8 @@ async fn run_stream(
     rec.stop_stream();
     rec.stop();
 
-    // 无论 stop 还是 cancel 都要删掉已经 type 到目标 app 的中间结果,
-    // 否则用户目标窗口里会留着"半个识别结果"。
-    // partial_state.typed_text 是屏幕实际写入的 partial,按它的字符数 backspace。
-    let prev = partial_state.lock().typed_text.chars().count();
-    let _ = input::delete_chars(prev);
+    // partial 不再 type 到光标,所以也无需 backspace 清场 —— 焦点窗口
+    // 在录音期间始终干净。
 
     if reason == StopReason::Cancel {
         // 不再等 ASR 最终结果,任务会因 pcm_rx 关闭自然退出
@@ -717,30 +661,6 @@ mod tests {
     fn provider_off_is_empty() {
         let p = profile("off", "");
         assert_eq!(compute_polish_provider(&p), "");
-    }
-
-    #[test]
-    fn common_char_prefix_basic() {
-        assert_eq!(common_char_prefix_count("", ""), 0);
-        assert_eq!(common_char_prefix_count("abc", "abd"), 2);
-        assert_eq!(common_char_prefix_count("abc", "xyz"), 0);
-        assert_eq!(common_char_prefix_count("abc", "abcdef"), 3);
-        assert_eq!(common_char_prefix_count("abcdef", "abc"), 3);
-    }
-
-    #[test]
-    fn common_char_prefix_chinese_codepoints() {
-        // 一个汉字 3 字节,但按字符比应该算 1 个 codepoint。
-        // 累积式 partial 常见情况:尾部追加,公共前缀很长。
-        assert_eq!(common_char_prefix_count("你好", "你好世界"), 2);
-        assert_eq!(common_char_prefix_count("你好世界", "你好新世界"), 2);
-        assert_eq!(common_char_prefix_count("今天", "你好"), 0);
-    }
-
-    #[test]
-    fn common_char_prefix_mixed_lang() {
-        assert_eq!(common_char_prefix_count("hello 世界", "hello 世人"), 7);
-        assert_eq!(common_char_prefix_count("ABC中文", "ABC英文"), 3);
     }
 
     #[test]
