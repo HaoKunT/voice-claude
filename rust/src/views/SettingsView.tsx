@@ -254,10 +254,11 @@ export function SettingsView({ section }: { section: SettingsSection }) {
               value={cfg.trigger_mode}
               onChange={(e) => {
                 const v = e.target.value;
-                update("trigger_mode", v);
+                // 一次 setCfg 两字段:update() 用 closure 里的 cfg(stale),
+                // 连调两次第二次会覆盖第一次的更新 —— 必须合在一个 setCfg 里。
                 // push_to_talk 字段保留只为反序列化老 config,UI 改 trigger_mode
                 // 时同步它,避免后端 fallback 到老字段后跟 trigger_mode 矛盾。
-                update("push_to_talk", v === TRIGGER_MODE_PTT);
+                setCfg({ ...cfg, trigger_mode: v, push_to_talk: v === TRIGGER_MODE_PTT });
               }}
             >
               {TRIGGER_MODES.map((m) => (

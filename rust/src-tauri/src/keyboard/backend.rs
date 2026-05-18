@@ -85,7 +85,9 @@ impl Drop for KeyboardBackend {
 fn probe(cfg: &BackendConfig) -> Result<()> {
     match cfg.mode {
         TriggerMode::Toggle | TriggerMode::PushToTalk => {
-            let manager = HotkeyManager::new()
+            // 必须用 new_with_blocking:默认 new() 只观察事件不 block,主热键
+            // 按键会透传到当前焦点 app(尤其 Space/字母键被实际输入,体感坏)。
+            let manager = HotkeyManager::new_with_blocking()
                 .map_err(|e| anyhow!("无法创建 HotkeyManager(macOS 检查辅助功能权限): {}", e))?;
             let hk = cfg
                 .hotkey
@@ -160,7 +162,9 @@ fn run_manager_path(
     cfg: &BackendConfig,
     ctrl_rx: &mpsc::Receiver<Control>,
 ) -> PathExit {
-    let manager = match HotkeyManager::new() {
+    // new_with_blocking:把已注册的热键事件从 OS 事件流里拦下来,不再透传给
+    // 焦点 app。普通 new() 模式 Space/字母键会被实际打到当前窗口里。
+    let manager = match HotkeyManager::new_with_blocking() {
         Ok(m) => m,
         Err(e) => {
             tracing::error!(error = %e, "keyboard supervisor: 创建 HotkeyManager 失败");
