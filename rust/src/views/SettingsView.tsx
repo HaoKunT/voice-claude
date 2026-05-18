@@ -1051,31 +1051,46 @@ function HotkeyRecorder({
 
   useEffect(() => {
     if (!capturing) return;
-    api.suspendHotkey().catch(() => {});
 
-    const handler = (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.key === "Escape") {
+    let cleanupHandler: (() => void) | null = null;
+    let cancelled = false;
+
+    // 必须 await suspend 完成再挂 listener:handy-keys 在 manager 上 block 已注册
+    // 的热键事件,所以挂 listener 前必须确认 backend 已经卸载,否则用户当前的
+    // 主热键(尤其字母 / F 键 / Space)keydown 仍被 OS 层 block,window 拿不到。
+    // suspend_hotkey 后端 take 出 KeyboardBackend → Drop → HotkeyManager::Drop
+    // 同步 join 内部线程,返回时 OS hook 一定已干净。
+    (async () => {
+      await api.suspendHotkey().catch(() => {});
+      if (cancelled) return;
+
+      const handler = (e: KeyboardEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === "Escape") {
+          setCapturing(false);
+          return;
+        }
+        // 单按修饰键时等用户继续按主键
+        if (["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(e.key)) return;
+
+        const mods: string[] = [];
+        if (e.metaKey) mods.push(IS_MAC ? "cmd" : "win");
+        if (e.ctrlKey) mods.push("ctrl");
+        if (e.altKey) mods.push(IS_MAC ? "option" : "alt");
+        if (e.shiftKey) mods.push("shift");
+        const main = keyCodeToName(e.code, e.key);
+        if (mods.length === 0 || !main) return;
+        onChangeRef.current([...mods, main].join("+"));
         setCapturing(false);
-        return;
-      }
-      // 单按修饰键时等用户继续按主键
-      if (["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(e.key)) return;
+      };
+      window.addEventListener("keydown", handler, true);
+      cleanupHandler = () => window.removeEventListener("keydown", handler, true);
+    })();
 
-      const mods: string[] = [];
-      if (e.metaKey) mods.push(IS_MAC ? "cmd" : "win");
-      if (e.ctrlKey) mods.push("ctrl");
-      if (e.altKey) mods.push(IS_MAC ? "option" : "alt");
-      if (e.shiftKey) mods.push("shift");
-      const main = keyCodeToName(e.code, e.key);
-      if (mods.length === 0 || !main) return;
-      onChangeRef.current([...mods, main].join("+"));
-      setCapturing(false);
-    };
-    window.addEventListener("keydown", handler, true);
     return () => {
-      window.removeEventListener("keydown", handler, true);
+      cancelled = true;
+      cleanupHandler?.();
       api.resumeHotkey().catch(() => {});
     };
   }, [capturing]);
