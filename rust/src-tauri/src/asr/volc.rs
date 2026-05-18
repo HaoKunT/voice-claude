@@ -4,9 +4,9 @@
 use crate::config::Config;
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
+use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::json;
-use parking_lot::Mutex;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -355,23 +355,22 @@ pub async fn transcribe_stream(
     // (跟用户实际听到的中间结果一致,比交白卷强)。30s 覆盖正常场景的网络抖动 +
     // server 处理延迟;再不来就走 fallback。
     const FINAL_WAIT_SECS: u64 = 30;
-    let final_text = match tokio::time::timeout(Duration::from_secs(FINAL_WAIT_SECS), recv_task)
-        .await
-    {
-        Ok(Ok(text)) if !text.is_empty() => text,
-        Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
-            let partial = last_partial.lock().clone();
-            if partial.is_empty() {
-                tracing::warn!("豆包未拿到 final 也无 partial,识别结果为空");
-            } else {
-                tracing::info!(
-                    text = %partial,
-                    "豆包未拿到 final 帧,fallback 用最近一次 partial 当结果"
-                );
+    let final_text =
+        match tokio::time::timeout(Duration::from_secs(FINAL_WAIT_SECS), recv_task).await {
+            Ok(Ok(text)) if !text.is_empty() => text,
+            Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
+                let partial = last_partial.lock().clone();
+                if partial.is_empty() {
+                    tracing::warn!("豆包未拿到 final 也无 partial,识别结果为空");
+                } else {
+                    tracing::info!(
+                        text = %partial,
+                        "豆包未拿到 final 帧,fallback 用最近一次 partial 当结果"
+                    );
+                }
+                partial
             }
-            partial
-        }
-    };
+        };
     Ok(final_text)
 }
 
