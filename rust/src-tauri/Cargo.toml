@@ -38,7 +38,7 @@ futures-util = "0.3"
 
 # HTTP / WebSocket
 reqwest = { version = "0.12", features = ["json", "stream", "multipart", "rustls-tls"], default-features = false }
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
 
 # 签名 / 编码 —— hmac/sha1/sha2 必须三件套同步升级。0.10 用 digest 0.10,
 # 0.11 用 digest 0.11,任意一个错档会导致 Hmac<Sha1> 的 trait bound 不满足。
