@@ -22,6 +22,12 @@ pub const OUTPUT_MODE_INPUT: &str = "input";
 pub const OUTPUT_MODE_CLIPBOARD: &str = "clipboard";
 pub const OUTPUT_MODE_PANEL: &str = "panel";
 
+/// 热键触发模式。新字段,默认 "toggle"(跟当前 push_to_talk = false 行为一致)。
+/// push_to_talk 字段保留但 UI 不再绑定 —— 等大家迁移完后(0.3+)删。
+pub const TRIGGER_MODE_TOGGLE: &str = "toggle";
+pub const TRIGGER_MODE_PTT: &str = "push_to_talk";
+pub const TRIGGER_MODE_DOUBLE_TAP_HOLD: &str = "double_tap_hold";
+
 pub const DEFAULT_PROFILE_ID: &str = "default";
 pub const DEFAULT_POLISH_PROMPT: &str =
     "你是一个语音识别润色助手。用户通过语音输入文字，可能有同音字错误、漏字、多字等问题。
@@ -128,8 +134,21 @@ pub struct Config {
     pub vad_threshold: f32,
     #[serde(default = "default_output_mode")]
     pub output_mode: String,
+    /// **deprecated**:UI 已不再绑定,改用 `trigger_mode`。保留只为反序列化老
+    /// config 不失败。0.3+ 删。
     #[serde(default)]
     pub push_to_talk: bool,
+    /// 触发方式:`toggle` / `push_to_talk` / `double_tap_hold`。
+    /// 老 config 没这个字段时 serde default 为 `toggle`(跟当前默认行为一致)。
+    /// 老 push_to_talk = true 用户首次进设置页 dropdown 默认 toggle,需手动选 PTT
+    /// (用户已确认不做自动迁移)。
+    #[serde(default = "default_trigger_mode")]
+    pub trigger_mode: String,
+    /// double_tap_hold 模式下要双击的 modifier 键名。值跟 handy-keys 风格对齐
+    /// (下划线分词):`right_option` / `left_option` / `right_ctrl` / ... / `fn`(macOS)。
+    /// 默认 `right_option`(跟 macOS 系统 dictation "双击 Fn" 风格接近)。
+    #[serde(default = "default_double_tap_modifier")]
+    pub double_tap_modifier: String,
     /// 气声增强:录音后做 pre-emphasis + compressor + peak normalize,显著
     /// 改善气声(耳语、气声输入)的识别率。对正常说话也无副作用,默认开启。
     #[serde(default = "default_voice_enhance")]
@@ -200,6 +219,12 @@ fn default_vad_threshold() -> f32 {
 fn default_output_mode() -> String {
     OUTPUT_MODE_INPUT.into()
 }
+fn default_trigger_mode() -> String {
+    TRIGGER_MODE_TOGGLE.into()
+}
+fn default_double_tap_modifier() -> String {
+    "right_option".into()
+}
 fn default_voice_enhance() -> bool {
     true
 }
@@ -241,6 +266,8 @@ impl Default for Config {
             vad_threshold: default_vad_threshold(),
             output_mode: default_output_mode(),
             push_to_talk: false,
+            trigger_mode: default_trigger_mode(),
+            double_tap_modifier: default_double_tap_modifier(),
             voice_enhance: default_voice_enhance(),
             local_engine: default_local_engine(),
             local_use_coreml: false,

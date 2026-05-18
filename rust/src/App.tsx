@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { api, Config } from "./api";
-import { formatHotkey } from "./lib/hotkey";
+import { formatTrigger } from "./lib/hotkey";
 import { SettingsView, SettingsSection } from "./views/SettingsView";
 import { HistoryView } from "./views/HistoryView";
 import { StatsView } from "./views/StatsView";
@@ -89,7 +89,7 @@ function Shell() {
             <div>
               <div className="text-[13px] font-semibold text-gray-100">voice-claude</div>
               <div className="text-[10px] text-gray-500">
-                按 {cfg ? formatHotkey(cfg.hotkey) : "…"}
+                {cfg ? formatTrigger(cfg) : "…"}
               </div>
             </div>
           </div>
@@ -155,7 +155,8 @@ function AccessibilityBanner() {
         <span className="font-medium">辅助功能权限未生效</span>
         <span className="text-amber-200/70 ml-2">
           —— 热键不会工作。如果系统设置里 voice-claude 看起来已经勾选，那是升级后 macOS 还绑着旧签名。
-          正确做法：先用 <b className="text-amber-100">减号（－）删掉这条</b>，再用 <b className="text-amber-100">加号（＋）重新加回</b> voice-claude.app。
+          正确做法：先用 <b className="text-amber-100">减号（－）删掉这条</b>，再用 <b className="text-amber-100">加号（＋）重新加回</b> voice-claude.app，
+          <b className="text-amber-100">最后重启 voice-claude</b>(权限刚授权时已 spawn 的进程拿不到,需要重启)。
         </span>
       </div>
       <button

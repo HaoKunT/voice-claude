@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, Config, HistoryEntry, HistoryStats, PolishProfile } from "../api";
-import { formatHotkey } from "../lib/hotkey";
+import { formatTrigger } from "../lib/hotkey";
 
 export function HistoryView() {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
@@ -8,7 +8,7 @@ export function HistoryView() {
   const [loading, setLoading] = useState(true);
   const [profiles, setProfiles] = useState<PolishProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string>("");
-  const [hotkey, setHotkey] = useState<string>("");
+  const [trigger, setTrigger] = useState<{ trigger_mode: string; hotkey: string; double_tap_modifier: string } | null>(null);
   const [stats, setStats] = useState<HistoryStats | null>(null);
   // 重润色相关状态,每次打开 detail 都 reset
   const [repolishProfileId, setRepolishProfileId] = useState<string>("");
@@ -41,11 +41,15 @@ export function HistoryView() {
       const cfg: Config = await api.getConfig();
       setProfiles(cfg.polish_profiles ?? []);
       setActiveProfileId(cfg.active_profile_id ?? "");
-      setHotkey(cfg.hotkey ?? "");
+      setTrigger({
+        trigger_mode: cfg.trigger_mode ?? "toggle",
+        hotkey: cfg.hotkey ?? "",
+        double_tap_modifier: cfg.double_tap_modifier ?? "right_option",
+      });
     } catch {
       setProfiles([]);
       setActiveProfileId("");
-      setHotkey("");
+      setTrigger(null);
     }
   };
 
@@ -111,7 +115,7 @@ export function HistoryView() {
           <div className="text-3xl mb-3 opacity-40">⏱</div>
           暂无识别记录<br />
           <span className="text-xs text-gray-600">
-            {hotkey ? `按 ${formatHotkey(hotkey)} 开始录音` : "按设置的快捷键开始录音"}
+            {trigger ? `按 ${formatTrigger(trigger)} 开始录音` : "按设置的快捷键开始录音"}
           </span>
         </div>
       )}

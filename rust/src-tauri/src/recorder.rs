@@ -15,6 +15,8 @@ use tauri::Emitter;
 #[derive(serde::Serialize, Clone)]
 struct RecordingStartedPayload<'a> {
     hotkey: &'a str,
+    trigger_mode: &'a str,
+    double_tap_modifier: &'a str,
 }
 
 /// 录音结束方式:正常停止走后续 ASR/AI/输出,取消则丢弃一切
@@ -86,12 +88,8 @@ impl Drop for RecordingGuard {
         // 兜底重置 active：即便 run().await panic 也不会让 active 卡在 true，
         // 否则下一次 toggle 会以为还在录音
         recording().active.store(false, Ordering::Relaxed);
-        // 录音结束(无论正常 / cancel / panic)统一注销临时 ESC 热键,
-        // 避免录音外还占着 ESC 影响其他 app
-        let unregister_app = self.app.clone();
-        let _ = self.app.run_on_main_thread(move || {
-            crate::unregister_cancel_hotkey(&unregister_app);
-        });
+        // ESC 临时热键的注册/注销已经迁到 keyboard backend 内部(状态机进/出
+        // recording 状态时由 backend.rs::manage_esc 自动处理),这里不再插手。
         let hide_app = self.app.clone();
         let _ = self.app.run_on_main_thread(move || {
             crate::indicator::hide(&hide_app);
@@ -163,23 +161,24 @@ async fn run(
     tracing::info!("开始录音");
     let started_at = std::time::Instant::now();
 
-    // 带上当前热键，让悬浮窗底部"再按 xxx 结束"提示跟着 config 动态渲染
+    // 带上当前热键 + 触发模式,让悬浮窗底部"再按 xxx 结束"提示跟着 config 动态渲染
     let _ = app.emit(
         "recording-started",
         RecordingStartedPayload {
             hotkey: &cfg.hotkey,
+            trigger_mode: &cfg.trigger_mode,
+            double_tap_modifier: &cfg.double_tap_modifier,
         },
     );
     crate::beep::start();
     // indicator 窗口创建 + tauri-nspanel to_panel() 必须在主线程，不能在 worker。
-    // 同一次 run_on_main_thread 顺便注册 ESC 取消热键(global_shortcut 注册也应在主线程)。
     // 关上一次 panel 模式遗留的结果窗——否则用户没手动关就按热键,两个窗口会同时显示,
     // 而且结果窗在上面还可能拦住悬浮窗视觉。
+    // ESC 临时热键现在由 keyboard backend 自动管理(emit Start 时注册),这里不再注册。
     let show_app = app.clone();
     let _ = app.run_on_main_thread(move || {
         crate::result::hide(&show_app);
         crate::indicator::show(&show_app);
-        crate::register_cancel_hotkey(&show_app);
     });
 
     // guard：无论正常 / 提前 return / panic，都关闭 indicator + stop level task

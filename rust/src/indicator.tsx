@@ -1,7 +1,7 @@
 // 录音指示器：Raycast 风格波形 + 实时识别文字 + 录音计时。
 // panel 输出模式的识别结果展示/编辑由独立的 result 窗口负责（见 result.tsx）。
 import { listen } from "@tauri-apps/api/event";
-import { parseHotkeyKeys, formatHotkeyKey } from "./lib/hotkey";
+import { parseHotkeyKeys, formatHotkeyKey, formatDoubleTapModifier } from "./lib/hotkey";
 
 const BAR_COUNT = 40;
 const BAR_WIDTH = 6;
@@ -99,9 +99,20 @@ function showView(which: "recording" | "processing") {
   processingViewEl.hidden = which !== "processing";
 }
 
-function renderHotkeyHint(hotkey: string) {
+function renderTriggerHint(payload: RecordingStartedPayload) {
   hotkeyHintEl.innerHTML = "";
-  for (const k of parseHotkeyKeys(hotkey)) {
+  if (payload.trigger_mode === "double_tap_hold") {
+    // 双击 modifier:渲染成两个相同的 <kbd>(对齐"双击"语义),供用户视觉提示
+    const sym = formatDoubleTapModifier(payload.double_tap_modifier ?? "right_option");
+    for (let i = 0; i < 2; i++) {
+      const kbd = document.createElement("kbd");
+      kbd.textContent = sym;
+      hotkeyHintEl.appendChild(kbd);
+    }
+    return;
+  }
+  // toggle / push_to_talk:正常拆主热键
+  for (const k of parseHotkeyKeys(payload.hotkey ?? "")) {
     const kbd = document.createElement("kbd");
     kbd.textContent = formatHotkeyKey(k);
     hotkeyHintEl.appendChild(kbd);
@@ -156,6 +167,8 @@ listen<string>("asr-partial", (e) => {
 
 interface RecordingStartedPayload {
   hotkey: string;
+  trigger_mode: string;
+  double_tap_modifier: string;
 }
 
 listen<RecordingStartedPayload>("recording-started", (e) => {
@@ -165,9 +178,11 @@ listen<RecordingStartedPayload>("recording-started", (e) => {
   partialEl.textContent = "等待语音…";
   partialEl.classList.add("empty");
   timerEl.style.color = "";
-  // 后端 recording-started 永远会带 hotkey,这里 fallback 给空字符串
-  // 仅是 defensive —— renderHotkeyHint("") 渲染空,比硬编码具体热键更安全
-  renderHotkeyHint(e.payload?.hotkey ?? "");
+  // 后端 recording-started 永远会带 hotkey + trigger_mode + double_tap_modifier。
+  // payload 缺时 fallback 到 toggle 风格,只渲染空 hint —— 比硬编码具体值更安全
+  renderTriggerHint(
+    e.payload ?? { hotkey: "", trigger_mode: "toggle", double_tap_modifier: "" },
+  );
 });
 
 listen("recording-stopped", () => {

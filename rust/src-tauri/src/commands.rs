@@ -31,24 +31,32 @@ pub fn save_config(cfg: Config, state: State<'_, AppState>, app: AppHandle) -> R
 
     let prev = state.snapshot();
     let prev_hotkey = prev.hotkey.clone();
+    let prev_ptt = prev.push_to_talk;
+    let prev_trigger_mode = prev.trigger_mode.clone();
+    let prev_dtm = prev.double_tap_modifier.clone();
     let prev_log_level = prev.log_level.clone();
     let prev_asr_provider = prev.asr_provider.clone();
     let prev_local_engine = prev.local_engine.clone();
     let prev_local_coreml = prev.local_use_coreml;
     let prev_hotwords = prev.hotwords.clone();
 
-    let new_hotkey = cfg.hotkey.clone();
     let new_log_level = cfg.log_level.clone();
-    // 热键变了就重新注册全局热键，否则老 accelerator 还挂着、新的没生效
-    if new_hotkey != prev_hotkey {
-        if let Err(e) = crate::register_hotkey(&app, &new_hotkey) {
-            tracing::warn!(error = ?e, "save_config 后重注册热键失败");
+    // 任一影响 keyboard backend 的字段变了就 reload。push_to_talk 保留是因为
+    // 老 config 升级路径(trigger_mode 缺省时 fallback 看 push_to_talk)。
+    let needs_reload = cfg.hotkey != prev_hotkey
+        || cfg.push_to_talk != prev_ptt
+        || cfg.trigger_mode != prev_trigger_mode
+        || cfg.double_tap_modifier != prev_dtm;
+    if needs_reload {
+        if let Err(e) = crate::start_or_reload_keyboard(&app, &cfg) {
+            tracing::warn!(error = ?e, "save_config 后 reload keyboard backend 失败");
             return Err(format!("热键注册失败：{}", e));
         }
     }
     if let Err(e) = cfg.save() {
-        if new_hotkey != prev_hotkey {
-            let _ = crate::register_hotkey(&app, &prev_hotkey);
+        if needs_reload {
+            // 回滚到旧 cfg。keyboard backend 已经按新 cfg reload 过,要再 reload 回去。
+            let _ = crate::start_or_reload_keyboard(&app, &prev);
         }
         return Err(e.to_string());
     }
@@ -199,11 +207,11 @@ pub fn export_config(state: State<'_, AppState>) -> Result<String, String> {
 }
 
 /// 从 JSON 字符串导入整个 config。顺序：
-///   1. 反序列化 + 预校验 hotkey 字符串（不实注册，避免后面 save 失败时热键已改）
-///   2. save 到磁盘（可能 IO 失败）
-///   3. register_hotkey（真正注册系统热键）
+///   1. 反序列化 + 预校验 hotkey 字符串(不实注册,避免后面 save 失败时热键已改)
+///   2. save 到磁盘(可能 IO 失败)
+///   3. start_or_reload_keyboard(真正注册系统热键)
 ///   4. replace AppState + reload log + 广播
-/// 任一步骤失败前都没改状态，失败后磁盘/内存/系统热键保持一致。
+/// 任一步骤失败前都没改状态,失败后磁盘/内存/系统热键保持一致。
 #[tauri::command]
 pub fn import_config(
     json: String,
@@ -212,11 +220,11 @@ pub fn import_config(
 ) -> Result<(), String> {
     let new_cfg: Config =
         serde_json::from_str(&json).map_err(|e| format!("JSON 解析失败：{}", e))?;
-    // 预校验 hotkey 语法（Rust hotkey::to_tauri_shortcut），先不注册
-    crate::hotkey::to_tauri_shortcut(&new_cfg.hotkey)
+    // 预校验 hotkey 语法,先不注册
+    crate::keyboard::config::parse_hotkey(&new_cfg.hotkey)
         .map_err(|e| format!("导入的热键无效：{}", e))?;
     new_cfg.save().map_err(|e| e.to_string())?;
-    crate::register_hotkey(&app, &new_cfg.hotkey)
+    crate::start_or_reload_keyboard(&app, &new_cfg)
         .map_err(|e| format!("导入的热键注册失败：{}", e))?;
     let new_log_level = new_cfg.log_level.clone();
     state.replace(new_cfg);
@@ -225,26 +233,24 @@ pub fn import_config(
     Ok(())
 }
 
-/// 录入新快捷键前暂停系统级热键。否则用户按当前热键时会触发录音，
+/// 录入新快捷键前暂停系统级热键。否则用户按当前热键时会触发录音,
 /// webview 拿不到 keydown 事件。
+///
+/// 实现:把 KeyboardBackend 整个 take 出来 Drop —— 这会发 Shutdown 给 supervisor
+/// 线程,旧 HotkeyManager Drop 自动卸 OS hook。比 unregister_all 更彻底,handy-keys
+/// 没有 unregister_all API 也不影响。
 #[tauri::command]
-pub fn suspend_hotkey(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    use tauri_plugin_global_shortcut::GlobalShortcutExt;
-    app.global_shortcut()
-        .unregister_all()
-        .map_err(|e| e.to_string())?;
-    // 同步清 AppState.registered_hotkey，否则 resume 时 register_hotkey 会
-    // 错以为还有旧的 accel 需要 unregister，产生多余 warn 日志
-    *state.registered_hotkey.lock() = None;
+pub fn suspend_hotkey(_app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let _ = state.keyboard.lock().take();
     Ok(())
 }
 
 /// 录入取消后把系统热键恢复成当前 config 里的 hotkey。
-/// 录入成功后 save_config 会自己 re-register 新的，这个 command 可不调。
+/// 录入成功后 save_config 会自己 re-register 新的,这个 command 可不调。
 #[tauri::command]
 pub fn resume_hotkey(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let cfg = state.snapshot();
-    crate::register_hotkey(&app, &cfg.hotkey).map_err(|e| e.to_string())
+    crate::start_or_reload_keyboard(&app, &cfg).map_err(|e| e.to_string())
 }
 
 /// panel 输出模式下，悬浮窗里的 ✕ 按钮点击后调这个关窗口。
@@ -625,16 +631,14 @@ fn open_path(path: &str) -> Result<(), String> {
     cmd.map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// macOS：查询辅助功能权限是否授予（ad-hoc 签名升级后此权限常会失效）。
+/// macOS:查询辅助功能权限是否授予(ad-hoc 签名升级后此权限常会失效)。
+/// 复用 handy-keys 已封装的 `AXIsProcessTrusted` 调用,跟 keyboard backend
+/// 用同一个权限判定来源,避免一处说"已授权"另一处又说"没权"的不一致。
 /// 其他平台直接返回 true。
 #[cfg(target_os = "macos")]
 #[tauri::command]
 pub fn check_accessibility() -> bool {
-    #[link(name = "ApplicationServices", kind = "framework")]
-    extern "C" {
-        fn AXIsProcessTrusted() -> u8;
-    }
-    unsafe { AXIsProcessTrusted() != 0 }
+    handy_keys::check_accessibility()
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -644,11 +648,14 @@ pub fn check_accessibility() -> bool {
 }
 
 /// 跳到系统「隐私与安全性 → 辅助功能」面板。
+/// macOS 走 handy-keys 封装(它内部会用 `AXIsProcessTrustedWithOptions` 触发系统
+/// prompt 并打开面板,授权完成后用户**仍需重启 voice-claude**才能让 keyboard
+/// backend 拿到权限 —— CGEventTap 在已 spawn 的进程上不会因为后续授权自动生效)。
 #[tauri::command]
 pub fn open_accessibility_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        open_path("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        handy_keys::open_accessibility_settings().map_err(|e| e.to_string())
     }
     #[cfg(not(target_os = "macos"))]
     {

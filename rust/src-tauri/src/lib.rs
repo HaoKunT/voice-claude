@@ -5,7 +5,7 @@
 //! - config: 配置读写
 //! - history: SQLite 历史
 //! - hotwords: 热词替换
-//! - hotkey: 热键字符串解析
+//! - keyboard: 跨平台 keyboard backend(handy-keys 包装) + 三模式状态机
 //! - audio: cpal 录音
 //! - input: enigo 键盘模拟
 //! - correct: AI 纠错
@@ -22,10 +22,10 @@ pub mod config;
 pub mod correct;
 pub mod dirs;
 pub mod history;
-pub mod hotkey;
 pub mod hotwords;
 pub mod indicator;
 pub mod input;
+pub mod keyboard;
 pub mod logger;
 pub mod recorder;
 pub mod result;
@@ -34,20 +34,24 @@ pub mod vad;
 
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
-use tauri_plugin_global_shortcut::GlobalShortcutExt;
+use tauri::Manager;
+
+use crate::keyboard::KeyboardBackend;
 
 /// 应用状态：配置 + 运行时可变数据。
 pub struct AppState {
     pub config: Mutex<Arc<config::Config>>,
-    pub registered_hotkey: Mutex<Option<String>>,
+    /// 跨平台 keyboard backend(handy-keys 包装)。supervisor 线程在 backend 内
+    /// 持有,Drop 时自动 shutdown + join。Some/None 区分"已启动"和"录键 widget
+    /// 临时挂起"两种状态。
+    pub keyboard: Mutex<Option<KeyboardBackend>>,
 }
 
 impl AppState {
     pub fn new(cfg: config::Config) -> Self {
         Self {
             config: Mutex::new(Arc::new(cfg)),
-            registered_hotkey: Mutex::new(None),
+            keyboard: Mutex::new(None),
         }
     }
 
@@ -60,95 +64,27 @@ impl AppState {
     }
 }
 
-/// 录音期间用的临时 ESC 全局热键 accelerator 字符串。
-const CANCEL_HOTKEY: &str = "Escape";
-
-/// 录音开始时调用:注册 ESC 为临时全局热键,按下即取消录音。
-/// 若当前主热键本身就是 Escape(罕见),跳过注册避免冲突。
-pub fn register_cancel_hotkey(app: &tauri::AppHandle) {
+/// 启动或热重载 keyboard backend(supervisor + handy-keys 实例)。
+///
+/// - 没启动过 → `KeyboardBackend::start` 起线程并立刻 probe 注册一次确认无误
+/// - 已启动 → 发 `Reload` 给 supervisor,旧 HotkeyManager Drop 自动卸 OS hook
+///
+/// 启动时(setup)和 save_config 里 hotkey/trigger_mode 变更时都调用。
+pub fn start_or_reload_keyboard(
+    app: &tauri::AppHandle,
+    cfg: &config::Config,
+) -> anyhow::Result<()> {
+    let bcfg = keyboard::backend_config_from(cfg)?;
     let state = app.state::<AppState>();
-    if state
-        .registered_hotkey
-        .lock()
-        .as_deref()
-        .is_some_and(|s| s.eq_ignore_ascii_case(CANCEL_HOTKEY))
-    {
-        tracing::debug!("主热键即 ESC,跳过注册 ESC 取消热键");
-        return;
-    }
-    let gs = app.global_shortcut();
-    // 上次录音未能注销干净时兜底(比如 drop 期间异常),忽略错误
-    let _ = gs.unregister(CANCEL_HOTKEY);
-    let handle = app.clone();
-    let result = gs.on_shortcut(CANCEL_HOTKEY, move |_app, _shortcut, event| {
-        use tauri_plugin_global_shortcut::ShortcutState;
-        if event.state() == ShortcutState::Pressed {
-            tracing::info!("ESC 按下,取消录音");
-            let _ = handle.emit("recording-cancelled", ());
-            recorder::cancel();
-        }
-    });
-    if let Err(e) = result {
-        tracing::warn!(error = ?e, "注册 ESC 取消热键失败");
-    }
-}
-
-/// 录音结束(正常停止或取消)时调用:注销 ESC 临时热键。
-pub fn unregister_cancel_hotkey(app: &tauri::AppHandle) {
-    let state = app.state::<AppState>();
-    if state
-        .registered_hotkey
-        .lock()
-        .as_deref()
-        .is_some_and(|s| s.eq_ignore_ascii_case(CANCEL_HOTKEY))
-    {
-        return;
-    }
-    let gs = app.global_shortcut();
-    if let Err(e) = gs.unregister(CANCEL_HOTKEY) {
-        tracing::debug!(error = ?e, "注销 ESC 热键(可能从未注册),忽略");
-    }
-}
-
-/// 注册全局热键。先 unregister_all 清掉旧的，再 on_shortcut 绑新的。
-/// 启动时和 save_config 里 hotkey 变更时都调用。
-pub fn register_hotkey(app: &tauri::AppHandle, hotkey_str: &str) -> anyhow::Result<()> {
-    let accel = hotkey::to_tauri_shortcut(hotkey_str)
-        .map_err(|e| anyhow::anyhow!("热键解析失败：{}", e))?;
-    let gs = app.global_shortcut();
-    let handle = app.clone();
-    gs.on_shortcut(accel.as_str(), move |_app, _shortcut, event| {
-        use tauri_plugin_global_shortcut::ShortcutState;
-        let state = handle.state::<AppState>();
-        let cfg = state.snapshot();
-        match event.state() {
-            ShortcutState::Pressed => {
-                if cfg.push_to_talk {
-                    recorder::start(handle.clone(), cfg);
-                } else {
-                    recorder::toggle(handle.clone(), cfg);
-                }
-            }
-            ShortcutState::Released => {
-                if cfg.push_to_talk {
-                    recorder::stop();
-                }
-            }
-        }
-    })
-    .map_err(|e| anyhow::anyhow!("注册热键失败：{}", e))?;
-    let state = app.state::<AppState>();
-    let prev = state.registered_hotkey.lock().clone();
-    if let Some(prev) = prev {
-        if prev != accel {
-            if let Err(e) = gs.unregister(prev.as_str()) {
-                tracing::warn!(error = ?e, "注销旧热键失败，忽略");
-            }
+    let mut slot = state.keyboard.lock();
+    match slot.as_ref() {
+        Some(kb) => kb.reload(bcfg),
+        None => {
+            let kb = KeyboardBackend::start(app.clone(), bcfg)?;
+            *slot = Some(kb);
+            Ok(())
         }
     }
-    *state.registered_hotkey.lock() = Some(accel.clone());
-    tracing::info!(hotkey = %accel, "热键已注册");
-    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -159,10 +95,11 @@ pub fn run() {
         tracing::warn!(error = ?e, "历史数据库初始化失败");
     }
 
-    let hotkey_str = cfg.hotkey.clone();
-    // setup 闭包里需要一份 cfg 副本来后台预热当前选中的本地引擎,避免用户
+    // setup 闭包里需要一份 cfg 副本:① 后台预热当前选中的本地引擎,避免用户
     // 启动后第一次按热键触发 4-5s 冷启动(尤其 FireRed/Qwen3 这种大模型)
+    // ② 给 keyboard backend 启动用(它需要解析 hotkey + 推断 trigger_mode)
     let cfg_for_warm = cfg.clone();
+    let cfg_for_keyboard = cfg.clone();
     let state = AppState::new(cfg);
 
     let builder = tauri::Builder::default()
@@ -173,8 +110,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build());
+        .plugin(tauri_plugin_updater::Builder::new().build());
 
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_nspanel::init());
@@ -205,9 +141,10 @@ pub fn run() {
                 use tauri::ActivationPolicy;
                 app.set_activation_policy(ActivationPolicy::Accessory);
             }
-            // 注册全局热键（抽成独立函数，save_config 里也会调）
-            if let Err(e) = register_hotkey(app.handle(), &hotkey_str) {
-                tracing::error!(error = ?e, "启动时注册热键失败");
+            // 启动跨平台 keyboard backend(handy-keys + supervisor 线程)
+            // save_config 里 hotkey 变更时也走同一函数(reload 路径)
+            if let Err(e) = start_or_reload_keyboard(app.handle(), &cfg_for_keyboard) {
+                tracing::error!(error = ?e, "启动时启动 keyboard backend 失败");
             }
 
             tray::setup(app.handle())?;

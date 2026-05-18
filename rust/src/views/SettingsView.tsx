@@ -6,6 +6,11 @@ import {
   ASR_PROVIDERS,
   POLISH_MODES,
   OUTPUT_MODES,
+  TRIGGER_MODES,
+  TRIGGER_MODE_TOGGLE,
+  TRIGGER_MODE_PTT,
+  TRIGGER_MODE_DOUBLE_TAP_HOLD,
+  DOUBLE_TAP_MODIFIERS,
   Config,
   DeviceInfo,
   DownloadProgress,
@@ -243,42 +248,65 @@ export function SettingsView({ section }: { section: SettingsSection }) {
               ))}
             </select>
           </Field>
-          <Field label={<><span>快捷键</span><KbdCombo combo={cfg.hotkey} /></>}>
-            <HotkeyRecorder
-              value={cfg.hotkey}
-              onChange={(v) => update("hotkey", v)}
-            />
-            {(() => {
-              const err = validateHotkey(cfg.hotkey);
-              return err ? (
-                <p className="text-[11px] text-amber-400 mt-1.5 leading-relaxed">
-                  ⚠ {err}（不会保存成功）
-                </p>
-              ) : null;
-            })()}
-          </Field>
-          <Field
-            label={
-              <>
-                <span>触发方式</span>
-                <label className="ml-auto flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={cfg.push_to_talk}
-                    onChange={(e) => update("push_to_talk", e.target.checked)}
-                    className="accent-accent"
-                  />
-                  按住说话
-                </label>
-              </>
-            }
-          >
-            <p className="text-[11px] text-gray-500 leading-relaxed mt-0.5">
-              {cfg.push_to_talk
-                ? "按住快捷键录音，松开自动停止——适合短句和明确边界的场景（按组合键时松开任一键都算松开）"
-                : "按一下开始、再按一下结束（默认）——适合长句、讲一段话的场景"}
+          <Field label="触发方式">
+            <select
+              className="input"
+              value={cfg.trigger_mode}
+              onChange={(e) => {
+                const v = e.target.value;
+                update("trigger_mode", v);
+                // push_to_talk 字段保留只为反序列化老 config,UI 改 trigger_mode
+                // 时同步它,避免后端 fallback 到老字段后跟 trigger_mode 矛盾。
+                update("push_to_talk", v === TRIGGER_MODE_PTT);
+              }}
+            >
+              {TRIGGER_MODES.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+              {TRIGGER_MODES.find((m) => m.value === cfg.trigger_mode)?.description}
             </p>
           </Field>
+          {(cfg.trigger_mode === TRIGGER_MODE_TOGGLE
+            || cfg.trigger_mode === TRIGGER_MODE_PTT) && (
+            <Field label={<><span>快捷键</span><KbdCombo combo={cfg.hotkey} /></>}>
+              <HotkeyRecorder
+                value={cfg.hotkey}
+                onChange={(v) => update("hotkey", v)}
+              />
+              {(() => {
+                const err = validateHotkey(cfg.hotkey);
+                return err ? (
+                  <p className="text-[11px] text-amber-400 mt-1.5 leading-relaxed">
+                    ⚠ {err}（不会保存成功）
+                  </p>
+                ) : null;
+              })()}
+            </Field>
+          )}
+          {cfg.trigger_mode === TRIGGER_MODE_DOUBLE_TAP_HOLD && (
+            <Field label="双击键">
+              <select
+                className="input"
+                value={cfg.double_tap_modifier}
+                onChange={(e) => update("double_tap_modifier", e.target.value)}
+              >
+                {DOUBLE_TAP_MODIFIERS.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+                {IS_MAC
+                  ? "350ms 内双击选中的 modifier 并保持按住,松开停止录音。"
+                  : "350ms 内双击选中的 modifier 并保持按住,松开停止录音。Win 用户用 right_option(=右 Alt)在德/法语等带 AltGr 的键盘布局可能冲突,可改用其他键。"}
+              </p>
+            </Field>
+          )}
           <Field label="输出方式">
             <select
               className="input"

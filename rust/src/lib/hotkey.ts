@@ -87,3 +87,32 @@ export function validateHotkey(combo: string): string | null {
   }
   return null;
 }
+
+/// 把 double_tap_modifier 字符串(如 "right_option")格式化成符号(如 "⌥右")用于
+/// indicator hint 等显示。
+export function formatDoubleTapModifier(value: string): string {
+  const sideMap: Record<string, string> = { left: "左", right: "右" };
+  const symbolMap: Record<string, string> = IS_MAC
+    ? { option: "⌥", alt: "⌥", ctrl: "⌃", control: "⌃", shift: "⇧", cmd: "⌘", command: "⌘", fn: "Fn" }
+    : { option: "Alt", alt: "Alt", ctrl: "Ctrl", control: "Ctrl", shift: "Shift", cmd: "Win", command: "Win", fn: "Fn" };
+  if (value === "fn") return "Fn";
+  const m = /^(left|right)_(\w+)$/.exec(value);
+  if (!m) return value;
+  const [, side, key] = m;
+  const symbol = symbolMap[key] ?? key;
+  // macOS 上 ⌥右 这种写法清楚;Windows 上 "右 Alt" 更直观
+  return IS_MAC ? `${symbol}${sideMap[side] ?? ""}` : `${sideMap[side] ?? ""} ${symbol}`;
+}
+
+/// 触发方式总入口:Toggle/PTT 显示 hotkey,DoubleTapHold 显示"双击 ⌥右"。
+/// App.tsx sidebar / HistoryView 顶 / indicator hint 都用这个。
+export function formatTrigger(cfg: {
+  trigger_mode?: string;
+  hotkey: string;
+  double_tap_modifier?: string;
+}): string {
+  if (cfg.trigger_mode === "double_tap_hold" && cfg.double_tap_modifier) {
+    return `双击 ${formatDoubleTapModifier(cfg.double_tap_modifier)}`;
+  }
+  return formatHotkey(cfg.hotkey);
+}

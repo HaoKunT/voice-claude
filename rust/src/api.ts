@@ -41,7 +41,12 @@ export interface Config {
   vad_silence_ms: number;
   vad_threshold: number;
   output_mode: string;
+  /** @deprecated UI 不再绑定,改用 trigger_mode。0.3+ 删 */
   push_to_talk: boolean;
+  /** 触发方式: toggle / push_to_talk / double_tap_hold */
+  trigger_mode: string;
+  /** double_tap_hold 模式下要双击的 modifier(handy-keys 风格): right_option / left_ctrl / ... */
+  double_tap_modifier: string;
   voice_enhance: boolean;
   /** UI 暂未暴露开关 —— sherpa-onnx crate 升级前手动改 config.json 才能开 */
   local_use_coreml: boolean;
@@ -222,4 +227,39 @@ export const OUTPUT_MODES = [
     label: "显示在悬浮窗,手动复制",
     description: "结果停在悬浮窗里可再编辑,点「复制」后自己粘贴。",
   },
+];
+
+// 跟 Rust config.rs 里 TRIGGER_MODE_* 常量保持一致
+export const TRIGGER_MODE_TOGGLE = "toggle";
+export const TRIGGER_MODE_PTT = "push_to_talk";
+export const TRIGGER_MODE_DOUBLE_TAP_HOLD = "double_tap_hold";
+
+export const TRIGGER_MODES = [
+  {
+    value: TRIGGER_MODE_TOGGLE,
+    label: "按一下开始,再按一下结束",
+    description: "默认。按主热键启动录音,再按一下停。",
+  },
+  {
+    value: TRIGGER_MODE_PTT,
+    label: "按住说话,松开停止",
+    description: "按住主热键的整段时间内录音,松开立即停。",
+  },
+  {
+    value: TRIGGER_MODE_DOUBLE_TAP_HOLD,
+    label: "双击 modifier 并保持",
+    description:
+      "350ms 内连按两下选定的 modifier 键并保持按住,松开停止录音。跟 macOS 听写「双击 Fn」风格一致。",
+  },
+];
+
+export const DOUBLE_TAP_MODIFIERS = [
+  { value: "right_option", label: "右 ⌥ Option / Alt(推荐)" },
+  { value: "left_option", label: "左 ⌥ Option / Alt" },
+  { value: "right_ctrl", label: "右 ⌃ Control" },
+  { value: "left_ctrl", label: "左 ⌃ Control" },
+  { value: "right_shift", label: "右 ⇧ Shift" },
+  { value: "left_shift", label: "左 ⇧ Shift" },
+  { value: "right_cmd", label: "右 ⌘ Command / Win" },
+  { value: "left_cmd", label: "左 ⌘ Command / Win" },
 ];
