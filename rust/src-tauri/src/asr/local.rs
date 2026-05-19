@@ -213,11 +213,6 @@ pub async fn transcribe(cfg: &crate::config::Config, wav: &[u8]) -> Result<Strin
     }
 
     let signature = build_signature(cfg, engine);
-    let hotwords_path = if cfg.hotwords.is_empty() {
-        None
-    } else {
-        Some(write_hotwords_file(&cfg.hotwords)?)
-    };
 
     // CoreML 当前 sherpa-onnx 1.13.x shared 模式下 ORT 1.24.4 已支持。
     // 但这里默认还是 cpu —— UI 上的开关临时屏蔽,留 config.local_use_coreml
@@ -236,20 +231,14 @@ pub async fn transcribe(cfg: &crate::config::Config, wav: &[u8]) -> Result<Strin
     // (sherpa-onnx 没实现 Clone)。voice-claude 设计上同一时刻只有一次录音,
     // 不会发生需要并发解码的情况,串行 mutex 没有性能损失。
     tokio::task::spawn_blocking(move || -> Result<String> {
-        let raw = with_recognizer(
-            engine,
-            &signature,
-            provider,
-            hotwords_path.as_deref(),
-            |recognizer| {
-                let (samples, sample_rate) = wav_bytes_to_samples(&wav_vec)?;
-                let stream = recognizer.create_stream();
-                stream.accept_waveform(sample_rate, &samples);
-                recognizer.decode(&stream);
-                let result = stream.get_result().ok_or_else(|| anyhow!("识别结果为空"))?;
-                Ok(result.text)
-            },
-        )?;
+        let raw = with_recognizer(engine, &signature, provider, |recognizer| {
+            let (samples, sample_rate) = wav_bytes_to_samples(&wav_vec)?;
+            let stream = recognizer.create_stream();
+            stream.accept_waveform(sample_rate, &samples);
+            recognizer.decode(&stream);
+            let result = stream.get_result().ok_or_else(|| anyhow!("识别结果为空"))?;
+            Ok(result.text)
+        })?;
         if needs_punct {
             Ok(add_punctuation_blocking(&raw))
         } else {
@@ -287,21 +276,10 @@ pub fn warm_up(cfg: &crate::config::Config) -> Result<()> {
     } else {
         "cpu"
     };
-    let hotwords_path = if cfg.hotwords.is_empty() {
-        None
-    } else {
-        Some(write_hotwords_file(&cfg.hotwords)?)
-    };
 
     // 闭包返回 () 即可 —— with_recognizer 内部会按 signature 重建/复用 cache,
     // 我们不需要真识别,只为让 OfflineRecognizer 进 cache 准备好首次推理
-    with_recognizer(
-        engine,
-        &signature,
-        provider,
-        hotwords_path.as_deref(),
-        |_| Ok(()),
-    )?;
+    with_recognizer(engine, &signature, provider, |_| Ok(()))?;
     tracing::info!(engine = engine.id(), "warm_up: ASR 模型已预热");
 
     // FireRed 系列输出无标点,需要 ct-transformer 标点模型 —— 也预热一下
@@ -339,32 +317,11 @@ pub fn unload() {}
 
 #[cfg(feature = "local-asr")]
 fn build_signature(cfg: &crate::config::Config, engine: LocalEngine) -> String {
-    use std::collections::BTreeSet;
     use std::hash::{DefaultHasher, Hash, Hasher};
     let mut h = DefaultHasher::new();
     engine.id().hash(&mut h);
     cfg.local_use_coreml.hash(&mut h);
-    // hotwords 是 Vec<String>;按内容哈希(去重 + 排序确保稳定)
-    let sorted: BTreeSet<&String> = cfg.hotwords.iter().collect();
-    for w in &sorted {
-        w.hash(&mut h);
-    }
     format!("{:x}", h.finish())
-}
-
-#[cfg(feature = "local-asr")]
-fn write_hotwords_file(hotwords: &[String]) -> Result<std::path::PathBuf> {
-    use std::collections::BTreeSet;
-    // 去重 + 排序后写盘,sherpa-onnx 一行一词
-    let set: BTreeSet<&str> = hotwords
-        .iter()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let content: String = set.into_iter().collect::<Vec<_>>().join("\n");
-    let path = config_dir().join("local_hotwords.txt");
-    std::fs::write(&path, content)?;
-    Ok(path)
 }
 
 #[cfg(feature = "local-asr")]
@@ -382,13 +339,7 @@ fn cache() -> &'static parking_lot::Mutex<Option<CachedRecognizer>> {
 
 /// 在 mutex 守卫内执行 f(&recognizer)。配置变了重建并缓存。
 #[cfg(feature = "local-asr")]
-fn with_recognizer<F, R>(
-    engine: LocalEngine,
-    signature: &str,
-    provider: &str,
-    hotwords_path: Option<&std::path::Path>,
-    f: F,
-) -> Result<R>
+fn with_recognizer<F, R>(engine: LocalEngine, signature: &str, provider: &str, f: F) -> Result<R>
 where
     F: FnOnce(&sherpa_onnx::OfflineRecognizer) -> Result<R>,
 {
@@ -418,7 +369,7 @@ where
     if needs_rebuild {
         // drop 老的(释放 ONNX session 内存)再建新的,峰值内存不叠加
         *guard = None;
-        let sconf = build_recognizer_config(engine, provider, hotwords_path);
+        let sconf = build_recognizer_config(engine, provider);
         let recognizer = sherpa_onnx::OfflineRecognizer::create(&sconf)
             .ok_or_else(|| anyhow!("{} 初始化失败", engine.label()))?;
         *guard = Some(CachedRecognizer {
@@ -484,11 +435,16 @@ fn add_punctuation_blocking(text: &str) -> String {
 }
 
 /// 把每个 engine 的具体模型字段填进 OfflineRecognizerConfig。
+///
+/// 不传 `hotwords_file`:sherpa-onnx 的 hotwords boosting 走 modified beam search,
+/// 只对 transducer 模型有效。当前 3 个本地引擎都不是 transducer
+/// (SenseVoice=CTC / FireRed-AED=AED / Qwen3-ASR=LLM),传 hotwords_file 会让
+/// `OfflineRecognizer::create` 直接拒绝(报"初始化失败")。识别词典语义靠 LLM
+/// 后处理那一层 prompt 注入兜底。
 #[cfg(feature = "local-asr")]
 fn build_recognizer_config(
     engine: LocalEngine,
     provider: &str,
-    hotwords_path: Option<&std::path::Path>,
 ) -> sherpa_onnx::OfflineRecognizerConfig {
     use sherpa_onnx::OfflineRecognizerConfig;
 
@@ -524,11 +480,6 @@ fn build_recognizer_config(
             sconf.model_config.qwen3_asr.decoder = Some(join("decoder.int8.onnx"));
             sconf.model_config.qwen3_asr.tokenizer = Some(path_str(dir.join("tokenizer")));
         }
-    }
-
-    if let Some(p) = hotwords_path {
-        sconf.hotwords_file = Some(p.to_string_lossy().into_owned());
-        sconf.hotwords_score = 1.5;
     }
 
     sconf
