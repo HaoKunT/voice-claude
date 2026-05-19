@@ -67,11 +67,23 @@ export function SettingsView({ section }: { section: SettingsSection }) {
     // 监听后端 cfg 变化(tray 切 ASR/profile,或其他窗口改 cfg)。
     // App.tsx 已经在 sidebar 监听同一事件;这里 SettingsView 也订阅,
     // 避免用户在 tray 改了之后打开设置面板看不到新值。
+    //
+    // **race 防御**:save_config 自己也会 emit config-updated。listener fire 时
+    // 拿回来的 fresh 跟当前 cfg 内容八成一样(刚 save 的就是它),如果无脑 setCfg
+    // + skipNext=true,会让 skipNext 卡在 true(因为 JSON.stringify 相同 → autosave
+    // useEffect 不重跑 → skipNext 不会被消费)。下次用户改字段,useEffect 跑
+    // 时直接走 skipNext 分支跳过保存 —— 用户切 mode=off 后写不进盘,就是这条
+    // race 被命中。修法:deep-equal 一致就跳过(既不 setCfg 也不动 skipNext)。
     const unlistenP = listen("config-updated", async () => {
       try {
         const fresh = await api.getConfig();
-        skipNextSaveRef.current = true;
-        setCfg(fresh);
+        setCfg((prev) => {
+          if (prev && JSON.stringify(prev) === JSON.stringify(fresh)) {
+            return prev; // 内容一致,引用不变,跳过此次同步,skipNext 也不动
+          }
+          skipNextSaveRef.current = true;
+          return fresh;
+        });
       } catch {
         /* 忽略 fetch 失败,下次用户手动改字段会自然刷 */
       }
@@ -87,16 +99,24 @@ export function SettingsView({ section }: { section: SettingsSection }) {
     if (skipNextSaveRef.current) {
       // 这次 cfg 变化是 listener reload 引起的,后端已经是最新状态,跳过保存
       skipNextSaveRef.current = false;
+      console.debug("[settings] skip autosave (listener reload)");
       return;
     }
     setSaveState("saving");
+    const activeMode = cfg.polish_profiles.find((p) => p.id === cfg.active_profile_id)?.mode;
+    console.debug("[settings] autosave queued", {
+      active_profile_id: cfg.active_profile_id,
+      active_mode: activeMode,
+    });
     const timer = setTimeout(async () => {
       try {
         await api.saveConfig(cfg);
+        console.debug("[settings] autosave done", { active_mode: activeMode });
         setSaveState("saved");
         setErrMsg("");
         setTimeout(() => setSaveState("idle"), 1500);
       } catch (e) {
+        console.error("[settings] autosave failed", e);
         setSaveState("error");
         setErrMsg(String(e));
       }
@@ -552,8 +572,13 @@ export function SettingsView({ section }: { section: SettingsSection }) {
           onAdded={async () => {
             try {
               const fresh = await api.getConfig();
-              skipNextSaveRef.current = true;
-              setCfg(fresh);
+              setCfg((prev) => {
+                if (prev && JSON.stringify(prev) === JSON.stringify(fresh)) {
+                  return prev;
+                }
+                skipNextSaveRef.current = true;
+                return fresh;
+              });
             } catch {
               /* 后端 add 已成功,前端拿不到 cfg 也不影响下次手动改字段 */
             }
@@ -1028,7 +1053,14 @@ function ProfileCard({
             <select
               className="input"
               value={profile.mode}
-              onChange={(e) => onChange({ mode: e.target.value })}
+              onChange={(e) => {
+                console.debug("[polish] mode change", {
+                  profile_id: profile.id,
+                  from: profile.mode,
+                  to: e.target.value,
+                });
+                onChange({ mode: e.target.value });
+              }}
             >
               {POLISH_MODES.map((m) => (
                 <option key={m.value} value={m.value}>{m.label}</option>
@@ -2156,10 +2188,10 @@ function AutoHotwordModal({
     try {
       const list = await api.scanHotwordCandidates(sourceId, days, profileId);
       setCandidates(list);
-      // 默认勾上 LLM 投赞成票的 + 排除已经存在于 hotwords 的
+      // 默认全勾(已存在的除外)—— LLM 已经做过筛选,候选都值得加
       const auto = new Set<string>();
       for (const c of list) {
-        if (c.suggested && !existingLc.has(c.word.toLowerCase())) {
+        if (!existingLc.has(c.word.toLowerCase())) {
           auto.add(c.word);
         }
       }
@@ -2181,16 +2213,6 @@ function AutoHotwordModal({
   const selectAll = () => {
     if (!candidates) return;
     setPicked(new Set(candidates.filter((c) => !existingLc.has(c.word.toLowerCase())).map((c) => c.word)));
-  };
-  const selectSuggested = () => {
-    if (!candidates) return;
-    setPicked(
-      new Set(
-        candidates
-          .filter((c) => c.suggested && !existingLc.has(c.word.toLowerCase()))
-          .map((c) => c.word),
-      ),
-    );
   };
   const clearPicked = () => setPicked(new Set());
 
@@ -2221,7 +2243,7 @@ function AutoHotwordModal({
           <div>
             <h2 className="text-base font-semibold text-gray-100">✨ 自动生成识别词典</h2>
             <p className="text-[11px] text-gray-500 mt-0.5">
-              扫描历史数据 → 本地词频提取 → LLM 二次筛选 → 用户勾选导入
+              扫描历史数据 → LLM 直接挑词(中英文均可) → 用户勾选导入
             </p>
           </div>
           <button
@@ -2233,10 +2255,10 @@ function AutoHotwordModal({
         </div>
 
         <div className="px-5 py-4 space-y-4 overflow-y-auto">
-          <div className="grid grid-cols-[2fr_1fr_2fr] gap-3 items-end">
+          <div className="grid grid-cols-3 gap-3">
             <Field label="来源">
               <select
-                className="input w-full"
+                className="input w-full h-[42px]"
                 value={sourceId}
                 onChange={(e) => setSourceId(e.target.value)}
                 disabled={scanning}
@@ -2249,17 +2271,12 @@ function AutoHotwordModal({
                   </option>
                 ))}
               </select>
-              {currentSource && !currentSource.available && (
-                <p className="text-[11px] text-orange-300/80 mt-1">
-                  来源不可用 —— Claude Code 历史目录(~/.claude/projects)不存在
-                </p>
-              )}
             </Field>
 
             <Field label="最近 N 天">
               <input
                 type="number"
-                className="input w-full"
+                className="input w-full h-[42px]"
                 min={1}
                 max={3650}
                 value={days}
@@ -2268,9 +2285,9 @@ function AutoHotwordModal({
               />
             </Field>
 
-            <Field label="LLM 后端(借用润色 profile)">
+            <Field label="LLM 后端">
               <select
-                className="input w-full"
+                className="input w-full h-[42px]"
                 value={profileId}
                 onChange={(e) => setProfileId(e.target.value)}
                 disabled={scanning}
@@ -2284,11 +2301,19 @@ function AutoHotwordModal({
                   </option>
                 ))}
               </select>
-              <p className="text-[11px] text-gray-500 mt-1 leading-snug">
-                只借用 url / model / api key;筛词 prompt 由系统提供,不会用润色 prompt
-              </p>
             </Field>
           </div>
+
+          {/* 把所有 helper text 放 grid 外面单独行,避免它撑高某一列让三个
+              Field 错位(尤其当三列里只有一个有 helper text 时)。 */}
+          <p className="text-[11px] text-gray-500 leading-snug -mt-1">
+            「LLM 后端」只借用润色 profile 的 url / model / api key,筛词 prompt 由系统提供,不会用润色 prompt
+          </p>
+          {currentSource && !currentSource.available && (
+            <p className="text-[11px] text-orange-300/80 leading-snug">
+              来源不可用 —— Claude Code 历史目录(~/.claude/projects)不存在
+            </p>
+          )}
 
           <div className="flex items-center gap-2">
             <button
@@ -2300,12 +2325,12 @@ function AutoHotwordModal({
             </button>
             {scanning && (
               <span className="text-[11px] text-gray-400">
-                正在读历史 + 调 LLM,大概 5–30 秒…
+                正在调 LLM,小模型 + 大上下文可能要 1–3 分钟,耐心等…
               </span>
             )}
             {!scanning && candidates && (
               <span className="text-[11px] text-gray-500">
-                共 {candidates.length} 个候选,LLM 推荐 {candidates.filter((c) => c.suggested).length} 个
+                LLM 提取了 {candidates.length} 个候选词
               </span>
             )}
           </div>
@@ -2318,7 +2343,7 @@ function AutoHotwordModal({
 
           {candidates && candidates.length === 0 && !scanning && (
             <div className="px-3 py-6 rounded-lg bg-white/[0.02] border border-white/[0.06] text-center text-[12px] text-gray-400">
-              没找到候选词。试试加大「最近 N 天」,或换一个有更多历史数据的来源。
+              LLM 没挑出任何候选词。试试加大「最近 N 天」,或换一个有更多历史数据的来源。
             </div>
           )}
 
@@ -2327,12 +2352,6 @@ function AutoHotwordModal({
               <div className="flex items-center gap-2">
                 <button className="btn-ghost !py-0.5 !px-2 text-[11px]" onClick={selectAll}>
                   全选(去除已存在)
-                </button>
-                <button
-                  className="btn-ghost !py-0.5 !px-2 text-[11px]"
-                  onClick={selectSuggested}
-                >
-                  仅 LLM 推荐
                 </button>
                 <button className="btn-ghost !py-0.5 !px-2 text-[11px]" onClick={clearPicked}>
                   清空
@@ -2365,11 +2384,6 @@ function AutoHotwordModal({
                       />
                       <span className="font-mono truncate">{c.word}</span>
                       <span className="ml-auto text-[10px] text-gray-500 flex-shrink-0">
-                        {c.suggested && (
-                          <span className="px-1 py-px rounded bg-accent/20 text-accent mr-1">
-                            ✓
-                          </span>
-                        )}
                         {exists && (
                           <span className="px-1 py-px rounded bg-white/[0.04] mr-1">
                             已存在

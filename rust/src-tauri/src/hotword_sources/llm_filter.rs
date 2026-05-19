@@ -1,15 +1,15 @@
-//! LLM 二次筛选 —— 把本地频率统计出的候选词列表喂给用户配置的 polish profile
-//! 后端,让 LLM 过滤掉垃圾词(普通缩写、编程关键字等),只保留真正适合做
-//! 语音识别词典的术语(专有名词、项目名、人名等)。
+//! LLM 单层提取 —— 把对话原文整段喂给用户配置的 polish profile 后端,让
+//! LLM 自己从原文里识别值得加入语音识别词典的术语 / 专名(中英文混合)。
+//!
+//! **设计**:不再做本地分词 + 频率统计 + 停用词过滤的两层结构。本地分词
+//! 只能切英文 / ASCII token,中文专名完全没机会进候选,LLM 看到一份全
+//! 英文候选列表也跟着只挑英文 —— 反而成了误导。删掉本地层后由 LLM 直接
+//! 从原文挑词,中英文都能出。
 //!
 //! **架构 note**:这里 inline 复制了 `correct.rs` 的 LLM 调用逻辑。原因是
 //! 这次只 tap polish profile 的后端(url/model/api_key/mode)做"自由 prompt"
 //! 调用,跟 polish 流程的 prompt 渲染语义不同。等用户决定把 LLM 后端配置
-//! 抽成独立模块(对话里提过)时,把这里和 correct.rs 一起重构,共享 LLM
-//! 调用层。
-//!
-//! 工作量上看 ~80 行复制代码,跟"refactor correct.rs 影响刚发的 v0.3.2"
-//! 比,选了 isolation 优先。
+//! 抽成独立模块时,把这里和 correct.rs 一起重构,共享 LLM 调用层。
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -19,10 +19,11 @@ use crate::config::{
     PolishProfile, POLISH_MODE_CLOUD, POLISH_MODE_OFF, POLISH_MODE_OLLAMA, POLISH_MODE_OPENROUTER,
 };
 
-use super::analyze::Candidate;
-
 const MAX_BODY_BYTES: usize = 64 * 1024;
-const MAX_CANDIDATES_TO_SEND: usize = 200;
+/// 给 LLM 的对话原文最长字符数。云端大模型(Claude / GPT-4 / OpenRouter 上常用 32k+)
+/// 都能容下;ollama 用户得自己保证 num_ctx 够大,默认 2048 撑不住,需要在 profile
+/// url 里加 num_ctx 参数,或者用更小的天数 / 缩小这个值。
+const MAX_RAW_TEXT_CHARS: usize = 30_000;
 
 #[derive(Serialize)]
 struct OpenAIMessage<'a> {
@@ -67,26 +68,27 @@ struct OllamaResponse {
     response: String,
 }
 
-/// 调用 LLM 二次筛选候选词。返回 LLM 推荐保留的词列表(可能是 candidates 的
-/// 子集,也可能 LLM 加了一些它觉得相关但没在频率 top 里的词 —— 我们都接受,
-/// 最终用户在 modal 里勾选时还能再过)。
+/// 把对话原文整段交给 LLM,让它识别并提取值得加入识别词典的术语 / 专名,
+/// 返回 LLM 推荐的词列表(中英混合)。
 ///
-/// `raw_text_excerpt` 是原文摘录(传一段就行,不必传全量)。本地候选只切英文 /
-/// 数字 token,中文术语只能让 LLM 从原文里挑。
-pub async fn filter_candidates(
-    candidates: &[Candidate],
-    raw_text_excerpt: &str,
+/// - `raw_text`:对话原文(经 source 抽取 + 工具调用过滤 + thinking 过滤)
+/// - `existing`:用户当前 cfg.hotwords,告知 LLM 不要重复推荐
+/// - `profile`:借用其后端配置(url/model/api_key/mode)
+/// - `timeout_secs`:HTTP 超时
+pub async fn extract_hotwords(
+    raw_text: &str,
+    existing: &[String],
     profile: &PolishProfile,
     timeout_secs: u64,
 ) -> Result<Vec<String>> {
     if profile.mode == POLISH_MODE_OFF || profile.mode.is_empty() {
         anyhow::bail!(
-            "profile 「{}」的模式是 off,LLM 二次筛选需要一个有效的 polish profile",
+            "profile 「{}」的模式是 off,LLM 提取需要一个有效的 polish profile",
             profile.name
         );
     }
 
-    let prompt = build_filter_prompt(candidates, raw_text_excerpt);
+    let prompt = build_prompt(raw_text, existing);
     let response = match profile.mode.as_str() {
         POLISH_MODE_OPENROUTER => {
             call_openai_compatible(
@@ -105,44 +107,66 @@ pub async fn filter_candidates(
     Ok(parse_word_list(&response))
 }
 
-/// 构造给 LLM 的提示词,要求它返回 JSON array of strings。
-/// 候选词附带频率,LLM 能据此判断重要性。原文摘录用于补充中文术语 ——
-/// 本地分词只切英文 / 数字,中文专名得 LLM 从原文里挑。
-fn build_filter_prompt(candidates: &[Candidate], raw_text_excerpt: &str) -> String {
-    let mut s = String::from(
-        "你是语音识别词典审核员。\n\
-         下面是从用户对话历史中按词频提取出的候选词,请筛选哪些适合加入\
-         语音识别词典(boosting 用)。\n\n\
-         加入标准:\n\
-         - 专有名词、项目名、公司名、人名(如 Claude / voice-claude / Anthropic / FireRedASR / 豆包 / 讯飞)\n\
-         - 易被语音识别错的英文术语 / 技术名词(如 CGEventTap / sherpa-onnx)\n\
-         - 中文专有名词、产品名、人名、技术领域术语(如 克劳德 / 思源笔记 / 飞书)\n\
-         - 用户高频提到的领域术语\n\n\
-         排除标准:\n\
-         - 普通英文单词(如 about / problem / system,即便 freq 很高)\n\
-         - 编程通用关键字(function / return / class)\n\
-         - 缩写歧义大的(API / SDK,这种容易误识别但词典放进去帮助有限)\n\
-         - 单字符 / 双字符 ASCII\n\
-         - 中文虚词、单字、常见动词(如 这个 / 然后 / 觉得 / 知道)\n\n\
-         候选词(按出现次数排序,这里只有英文 / 数字 token —— 中文术语\
-         没在本地分词里出现,需要你从下面的「原文摘录」里挑出来加入):\n",
-    );
-    for c in candidates.iter().take(MAX_CANDIDATES_TO_SEND) {
-        s.push_str(&format!("- {} (freq={})\n", c.word, c.freq));
+/// 取文本末尾不超过 `max_chars` 个字符。中文按 char 计算,不会切坏 UTF-8。
+/// 末尾段落更代表用户当前关注的领域,优于头部 / 中间段落。
+pub fn take_tail_excerpt(text: &str, max_chars: usize) -> String {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return text.to_string();
     }
-    if !raw_text_excerpt.trim().is_empty() {
-        s.push_str(
-            "\n原文摘录(从这里挑符合「加入标准」的中文术语 / 专名,加入返回\
-             列表;只能挑摘录里实际出现过的词,不要凭空创造):\n\
-             ----\n",
-        );
-        s.push_str(raw_text_excerpt);
-        s.push_str("\n----\n");
+    text.chars().skip(total - max_chars).collect()
+}
+
+/// 截取原文末尾 `MAX_RAW_TEXT_CHARS` 字符给 LLM。封装一层方便外部用。
+pub fn truncate_for_llm(text: &str) -> String {
+    take_tail_excerpt(text, MAX_RAW_TEXT_CHARS)
+}
+
+/// 构造 prompt:让 LLM 从原文中挑词,返回 JSON array of strings。
+/// 中文专名比英文优先(英文 ASR 一般不出错,中文专名经常错)。
+/// 数量控制在 20-50,质量优先 —— 多了反而让用户筛得累。
+fn build_prompt(raw_text: &str, existing: &[String]) -> String {
+    let mut s = String::from(
+        "你是语音识别词典审核员。下面是用户最近一段时间的 Claude Code 对话原文\
+         (只含用户问题 + Claude 文字回复,工具调用 / 工具结果已过滤)。\n\n\
+         任务:从原文里挑值得加入语音识别词典(ASR boosting / LLM 跨语种映射用)的术语,\
+         返回 JSON array of strings。**质量优先,宁缺勿滥** —— 数量控制在 20-50 个。\n\n\
+         **加入标准**(必须满足之一):\n\
+         1. 专有名词、项目名、产品名、公司名(中英都要):\n\
+            英文例:Claude / voice-claude / Anthropic / FireRedASR / sherpa-onnx / CGEventTap\n\
+            中文例:克劳德 / 豆包 / 飞书 / 通义千问 / 思源笔记\n\
+         2. 中文人名 / 中文领域术语(优先 —— 中文专名 ASR 容易错)\n\
+         3. 易被语音识别错的英文技术名词(混读 / 拼写复杂的)\n\n\
+         **绝对排除**(出现一个就丢,不要怀疑):\n\
+         - 普通英文单词:about, problem, system, file, user, list, value, result, name, request\n\
+         - 中文虚词 / 高频普通词:这个, 那个, 然后, 觉得, 知道, 用户, 问题, 时候, 方法, 比如\n\
+         - 编程通用关键字:function, return, class, var, async, await, struct, enum, trait, impl\n\
+         - 缩写歧义大:API, SDK, URL, JSON, YAML(放词典帮助有限)\n\
+         - 单字符 / 双字符 ASCII\n\
+         - 路径片段:./xxx, src/xxx, /usr/local, ../foo\n\
+         - 命令前缀:git xxx, npm xxx, cargo xxx, make xxx, docker xxx\n\
+         - 文件名后缀:.rs, .ts, .json, .md\n\
+         - 通用动词 / 形容词:create, update, delete, get, set, check, run, start, stop\n\n\
+         **同义词归一**:同一个词的大小写变体只挑一个最常见的形式(比如 voice-claude 跟\
+         Voice-Claude 二选一,不要两个都返回)。\n\n",
+    );
+    if !existing.is_empty() {
+        s.push_str("已在词典里的词(不要重复推荐):\n");
+        for w in existing.iter().take(500) {
+            s.push_str(&format!("- {}\n", w));
+        }
+        s.push('\n');
     }
     s.push_str(
-        "\n请输出 JSON array of strings,**只**输出 JSON,不要任何解释 / markdown 包装。\n\
-         可以同时包含英文候选词和从原文摘录里挑出的中文术语。\n\
-         例:[\"voice-claude\", \"Claude\", \"sherpa-onnx\", \"克劳德\", \"豆包\"]\n",
+        "原文(中英混合,从中挑符合标准的词):\n\
+         ----\n",
+    );
+    s.push_str(raw_text);
+    s.push_str(
+        "\n----\n\n\
+         请输出 JSON array of strings,**只**输出 JSON,不要任何解释 / markdown 包装。\n\
+         **再次提醒**:质量优先 20-50 个;宁少勿多。中文专名优先。\n\
+         例:[\"voice-claude\", \"Claude\", \"克劳德\", \"豆包\", \"FireRedASR\", \"sherpa-onnx\", \"思源笔记\"]\n",
     );
     s
 }
@@ -151,7 +175,6 @@ fn build_filter_prompt(candidates: &[Candidate], raw_text_excerpt: &str) -> Stri
 /// fence (```json ... ```),宽容解析。如果完全 parse 失败,降级为按行 / 逗号
 /// 分割提取看起来像词的 token。
 fn parse_word_list(response: &str) -> Vec<String> {
-    // 找第一个 [ 和最后一个 ],尝试 JSON 解析
     let start = response.find('[');
     let end = response.rfind(']');
     if let (Some(s), Some(e)) = (start, end) {
@@ -166,15 +189,15 @@ fn parse_word_list(response: &str) -> Vec<String> {
             }
         }
     }
-    // 降级:每行一个词,过滤空 / 太长
+    // 降级:每行一个词
     response
         .lines()
         .map(|l| {
             l.trim()
-                .trim_matches(|c: char| c == '-' || c == '"' || c == ',')
+                .trim_matches(|c: char| c == '-' || c == '"' || c == ',' || c == '*')
                 .trim()
         })
-        .filter(|l| !l.is_empty() && l.len() <= 60 && !l.contains(' '))
+        .filter(|l| !l.is_empty() && l.chars().count() <= 60 && !l.contains(' '))
         .map(|l| l.to_string())
         .collect()
 }
@@ -302,55 +325,46 @@ mod tests {
 
     #[test]
     fn parse_with_explanation_around() {
-        let r = parse_word_list("好的,以下是筛选结果:\n[\"foo\", \"bar\"]\n希望对你有帮助");
-        assert_eq!(r, vec!["foo", "bar"]);
+        let r =
+            parse_word_list("好的,以下是筛选结果:\n[\"foo\", \"bar\", \"克劳德\"]\n希望对你有帮助");
+        assert_eq!(r, vec!["foo", "bar", "克劳德"]);
     }
 
     #[test]
     fn parse_fallback_line_format() {
-        // LLM 不听话直接列每行
-        let r = parse_word_list("- foo\n- bar\nbaz");
-        assert_eq!(r, vec!["foo", "bar", "baz"]);
+        let r = parse_word_list("- foo\n- bar\nbaz\n- 克劳德");
+        assert_eq!(r, vec!["foo", "bar", "baz", "克劳德"]);
     }
 
     #[test]
-    fn build_prompt_includes_candidates() {
-        let cands = vec![
-            Candidate {
-                word: "voice-claude".into(),
-                freq: 50,
-            },
-            Candidate {
-                word: "FireRedASR".into(),
-                freq: 30,
-            },
-        ];
-        let p = build_filter_prompt(&cands, "");
+    fn build_prompt_includes_raw_text_and_existing() {
+        let p = build_prompt(
+            "今天我们聊了 voice-claude 和 克劳德,还提到了豆包 ASR。",
+            &["Claude".into(), "OpenAI".into()],
+        );
         assert!(p.contains("voice-claude"));
-        assert!(p.contains("freq=50"));
+        assert!(p.contains("克劳德"));
+        assert!(p.contains("豆包"));
+        assert!(p.contains("已在词典里的词"));
         assert!(p.contains("JSON array"));
     }
 
     #[test]
-    fn build_prompt_includes_excerpt_when_provided() {
-        let cands = vec![Candidate {
-            word: "Claude".into(),
-            freq: 20,
-        }];
-        let p = build_filter_prompt(&cands, "用户聊到了 克劳德 和 豆包 还有 飞书 这几个产品。");
-        assert!(p.contains("克劳德"));
-        // 既然原文摘录里实际有内容,prompt 里就会出现 section 起始标记 + 摘录围栏
-        assert!(p.contains("----"));
+    fn build_prompt_skips_existing_section_when_empty() {
+        let p = build_prompt("hello world", &[]);
+        assert!(!p.contains("已在词典里的词"));
     }
 
     #[test]
-    fn build_prompt_skips_excerpt_when_empty() {
-        let cands = vec![Candidate {
-            word: "Claude".into(),
-            freq: 20,
-        }];
-        let p = build_filter_prompt(&cands, "  \n  ");
-        // 没有摘录时不应出现围栏分隔符
-        assert!(!p.contains("\n----\n"));
+    fn take_tail_excerpt_handles_short_text() {
+        let r = take_tail_excerpt("hello", 100);
+        assert_eq!(r, "hello");
+    }
+
+    #[test]
+    fn take_tail_excerpt_takes_last_n_chars_utf8_safe() {
+        let text = "前缀abcdef中文末尾";
+        let r = take_tail_excerpt(text, 4);
+        assert_eq!(r, "中文末尾");
     }
 }

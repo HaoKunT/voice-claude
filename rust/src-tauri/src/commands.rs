@@ -730,7 +730,7 @@ pub async fn scan_hotword_candidates(
     profile_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<HotwordCandidate>, String> {
-    use crate::hotword_sources::{analyze, find_source, llm_filter};
+    use crate::hotword_sources::{find_source, llm_filter};
     let cfg = state.snapshot();
     let source = find_source(&source_id).ok_or_else(|| format!("未知数据源: {}", source_id))?;
     if !source.available() {
@@ -750,91 +750,481 @@ pub async fn scan_hotword_candidates(
         return Ok(Vec::new());
     }
 
-    // Step 2: 本地频率统计 + 停用词过滤 + 排除已有
-    let local_candidates = analyze::candidates_from_text(&text, &cfg.hotwords, 3, 200);
-    if local_candidates.is_empty() {
-        return Ok(Vec::new());
-    }
+    // Step 2: 截取末尾摘录给 LLM。末尾段落更代表用户当前关注的领域,
+    // truncate_for_llm 内部默认 30k 字符 —— 云端大模型(Claude / GPT-4 / 32k+
+    // OpenRouter 模型)能容下;ollama 用户得保证 num_ctx 够大。
+    let excerpt = llm_filter::truncate_for_llm(&text);
 
-    // Step 3: 截取末尾摘录(最近的对话相对更代表当前领域),给 LLM 做中文
-    // 术语补充。本地分词只切 ASCII token,中文专名只能从原文摘录里挑。
-    // 12k 字符 ~= 4-6k tokens,跟提示词 + 候选列表合起来仍在常用模型 8k
-    // 上下文以内。
-    let excerpt = take_tail_excerpt(&text, 12_000);
-
-    // Step 4: LLM 二次筛选
-    let timeout = cfg.correct_timeout_secs();
+    // Step 3: LLM 单层提取 —— 直接把原文交给 LLM,让它从中识别专名 / 术语。
+    // 不再做本地分词 + 频率统计的两层结构(本地分词只切英文 token,中文专名
+    // 完全没机会进候选;LLM 看到全英文候选列表也跟着只挑英文)。
+    //
+    // 用独立 timeout —— polish profile 默认 10s 是给"短文本润色"用的,但
+    // 让 LLM 处理 ~30k 字符原文 + 列已存在词典(润色任务的 10-30 倍),小模型
+    // 在大上下文上 prefill 很慢。300s = 5min 是经验值,xiaomi/mimo-v2-flash
+    // 类的中等模型实测 1-3 分钟,GPT-4 Turbo / Claude Sonnet 30s 内。
+    const HOTWORD_LLM_TIMEOUT_SECS: u64 = 300;
     let profile_owned = profile.clone();
-    let candidates_for_llm = local_candidates.clone();
-    let llm_words: Vec<String> =
-        match llm_filter::filter_candidates(&candidates_for_llm, &excerpt, &profile_owned, timeout)
-            .await
-        {
-            Ok(list) => list,
-            Err(e) => {
-                tracing::warn!(error = %e, "LLM 筛选失败,fallback 不带建议直接给所有候选");
-                Vec::new()
-            }
-        };
-    let suggested_set: std::collections::HashSet<String> = llm_words.iter().cloned().collect();
+    let existing_owned = cfg.hotwords.clone();
+    tracing::info!(
+        excerpt_chars = excerpt.chars().count(),
+        existing_count = existing_owned.len(),
+        profile = %profile_owned.name,
+        mode = %profile_owned.mode,
+        model = %profile_owned.model,
+        timeout_secs = HOTWORD_LLM_TIMEOUT_SECS,
+        "hotwords: 调 LLM 提取"
+    );
+    let llm_words: Vec<String> = match llm_filter::extract_hotwords(
+        &excerpt,
+        &existing_owned,
+        &profile_owned,
+        HOTWORD_LLM_TIMEOUT_SECS,
+    )
+    .await
+    {
+        Ok(list) => {
+            tracing::info!(returned = list.len(), "hotwords: LLM 提取返回");
+            list
+        }
+        Err(e) => {
+            // 把 anyhow chain 全部写出来 —— "call cloud endpoint" 这种顶层
+            // context 看不出是 timeout / dns / status / parse,需要 source chain。
+            // tracing 单 field 会截到第一行,所以手动 join。
+            let chain: Vec<String> = e.chain().map(|c| c.to_string()).collect();
+            tracing::warn!(error_chain = ?chain, "hotwords: LLM 提取失败");
+            return Err(format!("LLM 调用失败: {}", chain.join(" → ")));
+        }
+    };
 
-    // Step 5: 合并结果。本地英文候选全部保留(suggested 标记是否被 LLM 投赞成);
-    // LLM 从原文挑出的中文 / 不在本地候选里的词,在原文里 count 一下出现次数,
-    // 跟本地候选合并后按 (suggested, freq) 排序。
-    let local_word_set: std::collections::HashSet<String> =
-        local_candidates.iter().map(|c| c.word.clone()).collect();
+    // Step 4: 后处理 ——
+    //   a. case-insensitive 同词归一:LLM 偶尔同时返回 Claude / claude /
+    //      Voice-Claude / voice-claude 这种大小写变体。按 lowercase 分组,
+    //      保留**原文里实际出现次数最多**的那个写法(case-sensitive count),
+    //      让最终词典里的形式跟用户实际书写习惯一致。
+    //   b. blacklist 兜底:LLM 即便 prompt 写了排除标准,偶尔会漏出英文
+    //      虚词 / 编程关键字 / 路径片段 / 中文虚词,后端再过一道。
+    //   c. 凭空生造的词(原文里 substring count == 0)丢掉。
+    //   d. 已存在 cfg.hotwords 的(case-insensitive)直接跳过。
     let existing_lc: std::collections::HashSet<String> =
         cfg.hotwords.iter().map(|w| w.to_lowercase()).collect();
-
-    let mut out: Vec<HotwordCandidate> = local_candidates
-        .into_iter()
-        .map(|c| HotwordCandidate {
-            suggested: suggested_set.contains(&c.word),
-            word: c.word,
-            freq: c.freq,
-        })
-        .collect();
-
+    // (form, freq) — 保留 freq 最大的 form
+    let mut by_lc: std::collections::HashMap<String, (String, u32)> =
+        std::collections::HashMap::new();
     for w in &llm_words {
         let trimmed = w.trim();
-        if trimmed.is_empty() || local_word_set.contains(trimmed) {
+        if trimmed.is_empty() {
             continue;
         }
-        if existing_lc.contains(&trimmed.to_lowercase()) {
+        if is_blacklisted(trimmed) {
             continue;
         }
-        // 必须在原文里出现过,LLM 凭空生造的词丢掉。matches 是字面子串匹配,
-        // 中文 / 英文都行;count 给用户看"这个词在你历史里出现了几次"。
+        let lc = trimmed.to_lowercase();
+        if existing_lc.contains(&lc) {
+            continue;
+        }
         let freq = text.matches(trimmed).count() as u32;
         if freq == 0 {
             continue;
         }
-        out.push(HotwordCandidate {
-            word: trimmed.to_string(),
+        by_lc
+            .entry(lc)
+            .and_modify(|e| {
+                if freq > e.1 {
+                    *e = (trimmed.to_string(), freq);
+                }
+            })
+            .or_insert((trimmed.to_string(), freq));
+    }
+    let mut out: Vec<HotwordCandidate> = by_lc
+        .into_values()
+        .map(|(word, freq)| HotwordCandidate {
+            word,
             freq,
             suggested: true,
-        });
-    }
+        })
+        .collect();
 
-    // suggested 在前;同组按 freq 降序;再按 word 字典序兜底
-    out.sort_by(|a, b| {
-        b.suggested
-            .cmp(&a.suggested)
-            .then_with(|| b.freq.cmp(&a.freq))
-            .then_with(|| a.word.cmp(&b.word))
-    });
+    // 按 freq 降序;同 freq 按字典序兜底
+    out.sort_by(|a, b| b.freq.cmp(&a.freq).then_with(|| a.word.cmp(&b.word)));
 
+    tracing::info!(
+        llm_returned = llm_words.len(),
+        after_postprocess = out.len(),
+        "hotwords: 后处理完成"
+    );
     Ok(out)
 }
 
-/// 取文本末尾不超过 `max_chars` 个字符。中文按 char 计算,不会切坏 UTF-8。
-fn take_tail_excerpt(text: &str, max_chars: usize) -> String {
-    let total = text.chars().count();
-    if total <= max_chars {
-        return text.to_string();
+/// 后端兜底黑名单 —— LLM prompt 里已经写了排除标准,但偶尔会漏出常见垃圾
+/// 词(虚词 / 编程关键字 / 路径片段 / 命令前缀 / 中文虚词)。这里 case-
+/// insensitive 比较;短词(≤2 ASCII)直接拒;含 / 或 \ 的路径片段拒。
+fn is_blacklisted(word: &str) -> bool {
+    let trimmed = word.trim();
+    if trimmed.is_empty() {
+        return true;
     }
-    text.chars().skip(total - max_chars).collect()
+    // 路径 / URL 片段
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return true;
+    }
+    let lc = trimmed.to_lowercase();
+    // 1-2 字符 ASCII 直接拒(噪声多;长度 1 的中文也拒,但中文一般 >=2 byte
+    // 长度,这里按 chars().count() 判断更准)
+    let char_count = trimmed.chars().count();
+    if char_count <= 1 {
+        return true;
+    }
+    if char_count == 2 && trimmed.is_ascii() {
+        return true;
+    }
+    HOTWORD_BLACKLIST.iter().any(|w| *w == lc)
 }
+
+/// 常见英文虚词 / 编程关键字 / 命令前缀 / 中文虚词。LLM 偶尔挑出来这些,
+/// 后端兜底过滤。case-insensitive 比较(全部 lowercase)。
+const HOTWORD_BLACKLIST: &[&str] = &[
+    // 英文虚词 / 高频普通词
+    "the",
+    "and",
+    "or",
+    "but",
+    "if",
+    "else",
+    "when",
+    "for",
+    "while",
+    "this",
+    "that",
+    "these",
+    "those",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "have",
+    "has",
+    "had",
+    "of",
+    "in",
+    "on",
+    "at",
+    "by",
+    "to",
+    "from",
+    "with",
+    "as",
+    "into",
+    "you",
+    "your",
+    "we",
+    "our",
+    "they",
+    "them",
+    "their",
+    "it",
+    "its",
+    "what",
+    "which",
+    "who",
+    "where",
+    "why",
+    "how",
+    "all",
+    "any",
+    "some",
+    "no",
+    "not",
+    "only",
+    "so",
+    "than",
+    "too",
+    "very",
+    "can",
+    "will",
+    "just",
+    "should",
+    "now",
+    "out",
+    "up",
+    "down",
+    "off",
+    "over",
+    "under",
+    "more",
+    "most",
+    "other",
+    "such",
+    "may",
+    "might",
+    "about",
+    "after",
+    "before",
+    "between",
+    "during",
+    "through",
+    "above",
+    "below",
+    "again",
+    "still",
+    "also",
+    "even",
+    "many",
+    "much",
+    "few",
+    "less",
+    "than",
+    "thus",
+    "hence",
+    // 编程通用关键字
+    "function",
+    "return",
+    "class",
+    "let",
+    "const",
+    "var",
+    "fn",
+    "pub",
+    "use",
+    "mod",
+    "import",
+    "export",
+    "type",
+    "struct",
+    "enum",
+    "impl",
+    "trait",
+    "self",
+    "true",
+    "false",
+    "null",
+    "none",
+    "match",
+    "case",
+    "switch",
+    "break",
+    "continue",
+    "throw",
+    "catch",
+    "try",
+    "finally",
+    "async",
+    "await",
+    "yield",
+    "new",
+    "delete",
+    "void",
+    "int",
+    "string",
+    "bool",
+    "float",
+    "double",
+    "char",
+    "byte",
+    "long",
+    "short",
+    "static",
+    "final",
+    "private",
+    "public",
+    "protected",
+    "abstract",
+    "interface",
+    "extends",
+    "implements",
+    "super",
+    "default",
+    "package",
+    "module",
+    "namespace",
+    "using",
+    "begin",
+    "end",
+    "do",
+    "then",
+    "loop",
+    "iter",
+    // 命令 / 工具 前缀
+    "git",
+    "npm",
+    "pnpm",
+    "yarn",
+    "cargo",
+    "make",
+    "cmake",
+    "docker",
+    "kubectl",
+    "ssh",
+    "scp",
+    "curl",
+    "wget",
+    "ls",
+    "cd",
+    "rm",
+    "mv",
+    "cp",
+    "cat",
+    "echo",
+    "grep",
+    "find",
+    "sed",
+    "awk",
+    "tar",
+    "gzip",
+    "zip",
+    "ps",
+    "top",
+    "kill",
+    "sudo",
+    "chmod",
+    "chown",
+    "diff",
+    "patch",
+    "vim",
+    "nano",
+    "tmux",
+    "screen",
+    "bash",
+    "zsh",
+    "sh",
+    "node",
+    "python",
+    "ruby",
+    "java",
+    // 路径 / 文件名片段
+    "src",
+    "lib",
+    "bin",
+    "tmp",
+    "var",
+    "etc",
+    "usr",
+    "doc",
+    "test",
+    "tests",
+    "build",
+    "dist",
+    "target",
+    "node_modules",
+    "vendor",
+    "pkg",
+    "cmd",
+    "main",
+    "index",
+    "readme",
+    // 中文虚词 / 高频但无信息词
+    "这个",
+    "那个",
+    "什么",
+    "怎么",
+    "如何",
+    "为什么",
+    "因为",
+    "所以",
+    "但是",
+    "然后",
+    "可能",
+    "应该",
+    "需要",
+    "可以",
+    "已经",
+    "正在",
+    "还是",
+    "或者",
+    "也许",
+    "其实",
+    "比如",
+    "例如",
+    "总之",
+    "总的",
+    "目前",
+    "现在",
+    "以前",
+    "之前",
+    "之后",
+    "时候",
+    "时间",
+    "事情",
+    "问题",
+    "情况",
+    "方面",
+    "方式",
+    "方法",
+    "感觉",
+    "觉得",
+    "知道",
+    "明白",
+    "看到",
+    "听到",
+    "想到",
+    "想想",
+    "试试",
+    "看看",
+    "用户",
+    "我们",
+    "你们",
+    "他们",
+    "自己",
+    "大家",
+    "一下",
+    "一个",
+    "一些",
+    "这样",
+    "那样",
+    "还有",
+    "另外",
+    // ASR 后端 / 语种通用词(单独可能模糊)
+    "test",
+    "example",
+    "todo",
+    "fixme",
+    "note",
+    "log",
+    "logs",
+    "debug",
+    "info",
+    "warn",
+    "warning",
+    "error",
+    "fatal",
+    "data",
+    "result",
+    "value",
+    "name",
+    "key",
+    "size",
+    "length",
+    "count",
+    "item",
+    "list",
+    "array",
+    "map",
+    "set",
+    "dict",
+    "tuple",
+    "stream",
+    "buffer",
+    "input",
+    "output",
+    "request",
+    "response",
+    "client",
+    "server",
+    "config",
+    "context",
+    "default",
+    "options",
+    "params",
+    "args",
+    "argv",
+    "env",
+    "path",
+    "file",
+    "dir",
+    "directory",
+];
 
 /// 把用户在 modal 里勾选的词追加到 cfg.hotwords。前端可以自己合 cfg.hotwords
 /// 然后调 save_config —— 提供本命令是为了避免前端做 dedup / save 这种
