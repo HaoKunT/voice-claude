@@ -3,7 +3,7 @@
 
 use crate::asr::{self, is_streaming};
 use crate::audio::{to_wav, Recorder};
-use crate::{correct, history, hotwords, input};
+use crate::{correct, history, input};
 use anyhow::Result;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -230,7 +230,7 @@ async fn run(
     // 超时场景例外 —— polish_ms 记 timeout_ms 入 p99,polish_timeout=1 单独统计,
     // 否则 p99 会漏掉"老是卡到上限"的 model 分布
     let polish_start = std::time::Instant::now();
-    let polish_result = correct::correct(&raw_text, profile, timeout_secs).await;
+    let polish_result = correct::correct(&raw_text, profile, timeout_secs, &cfg.hotwords).await;
     let elapsed_ms = polish_start.elapsed().as_millis() as i64;
     let polish_provider = compute_polish_provider(profile);
     use crate::config::POLISH_MODE_OFF;
@@ -267,10 +267,11 @@ async fn run(
         tracing::info!(text = %corrected, profile = %profile.name, "润色结果");
     }
 
-    let final_text = hotwords::apply(&corrected, &cfg.hotwords);
-    if final_text != corrected {
-        tracing::info!(text = %final_text, "热词替换");
-    }
+    // 老的字符串替换路径已删:词典(cfg.hotwords)现在在两条路上发挥作用
+    //   ① ASR boosting(本地 / 部分云端 ASR 后端读 cfg.hotwords)
+    //   ② LLM 校正 prompt 注入(correct::correct 在上一步用 cfg.hotwords 渲染 glossary 段落)
+    // 这里直接把校正结果当 final,不再事后字符串替换。
+    let final_text = corrected;
 
     let duration_ms = started_at.elapsed().as_millis() as i64;
     let stats_provider = cfg.provider_id_for_stats();

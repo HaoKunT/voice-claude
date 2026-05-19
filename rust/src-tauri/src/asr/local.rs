@@ -339,35 +339,28 @@ pub fn unload() {}
 
 #[cfg(feature = "local-asr")]
 fn build_signature(cfg: &crate::config::Config, engine: LocalEngine) -> String {
-    use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
     use std::hash::{DefaultHasher, Hash, Hasher};
     let mut h = DefaultHasher::new();
     engine.id().hash(&mut h);
     cfg.local_use_coreml.hash(&mut h);
-    let sorted: BTreeMap<&String, &String> = cfg.hotwords.iter().collect();
-    for (k, v) in &sorted {
-        k.hash(&mut h);
-        v.hash(&mut h);
+    // hotwords 是 Vec<String>;按内容哈希(去重 + 排序确保稳定)
+    let sorted: BTreeSet<&String> = cfg.hotwords.iter().collect();
+    for w in &sorted {
+        w.hash(&mut h);
     }
     format!("{:x}", h.finish())
 }
 
 #[cfg(feature = "local-asr")]
-fn write_hotwords_file(
-    hotwords: &std::collections::HashMap<String, String>,
-) -> Result<std::path::PathBuf> {
+fn write_hotwords_file(hotwords: &[String]) -> Result<std::path::PathBuf> {
     use std::collections::BTreeSet;
-    let mut set: BTreeSet<&str> = BTreeSet::new();
-    for (k, v) in hotwords {
-        let k = k.trim();
-        let v = v.trim();
-        if !k.is_empty() {
-            set.insert(k);
-        }
-        if !v.is_empty() {
-            set.insert(v);
-        }
-    }
+    // 去重 + 排序后写盘,sherpa-onnx 一行一词
+    let set: BTreeSet<&str> = hotwords
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
     let content: String = set.into_iter().collect::<Vec<_>>().join("\n");
     let path = config_dir().join("local_hotwords.txt");
     std::fs::write(&path, content)?;

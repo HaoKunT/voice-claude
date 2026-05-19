@@ -4,7 +4,6 @@
 use crate::dirs::{config_dir, config_path};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 
 pub const ASR_PROVIDER_ZHIPU: &str = "zhipu";
@@ -124,8 +123,18 @@ pub struct Config {
     pub correct_timeout: u32,
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    /// 识别词典:让 ASR 识别准 + 给 LLM 校正注入领域上下文。
+    ///
+    /// 老版本是 `HashMap<String, String>` 字符串替换映射;0.3.x 改成关键词列表,
+    /// 替换路径删除,词典同时喂两条线:
+    ///   ① sherpa-onnx ASR boosting(让模型识别准 —— "克劳德"不会被识别成"克老的")
+    ///   ② Profile prompt 里 `{glossary}` 占位符注入(给 LLM 跨语种 / 写法映射的上下文)
+    ///
+    /// 老 dict 格式(`HashMap<String, String>`)在 `Config::load` 里自动迁移:
+    ///   - keys + values 去重进 Vec(都进 ASR boosting 名单)
+    ///   - 非平凡映射(k != v)拼成"X → Y"段落追加到默认 profile prompt 末尾
     #[serde(default)]
-    pub hotwords: HashMap<String, String>,
+    pub hotwords: Vec<String>,
     #[serde(default = "default_vad_enabled")]
     pub vad_enabled: bool,
     #[serde(default = "default_vad_silence_ms")]
@@ -260,7 +269,7 @@ impl Default for Config {
             device_name: String::new(),
             correct_timeout: default_correct_timeout(),
             log_level: default_log_level(),
-            hotwords: HashMap::new(),
+            hotwords: Vec::new(),
             vad_enabled: default_vad_enabled(),
             vad_silence_ms: default_vad_silence_ms(),
             vad_threshold: default_vad_threshold(),
@@ -275,17 +284,77 @@ impl Default for Config {
     }
 }
 
+/// 从 raw JSON 里提取老 hotwords dict,原地改成 array,返回 (k, v) mapping 给
+/// `Config::migrate_hotwords_mapping` 用 —— 把 mapping 拼到默认 profile prompt 末尾,
+/// LLM 校正阶段还能做跨语种 / 写法映射(原 ASR 后字符串替换的等价能力)。
+///
+/// 老格式:`HashMap<String, String>` 字符串替换映射;
+/// 新格式:`Vec<String>` 关键词列表(同一份喂 ASR boosting + LLM prompt)。
+fn take_legacy_hotwords_mapping(raw: &mut serde_json::Value) -> Vec<(String, String)> {
+    let Some(obj) = raw.as_object_mut() else {
+        return Vec::new();
+    };
+    // 只处理 dict 形态;array / 缺失都跳过(已是新格式或新装用户)
+    let is_dict = matches!(obj.get("hotwords"), Some(serde_json::Value::Object(_)));
+    if !is_dict {
+        return Vec::new();
+    }
+    let Some(serde_json::Value::Object(map)) = obj.remove("hotwords") else {
+        return Vec::new();
+    };
+
+    use std::collections::BTreeSet;
+    let mut keywords: BTreeSet<String> = BTreeSet::new();
+    let mut mapping: Vec<(String, String)> = Vec::new();
+    for (k, v) in map.iter() {
+        let k = k.trim();
+        if k.is_empty() {
+            continue;
+        }
+        keywords.insert(k.to_string());
+        let Some(v_str) = v.as_str() else { continue };
+        let v_str = v_str.trim();
+        if v_str.is_empty() {
+            continue;
+        }
+        keywords.insert(v_str.to_string());
+        if k != v_str {
+            mapping.push((k.to_string(), v_str.to_string()));
+        }
+    }
+    let arr: Vec<serde_json::Value> = keywords
+        .into_iter()
+        .map(serde_json::Value::String)
+        .collect();
+    obj.insert("hotwords".into(), serde_json::Value::Array(arr));
+
+    mapping.sort();
+    mapping
+}
+
 impl Config {
     /// 从磁盘加载配置；文件不存在或解析失败时返回默认值。
-    /// 加载后自动跑老字段 → polish_profiles 的迁移。
+    /// 加载后自动跑老字段 → polish_profiles / hotwords 的迁移。
     pub fn load() -> Self {
         let path = config_path();
-        let mut cfg: Self = match fs::read_to_string(&path) {
-            Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
-            Err(_) => Self::default(),
+        // 两步反序列化:先到 Value,提取并迁移老 hotwords dict 后再 → Config。        // 这样 deserializer 不用自定义,迁移逻辑(把 mapping 拼到 default profile prompt)
+        // 也能拿到完整 Config 状态。
+        let raw_data = match fs::read_to_string(&path) {
+            Ok(data) => data,
+            Err(_) => return Self::default(),
         };
+        let mut raw_value: serde_json::Value = match serde_json::from_str(&raw_data) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = ?e, "config.json 解析失败,使用默认值");
+                return Self::default();
+            }
+        };
+        let legacy_mapping = take_legacy_hotwords_mapping(&mut raw_value);
+        let mut cfg: Self = serde_json::from_value(raw_value).unwrap_or_default();
         cfg.migrate_polish_profiles();
         cfg.migrate_vad_threshold();
+        cfg.migrate_hotwords_mapping(legacy_mapping);
         cfg
     }
 
@@ -299,6 +368,34 @@ impl Config {
             );
             self.vad_threshold = 0.5;
         }
+    }
+
+    /// 老 hotwords dict 的 k→v mapping 迁移到默认 profile prompt 末尾,
+    /// 让 LLM 能在校正阶段做跨语种映射(原字符串替换路径已删除)。
+    /// 幂等:prompt 已经含"以下词语映射"段落时不重复追加。
+    fn migrate_hotwords_mapping(&mut self, mapping: Vec<(String, String)>) {
+        if mapping.is_empty() {
+            return;
+        }
+        let Some(profile) = self
+            .polish_profiles
+            .iter_mut()
+            .find(|p| p.id == DEFAULT_PROFILE_ID)
+        else {
+            return;
+        };
+        if profile.prompt.contains("以下词语映射") {
+            return; // 已经迁移过
+        }
+        let mut block = String::from("\n\n以下词语映射(右侧为正式写法):\n");
+        for (k, v) in &mapping {
+            block.push_str(&format!("- {} → {}\n", k, v));
+        }
+        profile.prompt.push_str(&block);
+        tracing::info!(
+            count = mapping.len(),
+            "迁移老 hotwords k→v mapping 到默认 profile prompt"
+        );
     }
 
     /// 首次升级到多 profile 版本时，把老的 correct_* 字段迁成一个「默认」profile。
@@ -430,5 +527,63 @@ mod tests {
         assert_eq!(c.asr_provider, "volc");
         assert_eq!(c.correct_mode, "off"); // default 填充
         assert_eq!(c.gain, 1);
+    }
+
+    #[test]
+    fn take_legacy_hotwords_mapping_converts_dict_to_array() {
+        let mut v: serde_json::Value = serde_json::from_str(
+            r#"{"hotwords": {"克劳德": "Claude", "voice-claude": "voice-claude", "": "X", "FireRed": ""}}"#,
+        )
+        .unwrap();
+        let mapping = take_legacy_hotwords_mapping(&mut v);
+        // 非平凡 mapping(k != v 且都非空)只有 "克劳德 → Claude"
+        assert_eq!(mapping, vec![("克劳德".into(), "Claude".into())]);
+        // hotwords 已就地改成 array,内容是去重 + 去空(空 key / 空 value 跳过)
+        let arr = v["hotwords"].as_array().unwrap();
+        let words: Vec<&str> = arr.iter().filter_map(|x| x.as_str()).collect();
+        assert!(words.contains(&"克劳德"));
+        assert!(words.contains(&"Claude"));
+        assert!(words.contains(&"voice-claude"));
+        assert!(words.contains(&"FireRed")); // 即便 value 为空,key 仍进列表
+        assert!(!words.contains(&"")); // 空 key 跳过
+    }
+
+    #[test]
+    fn take_legacy_hotwords_mapping_skips_array_format() {
+        // 已是 array 格式不再迁移
+        let mut v: serde_json::Value =
+            serde_json::from_str(r#"{"hotwords": ["Claude", "voice-claude"]}"#).unwrap();
+        let mapping = take_legacy_hotwords_mapping(&mut v);
+        assert!(mapping.is_empty());
+        // 数组保持不动
+        let arr = v["hotwords"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+    }
+
+    #[test]
+    fn migrate_hotwords_mapping_appends_to_default_profile() {
+        let mut c = Config::default();
+        c.migrate_hotwords_mapping(vec![
+            ("克劳德".into(), "Claude".into()),
+            ("吉他布".into(), "GitHub".into()),
+        ]);
+        let p = c
+            .polish_profiles
+            .iter()
+            .find(|p| p.id == DEFAULT_PROFILE_ID)
+            .unwrap();
+        assert!(p.prompt.contains("以下词语映射"));
+        assert!(p.prompt.contains("克劳德 → Claude"));
+        assert!(p.prompt.contains("吉他布 → GitHub"));
+
+        // 幂等:再调一次不重复追加
+        let prompt_before = p.prompt.clone();
+        c.migrate_hotwords_mapping(vec![("X".into(), "Y".into())]);
+        let p2 = c
+            .polish_profiles
+            .iter()
+            .find(|p| p.id == DEFAULT_PROFILE_ID)
+            .unwrap();
+        assert_eq!(p2.prompt, prompt_before);
     }
 }

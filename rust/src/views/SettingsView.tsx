@@ -38,7 +38,10 @@ const SECTION_META: Record<SettingsSection, { title: string; subtitle: string }>
     subtitle: "识别完成后交给 LLM 按你的 prompt 再润一遍；可建多个 profile 按场景切换",
   },
   record: { title: "录音参数", subtitle: "麦克风、快捷键与增益" },
-  hotwords: { title: "热词替换", subtitle: "识别后自动替换（AI 润色之后执行）" },
+  hotwords: {
+    title: "识别词典",
+    subtitle: "让 ASR 识别准 + 给 LLM 校正注入领域上下文(同一份列表喂两条路)",
+  },
   log: { title: "日志", subtitle: "日志级别与文件位置" },
 };
 
@@ -102,18 +105,6 @@ export function SettingsView({ section }: { section: SettingsSection }) {
 
   const update = <K extends keyof Config>(k: K, v: Config[K]) => {
     setCfg({ ...cfg, [k]: v });
-  };
-
-  const updateHotword = (key: string, value: string) => {
-    const hotwords = { ...cfg.hotwords };
-    if (key) hotwords[key] = value;
-    setCfg({ ...cfg, hotwords });
-  };
-
-  const deleteHotword = (key: string) => {
-    const hotwords = { ...cfg.hotwords };
-    delete hotwords[key];
-    setCfg({ ...cfg, hotwords });
   };
 
   const meta = SECTION_META[section];
@@ -479,34 +470,44 @@ export function SettingsView({ section }: { section: SettingsSection }) {
       {section === "hotwords" && (
         <section className="card space-y-3.5">
           <div className="space-y-2">
-            {Object.entries(cfg.hotwords).length === 0 && (
-              <div className="text-xs text-gray-500 py-2">暂无热词，点下方添加或导入 CSV</div>
-            )}
-            {Object.entries(cfg.hotwords).map(([from, to]) => (
-              <HotwordRow
-                key={from}
-                from={from}
-                to={to}
-                onChange={(k, v) => {
-                  const hotwords = { ...cfg.hotwords };
-                  if (k !== from) delete hotwords[from];
-                  if (k) hotwords[k] = v;
-                  setCfg({ ...cfg, hotwords });
-                }}
-                onDelete={() => deleteHotword(from)}
-              />
-            ))}
-            <div className="flex gap-2">
-              <button
-                className="btn-ghost flex-1 justify-center"
-                onClick={() => updateHotword(`新热词_${Date.now()}`, "")}
-              >
-                ＋ 添加
-              </button>
+            <p className="text-[12px] text-gray-400 leading-relaxed">
+              一行一个词。词典同时喂两条路:
+            </p>
+            <ul className="text-[11px] text-gray-500 leading-relaxed list-disc pl-5 space-y-0.5">
+              <li><b className="text-gray-400">ASR 识别准</b>:本地 / 部分云端 ASR 后端拿这份列表做 boosting,让"克劳德"不会被识别成"克老的"</li>
+              <li><b className="text-gray-400">LLM 校正上下文</b>:校正 prompt 自动注入"识别词典:..."段落,LLM 会按这里给的写法 / 拼写校正原文</li>
+            </ul>
+            <p className="text-[11px] text-gray-500 leading-relaxed">
+              想要"克劳德 → Claude"这种跨语种映射,在 AI 校正 profile 的 prompt 里写
+              <code className="px-1 rounded bg-white/[0.04] mx-0.5">{"{glossary}"}</code>
+              占位符,或直接写映射规则。
+            </p>
+            <textarea
+              className="input font-mono w-full min-h-[200px] resize-y"
+              placeholder="一行一个词,如:&#10;Claude&#10;voice-claude&#10;FireRedASR"
+              value={cfg.hotwords.join("\n")}
+              onChange={(e) => {
+                const list = e.target.value
+                  .split("\n")
+                  .map((s) => s.trim())
+                  .filter((s) => s.length > 0);
+                // 去重,保留首次出现的顺序(用户输入顺序)
+                const seen = new Set<string>();
+                const dedup = list.filter((w) => {
+                  if (seen.has(w)) return false;
+                  seen.add(w);
+                  return true;
+                });
+                setCfg({ ...cfg, hotwords: dedup });
+              }}
+            />
+            <div className="flex gap-2 items-center">
+              <span className="text-[11px] text-gray-500">{cfg.hotwords.length} 个词</span>
+              <div className="flex-1" />
               <button className="btn-ghost" onClick={() => handleExportCsv()}>
                 导出 CSV
               </button>
-              <button className="btn-ghost" onClick={() => handleImportCsv(setCfg, cfg)}>
+              <button className="btn-ghost" onClick={() => handleImportCsv(setCfg)}>
                 导入 CSV
               </button>
             </div>
@@ -553,15 +554,15 @@ async function handleExportCsv() {
   }
 }
 
-async function handleImportCsv(setCfg: (c: Config) => void, _cfg: Config) {
+async function handleImportCsv(setCfg: (c: Config) => void) {
   try {
     const csv = await readTextFromFile(CSV_FILTERS);
     if (csv === null) return;
     const merge = confirm(
-      "选择「确定」合并到现有热词\n选择「取消」用 CSV 完全替换现有热词",
+      "选择「确定」合并到现有词典\n选择「取消」用 CSV 完全替换现有词典",
     );
     const added = await api.importHotwordsCsv(csv, merge);
-    alert(`已导入 ${added} 条热词`);
+    alert(`已导入 ${added} 个词`);
     const latest = await api.getConfig();
     setCfg(latest);
   } catch (e) {
@@ -1208,37 +1209,6 @@ function TextField(props: { label: string; value: string; onChange: (v: string) 
         onChange={(e) => props.onChange(e.target.value)}
       />
     </Field>
-  );
-}
-
-function HotwordRow(props: {
-  from: string;
-  to: string;
-  onChange: (k: string, v: string) => void;
-  onDelete: () => void;
-}) {
-  return (
-    <div className="flex gap-2 items-center">
-      <input
-        className="input flex-1"
-        placeholder="识别到的错词"
-        value={props.from}
-        onChange={(e) => props.onChange(e.target.value, props.to)}
-      />
-      <span className="text-gray-500 px-1">→</span>
-      <input
-        className="input flex-1"
-        placeholder="正确的词"
-        value={props.to}
-        onChange={(e) => props.onChange(props.from, e.target.value)}
-      />
-      <button
-        className="w-9 h-9 rounded-lg bg-white/[0.04] hover:bg-red-500/20 hover:text-red-400 transition flex items-center justify-center text-gray-500"
-        onClick={props.onDelete}
-      >
-        ×
-      </button>
-    </div>
   );
 }
 

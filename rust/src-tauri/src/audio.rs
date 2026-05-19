@@ -5,9 +5,16 @@ use anyhow::{anyhow, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat};
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
+
+/// Recorder lifecycle 计数器,排查 cpal stream 不释放导致 CoreAudio context 泄漏。
+/// 9 段话 = 9 个 audio.context.preventuseridlesleep assertion 共存被观察到,
+/// 每次录音至少 leak 1 个,要 trace 是 Recorder Drop 不触发 / Drop 触发但 stream
+/// 没释放 / 还是 cpal 自身在 macOS 上的 Drop 不彻底。
+static ALIVE_RECORDERS: AtomicU64 = AtomicU64::new(0);
+static TOTAL_CREATED: AtomicU64 = AtomicU64::new(0);
 
 /// 16k 16bit mono PCM，和 Go 版一致
 pub const SAMPLE_RATE: u32 = 16000;
@@ -48,6 +55,13 @@ unsafe impl Sync for Recorder {}
 impl Recorder {
     #[allow(clippy::arc_with_non_send_sync)] // Recorder 上已经 unsafe impl Send/Sync，stream 由固定线程持有
     pub fn new(gain: u8, device_name: &str, enhance: bool) -> Self {
+        let alive = ALIVE_RECORDERS.fetch_add(1, Ordering::Relaxed) + 1;
+        let total = TOTAL_CREATED.fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::info!(
+            alive_recorders = alive,
+            total_created = total,
+            "Recorder::new"
+        );
         Self {
             gain: gain.max(1),
             device_name: device_name.to_string(),
@@ -220,12 +234,35 @@ impl Recorder {
     /// 停止录音并返回累积的 PCM。
     /// 显式调 stream.pause() 再 drop —— macOS CoreAudio 仅靠 Drop 清理有时系统级录音指示灯不灭。
     pub fn stop(&self) -> Vec<u8> {
-        if let Some(s) = self.stream.lock().take() {
+        let had_stream = if let Some(s) = self.stream.lock().take() {
             let _ = s.pause();
             drop(s);
-        }
+            true
+        } else {
+            false
+        };
+        // 排查 leak:确认 stream slot 现在确实是 None。如果是 Some 说明 stop 之后
+        // 还有 stream(并发 race?),这是 leak 的早期信号
+        let slot_after = self.stream.lock().is_some();
+        tracing::info!(
+            had_stream,
+            slot_after_is_some = slot_after,
+            "Recorder::stop"
+        );
         let mut guard = self.buffer.lock();
         std::mem::take(&mut *guard)
+    }
+}
+
+impl Drop for Recorder {
+    fn drop(&mut self) {
+        let alive = ALIVE_RECORDERS.fetch_sub(1, Ordering::Relaxed) - 1;
+        // 检查 stream 字段在 Drop 时是否还是 Some(没人调过 stop / start 后没 stop)
+        let stream_still_held = self.stream.lock().is_some();
+        tracing::info!(alive_recorders = alive, stream_still_held, "Recorder::drop");
+        // 注意:这里不主动 stop stream —— Recorder 本身被 drop 时 stream 字段
+        // (Arc<Mutex<Option<Stream>>>) 会自动 drop,触发 cpal::Stream::Drop。
+        // 留这条 log 是为了观察"自动 Drop 是否有跑到"和"stream 是否最后一刻还活着"。
     }
 }
 

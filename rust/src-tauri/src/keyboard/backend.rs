@@ -188,6 +188,7 @@ fn run_manager_path(
 
     let mut state = ManagerStateMachine::new(cfg.mode);
     let mut esc_id: Option<HotkeyId> = None;
+    let mut last_heartbeat = Instant::now();
 
     tracing::info!(mode = ?cfg.mode, "keyboard supervisor: 已就位(manager 路径)");
 
@@ -197,6 +198,15 @@ fn run_manager_path(
             Ok(Control::Reload(new_cfg)) => return PathExit::Reload(new_cfg),
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => return PathExit::Shutdown,
+        }
+
+        // Heartbeat:supervisor 主循环每 30s emit 一条 INFO log。诊断用 ——
+        // 用户报"wake 后系统键鼠卡死"时,看日志最后 heartbeat 时间戳能直接确认
+        // supervisor 何时停止响应(若长期没续上 = supervisor 线程 / runtime 卡了;
+        // 若一直续 = 卡的不是 supervisor,得换方向查)。
+        if last_heartbeat.elapsed() >= Duration::from_secs(30) {
+            tracing::debug!("keyboard supervisor heartbeat (manager 路径)");
+            last_heartbeat = Instant::now();
         }
 
         if let Some(ev) = manager.try_recv() {
@@ -241,6 +251,7 @@ fn run_listener_path(
     };
 
     let mut state = DoubleTapStateMachine::new(target);
+    let mut last_heartbeat = Instant::now();
 
     tracing::info!(target = ?target, "keyboard supervisor: 已就位(listener 路径)");
 
@@ -250,6 +261,12 @@ fn run_listener_path(
             Ok(Control::Reload(new_cfg)) => return PathExit::Reload(new_cfg),
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => return PathExit::Shutdown,
+        }
+
+        // Heartbeat,见 manager 路径同条注释
+        if last_heartbeat.elapsed() >= Duration::from_secs(30) {
+            tracing::debug!("keyboard supervisor heartbeat (listener 路径)");
+            last_heartbeat = Instant::now();
         }
 
         // 50ms 阻塞拿事件,期间也走 tick 检查 350ms 超时

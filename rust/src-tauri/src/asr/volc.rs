@@ -56,20 +56,13 @@ fn encode_message(msg_type: u8, flags: u8, ser: u8, comp: u8, payload: &[u8]) ->
 }
 
 /// 从 config.hotwords 抽出要注入 ASR 的词列表。
-/// key(用户自己记的错音)和 value(正确写法)都注入,去空去重后按字典序排列,
-/// 超过 MAX_INJECT_HOTWORDS 截断(豆包 100 tokens 上限)。
-fn collect_hotwords(hotwords: &std::collections::HashMap<String, String>) -> Vec<String> {
-    let mut set: BTreeSet<String> = BTreeSet::new();
-    for (k, v) in hotwords {
-        let k = k.trim();
-        let v = v.trim();
-        if !k.is_empty() {
-            set.insert(k.to_string());
-        }
-        if !v.is_empty() {
-            set.insert(v.to_string());
-        }
-    }
+/// 去空 / 去重 / 字典序排列,超过 MAX_INJECT_HOTWORDS 截断(豆包 100 tokens 上限)。
+fn collect_hotwords(hotwords: &[String]) -> Vec<String> {
+    let set: BTreeSet<String> = hotwords
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
     set.into_iter().take(MAX_INJECT_HOTWORDS).collect()
 }
 
@@ -408,13 +401,18 @@ mod tests {
 
     #[test]
     fn collect_hotwords_dedups_and_trims() {
-        let mut m = std::collections::HashMap::new();
-        m.insert("克劳德".to_string(), "Claude".to_string());
-        m.insert("吉他布".to_string(), "GitHub".to_string());
-        m.insert("  ".to_string(), "API".to_string()); // 空 key 忽略,value "API" 仍加
-        m.insert("艾皮爱".to_string(), "API".to_string()); // key 新增,value "API" 重复去重
-        let words = collect_hotwords(&m);
-        // key+value 合集去空去重:克劳德 Claude 吉他布 GitHub API 艾皮爱 = 6 个
+        let v: Vec<String> = vec![
+            "克劳德".into(),
+            "Claude".into(),
+            "吉他布".into(),
+            "GitHub".into(),
+            "  ".into(), // 空白忽略
+            "API".into(),
+            "API".into(), // 重复去重
+            "艾皮爱".into(),
+        ];
+        let words = collect_hotwords(&v);
+        // 去空 + 去重 = 6 个
         assert_eq!(words.len(), 6);
         assert!(words.contains(&"Claude".to_string()));
         assert!(words.contains(&"API".to_string()));

@@ -49,6 +49,14 @@ build:
 	@echo "✓ Updater artifacts: $(RUST_DIR)/src-tauri/target/release/bundle/macos/$(APP_BUNDLE).tar.gz(.sig)"
 
 install: build
+	@# 先优雅退出运行中的旧实例 —— 关键!否则 cp + codesign 会让 macOS TCC
+	@# 把 voice-claude 视为"新 binary"撤销旧进程的 Accessibility 权限,
+	@# 旧进程持有的 CGEventTap blocking 模式 callback 进入 invalid 状态,
+	@# 系统给它派发的所有键鼠 event 都被卡住 —— 唤醒后整机键鼠死锁。
+	@# 复盘事故:2026-05-19 那次"wake 后键鼠卡死,长按电源强制重启"。
+	@osascript -e 'tell application "voice-claude" to quit' 2>/dev/null || true
+	@# 给 app 几百 ms 完成退出 + LaunchServices 释放对 .app 的引用
+	@sleep 0.5
 	@BUNDLE=$$(find $(RUST_DIR)/src-tauri/target/release/bundle/macos -maxdepth 1 -name "*.app" | head -n1); \
 	if [ -z "$$BUNDLE" ]; then echo "未找到 .app bundle" && exit 1; fi; \
 	rm -rf "/Applications/$(APP_BUNDLE)"; \
@@ -61,6 +69,11 @@ install: build
 		echo "✓ 签名已固定 + entitlements 已嵌入" || \
 		echo "⚠ 重签失败（可忽略）"; \
 	echo "✓ 已安装到 /Applications/$(APP_BUNDLE)"
+	@# 自动 launch 新版本。Accessibility 权限若被 TCC 当新 binary 撤销,
+	@# 用户手动授权后切回 voice-claude 主窗口,banner focus listener 会
+	@# 自动拉起 backend,无需重启 app。
+	@open "/Applications/$(APP_BUNDLE)"
+	@echo "✓ 已启动 voice-claude"
 
 build-win:
 	@if [ ! -f "$(KEY_FILE)" ]; then \

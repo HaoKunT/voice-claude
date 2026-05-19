@@ -4,12 +4,11 @@
 //! - dirs / logger: 平台相关基础设施
 //! - config: 配置读写
 //! - history: SQLite 历史
-//! - hotwords: 热词替换
 //! - keyboard: 跨平台 keyboard backend(handy-keys 包装) + 三模式状态机
 //! - audio: cpal 录音
 //! - input: enigo 键盘模拟
-//! - correct: AI 纠错
-//! - asr/*: 5 种 ASR 后端
+//! - correct: AI 纠错(prompt 含 {glossary} 占位符注入识别词典)
+//! - asr/*: 5 种 ASR 后端(本地引擎 + 部分云端读 cfg.hotwords 做 ASR boosting)
 //! - recorder: 主录音流程
 //! - commands: Tauri IPC 命令
 //! - tray: 系统托盘菜单
@@ -22,7 +21,6 @@ pub mod config;
 pub mod correct;
 pub mod dirs;
 pub mod history;
-pub mod hotwords;
 pub mod indicator;
 pub mod input;
 pub mod keyboard;

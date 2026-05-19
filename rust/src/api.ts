@@ -36,7 +36,9 @@ export interface Config {
   device_name: string;
   correct_timeout: number;
   log_level: string;
-  hotwords: Record<string, string>;
+  /** 识别词典:0.3.x 起改成关键词列表(老版本是 key→value 字符串替换映射,后端自动迁移)。
+   *  同一份列表喂两条线:① ASR boosting ② LLM 校正 prompt 的 {glossary} 注入 */
+  hotwords: string[];
   vad_enabled: boolean;
   vad_silence_ms: number;
   vad_threshold: number;

@@ -159,9 +159,14 @@ pub async fn repolish_history(
         model = %profile.model,
         "repolish: 开始润色"
     );
-    correct::correct(&entry.raw_text, profile, cfg.correct_timeout_secs())
-        .await
-        .map_err(|e| e.to_string())
+    correct::correct(
+        &entry.raw_text,
+        profile,
+        cfg.correct_timeout_secs(),
+        &cfg.hotwords,
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -518,30 +523,31 @@ pub async fn bench_transcribe_file(
     Ok(())
 }
 
-/// 把当前热词导出为 CSV 字符串（前端用 save dialog 保存）
+/// 把当前识别词典导出为单列 CSV(每行一个词)。前端用 save dialog 保存。
 #[tauri::command]
 pub fn export_hotwords_csv(state: State<'_, AppState>) -> String {
     let cfg = state.snapshot();
-    let mut out = String::from("原词,替换为\n");
-    let mut entries: Vec<_> = cfg.hotwords.iter().collect();
-    entries.sort_by(|a, b| a.0.cmp(b.0));
-    for (k, v) in entries {
-        out.push_str(&format!("{},{}\n", csv_escape(k), csv_escape(v)));
+    let mut out = String::from("词\n");
+    let mut entries: Vec<&String> = cfg.hotwords.iter().collect();
+    entries.sort();
+    for w in entries {
+        out.push_str(&format!("{}\n", csv_escape(w)));
     }
     out
 }
 
-/// 从 CSV 字符串解析热词，覆盖当前配置（保留其他字段）
+/// 从单列 CSV(每行一个词)解析识别词典,覆盖或合并当前配置。
 #[tauri::command]
 pub fn import_hotwords_csv(
     csv: String,
     merge: bool,
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
-    let mut hotwords = if merge {
-        state.snapshot().hotwords.clone()
+    use std::collections::BTreeSet;
+    let mut set: BTreeSet<String> = if merge {
+        state.snapshot().hotwords.iter().cloned().collect()
     } else {
-        std::collections::HashMap::new()
+        BTreeSet::new()
     };
     let mut added = 0usize;
     for (i, line) in csv.lines().enumerate() {
@@ -549,28 +555,31 @@ pub fn import_hotwords_csv(
         if line.is_empty() {
             continue;
         }
-        // 跳过表头（可选）
-        if i == 0 && (line.starts_with("原词") || line.to_lowercase().starts_with("from")) {
+        // 跳过表头(可选);兼容老 CSV 双列文件(只取第一列)
+        if i == 0
+            && (line.starts_with("词")
+                || line.starts_with("原词")
+                || line.to_lowercase().starts_with("from"))
+        {
             continue;
         }
         let Some(row) = parse_csv_row(line) else {
             continue;
         };
-        if row.len() < 2 {
+        if row.is_empty() {
             continue;
         }
-        let from = row[0].trim();
-        let to = row[1].trim();
-        if from.is_empty() {
+        let word = row[0].trim();
+        if word.is_empty() {
             continue;
         }
-        hotwords.insert(from.to_string(), to.to_string());
-        added += 1;
+        if set.insert(word.to_string()) {
+            added += 1;
+        }
     }
 
-    // 更新配置
     let mut cfg = (*state.snapshot()).clone();
-    cfg.hotwords = hotwords;
+    cfg.hotwords = set.into_iter().collect();
     cfg.save().map_err(|e| e.to_string())?;
     state.replace(cfg);
     Ok(added)
