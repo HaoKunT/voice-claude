@@ -48,15 +48,40 @@ export function SettingsView({ section }: { section: SettingsSection }) {
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [errMsg, setErrMsg] = useState("");
   const [benchOpen, setBenchOpen] = useState(false);
+  // tray 改 ASR / profile 之类后端改 cfg 时,后端 emit "config-updated",
+  // 前端 listener reload 后 setCfg(fresh) 会触发自动保存 useEffect 又写一次盘
+  // —— 用 ref 标记"刚刚 reload 完",跳过紧接着那次自动保存。
+  const skipNextSaveRef = useRef(false);
 
   useEffect(() => {
     api.getConfig().then(setCfg);
     api.listDevices().then(setDevices).catch(() => setDevices([]));
+
+    // 监听后端 cfg 变化(tray 切 ASR/profile,或其他窗口改 cfg)。
+    // App.tsx 已经在 sidebar 监听同一事件;这里 SettingsView 也订阅,
+    // 避免用户在 tray 改了之后打开设置面板看不到新值。
+    const unlistenP = listen("config-updated", async () => {
+      try {
+        const fresh = await api.getConfig();
+        skipNextSaveRef.current = true;
+        setCfg(fresh);
+      } catch {
+        /* 忽略 fetch 失败,下次用户手动改字段会自然刷 */
+      }
+    });
+    return () => {
+      unlistenP.then((fn) => fn());
+    };
   }, []);
 
   // 自动保存：cfg 每次变化 → 500ms debounce → 调 saveConfig
   useEffect(() => {
     if (!cfg) return;
+    if (skipNextSaveRef.current) {
+      // 这次 cfg 变化是 listener reload 引起的,后端已经是最新状态,跳过保存
+      skipNextSaveRef.current = false;
+      return;
+    }
     setSaveState("saving");
     const timer = setTimeout(async () => {
       try {

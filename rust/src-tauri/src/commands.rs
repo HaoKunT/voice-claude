@@ -6,7 +6,7 @@ use crate::config::Config;
 use crate::AppState;
 use crate::{correct, dirs, history};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Serialize)]
 pub struct DeviceInfo {
@@ -634,23 +634,49 @@ fn open_path(path: &str) -> Result<(), String> {
 /// macOS:查询辅助功能权限是否授予(ad-hoc 签名升级后此权限常会失效)。
 /// 复用 handy-keys 已封装的 `AXIsProcessTrusted` 调用,跟 keyboard backend
 /// 用同一个权限判定来源,避免一处说"已授权"另一处又说"没权"的不一致。
+///
+/// **副作用**:每次调用时检测 false → true 转换,自动重启 keyboard backend。
+/// 借用前端 AccessibilityBanner 的 window focus listener —— 用户去系统设置
+/// 授权完切回 voice-claude,banner 调本 command,后端立即把 backend 拉起来,
+/// 不必让用户重启 app。比"每秒 poll OS API" 优雅 —— 事件驱动,无空转。
+///
 /// 其他平台直接返回 true。
 #[cfg(target_os = "macos")]
 #[tauri::command]
-pub fn check_accessibility() -> bool {
-    handy_keys::check_accessibility()
+pub fn check_accessibility(app: AppHandle) -> bool {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::OnceLock;
+    // Lazy 初始化为当前实际状态:避免 static 默认 false 让首次 check
+    // (banner mount 时调)总触发 false→true transition,导致启动后冗余 reload
+    // (会让 supervisor 把刚 build 好的 manager/listener 拆了重 build 一遍)。
+    static LAST_GRANTED: OnceLock<AtomicBool> = OnceLock::new();
+    let now = handy_keys::check_accessibility();
+    let cell = LAST_GRANTED.get_or_init(|| AtomicBool::new(now));
+    let last = cell.swap(now, Ordering::Relaxed);
+    if now && !last {
+        // 刚从 false → true 转换:用户刚授权 / TCC DB 刚 ready。
+        // 后端 backend 八成还没起来,主动 reload 一次让热键立即工作。
+        tracing::info!("check_accessibility: 检测到权限恢复,自动启动 backend");
+        let cfg = app.state::<AppState>().snapshot();
+        if let Err(e) = crate::start_or_reload_keyboard(&app, &cfg) {
+            tracing::warn!(error = ?e, "check_accessibility: 自动启动 backend 失败");
+        } else if let Err(e) = crate::tray::refresh(&app) {
+            tracing::warn!(error = ?e, "check_accessibility: 刷新 tray 失败");
+        }
+    }
+    now
 }
 
 #[cfg(not(target_os = "macos"))]
 #[tauri::command]
-pub fn check_accessibility() -> bool {
+pub fn check_accessibility(_app: AppHandle) -> bool {
     true
 }
 
 /// 跳到系统「隐私与安全性 → 辅助功能」面板。
 /// macOS 走 handy-keys 封装(它内部会用 `AXIsProcessTrustedWithOptions` 触发系统
-/// prompt 并打开面板,授权完成后用户**仍需重启 voice-claude**才能让 keyboard
-/// backend 拿到权限 —— CGEventTap 在已 spawn 的进程上不会因为后续授权自动生效)。
+/// prompt 并打开面板,授权后切回 voice-claude 时 banner focus listener 会自动
+/// 拉起 backend,无需重启 app)。
 #[tauri::command]
 pub fn open_accessibility_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]

@@ -169,6 +169,26 @@ pub fn run() {
                 });
             }
 
+            // 启动 setup 失败 corner case 兜底:TCC DB 刚启动时偶发 lazy ready,
+            // 第一次 check 返回 false 但用户根本没动权限设置。5 秒后 retry 一次,
+            // 99% 场景都能在这次 retry 里救回。剩下"用户后续才去授权"的场景由
+            // commands::check_accessibility 在前端 banner focus 时触发 reload 覆盖。
+            #[cfg(target_os = "macos")]
+            if !handy_keys::check_accessibility() {
+                let retry_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    if !handy_keys::check_accessibility() {
+                        return; // 还是没权限,等用户去系统设置授权,banner focus 会触发
+                    }
+                    tracing::info!("setup 后 5s retry:Accessibility 已 ready,启动 backend");
+                    let cfg = retry_app.state::<AppState>().snapshot();
+                    if let Err(e) = start_or_reload_keyboard(&retry_app, &cfg) {
+                        tracing::warn!(error = ?e, "5s retry 启动 backend 失败");
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

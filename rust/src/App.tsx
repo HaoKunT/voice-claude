@@ -156,7 +156,7 @@ function AccessibilityBanner() {
         <span className="text-amber-200/70 ml-2">
           —— 热键不会工作。如果系统设置里 voice-claude 看起来已经勾选，那是升级后 macOS 还绑着旧签名。
           正确做法：先用 <b className="text-amber-100">减号（－）删掉这条</b>，再用 <b className="text-amber-100">加号（＋）重新加回</b> voice-claude.app，
-          <b className="text-amber-100">最后重启 voice-claude</b>(权限刚授权时已 spawn 的进程拿不到,需要重启)。
+          然后切回 voice-claude（banner 会自动消失，热键立即可用，<b className="text-amber-100">无需重启</b>）。
         </span>
       </div>
       <button

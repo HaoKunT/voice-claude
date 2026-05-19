@@ -4,10 +4,13 @@
 use anyhow::Result;
 use tauri::{
     image::Image,
-    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
     AppHandle, Manager, Wry,
 };
+
+use crate::config::POLISH_MODE_OFF;
+use crate::AppState;
 
 /// 嵌入的托盘图标（专用于菜单栏：只有线条、透明底）。
 /// 不能复用 32x32.png，那张带深色 squircle 底，macOS template 模式会把
@@ -19,6 +22,22 @@ const RECENT_COUNT: usize = 5;
 
 /// 复制某条历史 id 的文本到剪贴板（menu event id 前缀）
 const RECENT_COPY_PREFIX: &str = "recent:";
+
+/// 切换 ASR 后端的 menu event id 前缀。后跟 provider id(zhipu/xfyun/volc/openrouter/local)。
+const ASR_SWITCH_PREFIX: &str = "asr:";
+
+/// 切换活跃 polish profile 的 menu event id 前缀。后跟 profile.id。
+const POLISH_SWITCH_PREFIX: &str = "polish:";
+
+/// ASR 后端选项 —— 跟前端 api.ts 的 ASR_PROVIDERS 对齐(顺序也对齐,
+/// 用户在两个 UI 看到的顺序一致)。
+const ASR_OPTIONS: &[(&str, &str)] = &[
+    ("volc", "豆包(流式)"),
+    ("xfyun", "讯飞(流式)"),
+    ("zhipu", "智谱 GLM-ASR"),
+    ("openrouter", "OpenRouter Whisper"),
+    ("local", "本地引擎(离线)"),
+];
 
 pub fn setup(app: &AppHandle<Wry>) -> Result<()> {
     let menu = build_menu(app)?;
@@ -47,7 +66,21 @@ fn build_menu(app: &AppHandle<Wry>) -> Result<Menu<Wry>> {
     let history = MenuItem::with_id(app, "history", "历史记录", true, None::<&str>)?;
     let logs = MenuItem::with_id(app, "logs", "打开日志", true, None::<&str>)?;
     let config_dir = MenuItem::with_id(app, "config_dir", "打开配置目录", true, None::<&str>)?;
+    // sleep / 锁屏唤醒后 macOS CGEventTap 可能死掉(tap_is_enabled 仍报 true 但
+    // 不收事件,handy-keys 100ms 自检救不了)。给用户一个手动重注册入口,
+    // 比之前"改一下热键再改回来"的 workaround 直接。
+    let reregister =
+        MenuItem::with_id(app, "reregister_hotkey", "重新注册热键", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+
+    let cfg = app.state::<AppState>().snapshot();
+
+    // ASR 后端 submenu(列出所有 provider,active 那个 ✓)
+    let asr_submenu = build_asr_submenu(app, &cfg.asr_provider)?;
+
+    // AI 润色 submenu(列出所有 polish_profiles,active 那个 ✓;
+    // mode=off 的 profile label 后加"(关闭)"提示)
+    let polish_submenu = build_polish_submenu(app, &cfg)?;
 
     // 最近 RECENT_COUNT 条识别结果（点击复制到剪贴板）
     let recent = crate::history::load(RECENT_COUNT as i64).unwrap_or_default();
@@ -59,10 +92,20 @@ fn build_menu(app: &AppHandle<Wry>) -> Result<Menu<Wry>> {
         recent_items.push(item);
     }
 
-    // 拼装菜单：操作项 → 分隔 → 最近结果 → 分隔 → 退出
+    // 拼装菜单:操作项 → 分隔 → ASR / 润色 切换 → 重注册热键 → 分隔 → 最近结果 → 分隔 → 退出
     let sep1 = PredefinedMenuItem::separator(app)?;
-    let mut items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> =
-        vec![&settings, &history, &logs, &config_dir, &sep1];
+    let sep_post_switch = PredefinedMenuItem::separator(app)?;
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = vec![
+        &settings,
+        &history,
+        &logs,
+        &config_dir,
+        &sep1,
+        &asr_submenu,
+        &polish_submenu,
+        &reregister,
+        &sep_post_switch,
+    ];
 
     // 最近识别（可选分组标题）
     let recent_header = MenuItem::with_id(app, "recent_header", "最近识别", false, None::<&str>)?;
@@ -80,6 +123,57 @@ fn build_menu(app: &AppHandle<Wry>) -> Result<Menu<Wry>> {
     items.push(&quit);
 
     Menu::with_items(app, &items).map_err(Into::into)
+}
+
+/// "识别后端" submenu。CheckMenuItem 自带 ✓ 渲染,active 那一项 checked。
+fn build_asr_submenu(app: &AppHandle<Wry>, current: &str) -> Result<Submenu<Wry>> {
+    let mut items: Vec<CheckMenuItem<Wry>> = Vec::with_capacity(ASR_OPTIONS.len());
+    for (id, label) in ASR_OPTIONS {
+        let event_id = format!("{}{}", ASR_SWITCH_PREFIX, id);
+        let it =
+            CheckMenuItem::with_id(app, &event_id, *label, true, current == *id, None::<&str>)?;
+        items.push(it);
+    }
+    let refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = items
+        .iter()
+        .map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>)
+        .collect();
+    Submenu::with_items(app, "识别后端", true, &refs).map_err(Into::into)
+}
+
+/// "AI 润色" submenu。每个 profile 一项 CheckMenuItem;active profile ✓;
+/// 若 active profile 自己 mode=off,label 加"(关闭)"提示用户当前没在润色。
+fn build_polish_submenu(app: &AppHandle<Wry>, cfg: &crate::config::Config) -> Result<Submenu<Wry>> {
+    let mut items: Vec<CheckMenuItem<Wry>> = Vec::with_capacity(cfg.polish_profiles.len().max(1));
+    if cfg.polish_profiles.is_empty() {
+        // 兜底:理论上 Config::default 至少有一个 profile,但防御性渲染一个 disabled
+        let it = CheckMenuItem::with_id(
+            app,
+            "polish_empty",
+            "(无 profile)",
+            false,
+            false,
+            None::<&str>,
+        )?;
+        items.push(it);
+    } else {
+        for p in &cfg.polish_profiles {
+            let event_id = format!("{}{}", POLISH_SWITCH_PREFIX, p.id);
+            let label = if p.mode == POLISH_MODE_OFF {
+                format!("{}(关闭)", p.name)
+            } else {
+                p.name.clone()
+            };
+            let checked = p.id == cfg.active_profile_id;
+            let it = CheckMenuItem::with_id(app, &event_id, &label, true, checked, None::<&str>)?;
+            items.push(it);
+        }
+    }
+    let refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = items
+        .iter()
+        .map(|i| i as &dyn tauri::menu::IsMenuItem<Wry>)
+        .collect();
+    Submenu::with_items(app, "AI 润色", true, &refs).map_err(Into::into)
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {
@@ -101,6 +195,14 @@ fn handle_menu_event(app: &AppHandle<Wry>, event: MenuEvent) {
         }
         return;
     }
+    if let Some(provider) = id.strip_prefix(ASR_SWITCH_PREFIX) {
+        switch_asr_provider(app, provider);
+        return;
+    }
+    if let Some(profile_id) = id.strip_prefix(POLISH_SWITCH_PREFIX) {
+        switch_polish_profile(app, profile_id);
+        return;
+    }
     match id {
         "settings" => show_main(app, None),
         "history" => show_main(app, Some("#/history")),
@@ -111,10 +213,63 @@ fn handle_menu_event(app: &AppHandle<Wry>, event: MenuEvent) {
         "config_dir" => {
             let _ = open_path(&crate::dirs::config_dir().to_string_lossy());
         }
+        "reregister_hotkey" => {
+            // 强制让 KeyboardBackend 重建 supervisor 线程 + handy-keys
+            // HotkeyManager / KeyboardListener,救活 sleep 唤醒后失活的 CGEventTap。
+            // 直接 take 出 backend Drop,然后用当前 cfg 重 start —— 不走 reload,
+            // 因为 reload 复用同一个 supervisor 线程,如果连那都死了 reload 救不了。
+            let state = app.state::<AppState>();
+            let cfg = state.snapshot();
+            let _ = state.keyboard.lock().take(); // Drop 旧 backend
+            match crate::start_or_reload_keyboard(app, &cfg) {
+                Ok(()) => tracing::info!("tray: 已手动重注册热键"),
+                Err(e) => tracing::warn!(error = ?e, "tray: 重注册热键失败"),
+            }
+        }
         "quit" => {
             app.exit(0);
         }
         _ => {}
+    }
+}
+
+/// tray 切 ASR 后端 → 改 cfg.asr_provider → 走 save_config(它会处理本地引擎
+/// warmup / unload)→ 通知前端 + 刷 tray。
+fn switch_asr_provider(app: &AppHandle<Wry>, provider: &str) {
+    let mut new_cfg = (*app.state::<AppState>().snapshot()).clone();
+    if new_cfg.asr_provider == provider {
+        return; // 同一个,无需变更
+    }
+    new_cfg.asr_provider = provider.to_string();
+    apply_config_change(app, new_cfg, "切换 ASR 后端");
+}
+
+/// tray 切活跃 polish profile → 改 cfg.active_profile_id → save_config。
+fn switch_polish_profile(app: &AppHandle<Wry>, profile_id: &str) {
+    let mut new_cfg = (*app.state::<AppState>().snapshot()).clone();
+    if new_cfg.active_profile_id == profile_id {
+        return;
+    }
+    // 校验 profile 真实存在,防止 stale menu 点到已删 profile
+    if !new_cfg.polish_profiles.iter().any(|p| p.id == profile_id) {
+        tracing::warn!(profile_id = %profile_id, "tray: profile 不存在,忽略切换");
+        return;
+    }
+    new_cfg.active_profile_id = profile_id.to_string();
+    apply_config_change(app, new_cfg, "切换 polish profile");
+}
+
+/// 把变更后的 cfg 喂给 commands::save_config(它已经处理 hotkey reload /
+/// 本地引擎 warmup / 日志级别热替换 / 广播 config-updated 等)。
+/// 失败仅 warn —— tray 操作不该崩 app,用户重试即可。
+fn apply_config_change(app: &AppHandle<Wry>, new_cfg: crate::config::Config, op: &str) {
+    let state = app.state::<AppState>();
+    if let Err(e) = crate::commands::save_config(new_cfg, state, app.clone()) {
+        tracing::warn!(error = %e, op = %op, "tray 触发 save_config 失败");
+        return;
+    }
+    if let Err(e) = refresh(app) {
+        tracing::warn!(error = ?e, "tray 刷新菜单失败");
     }
 }
 
