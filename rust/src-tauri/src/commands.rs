@@ -756,27 +756,84 @@ pub async fn scan_hotword_candidates(
         return Ok(Vec::new());
     }
 
-    // Step 3: LLM 二次筛选(独立 task 跑,不阻塞主线程)
+    // Step 3: 截取末尾摘录(最近的对话相对更代表当前领域),给 LLM 做中文
+    // 术语补充。本地分词只切 ASCII token,中文专名只能从原文摘录里挑。
+    // 12k 字符 ~= 4-6k tokens,跟提示词 + 候选列表合起来仍在常用模型 8k
+    // 上下文以内。
+    let excerpt = take_tail_excerpt(&text, 12_000);
+
+    // Step 4: LLM 二次筛选
     let timeout = cfg.correct_timeout_secs();
     let profile_owned = profile.clone();
     let candidates_for_llm = local_candidates.clone();
-    let suggested_set: std::collections::HashSet<String> =
-        match llm_filter::filter_candidates(&candidates_for_llm, &profile_owned, timeout).await {
-            Ok(list) => list.into_iter().collect(),
+    let llm_words: Vec<String> =
+        match llm_filter::filter_candidates(&candidates_for_llm, &excerpt, &profile_owned, timeout)
+            .await
+        {
+            Ok(list) => list,
             Err(e) => {
                 tracing::warn!(error = %e, "LLM 筛选失败,fallback 不带建议直接给所有候选");
-                std::collections::HashSet::new()
+                Vec::new()
             }
         };
+    let suggested_set: std::collections::HashSet<String> = llm_words.iter().cloned().collect();
 
-    Ok(local_candidates
+    // Step 5: 合并结果。本地英文候选全部保留(suggested 标记是否被 LLM 投赞成);
+    // LLM 从原文挑出的中文 / 不在本地候选里的词,在原文里 count 一下出现次数,
+    // 跟本地候选合并后按 (suggested, freq) 排序。
+    let local_word_set: std::collections::HashSet<String> =
+        local_candidates.iter().map(|c| c.word.clone()).collect();
+    let existing_lc: std::collections::HashSet<String> =
+        cfg.hotwords.iter().map(|w| w.to_lowercase()).collect();
+
+    let mut out: Vec<HotwordCandidate> = local_candidates
         .into_iter()
         .map(|c| HotwordCandidate {
             suggested: suggested_set.contains(&c.word),
             word: c.word,
             freq: c.freq,
         })
-        .collect())
+        .collect();
+
+    for w in &llm_words {
+        let trimmed = w.trim();
+        if trimmed.is_empty() || local_word_set.contains(trimmed) {
+            continue;
+        }
+        if existing_lc.contains(&trimmed.to_lowercase()) {
+            continue;
+        }
+        // 必须在原文里出现过,LLM 凭空生造的词丢掉。matches 是字面子串匹配,
+        // 中文 / 英文都行;count 给用户看"这个词在你历史里出现了几次"。
+        let freq = text.matches(trimmed).count() as u32;
+        if freq == 0 {
+            continue;
+        }
+        out.push(HotwordCandidate {
+            word: trimmed.to_string(),
+            freq,
+            suggested: true,
+        });
+    }
+
+    // suggested 在前;同组按 freq 降序;再按 word 字典序兜底
+    out.sort_by(|a, b| {
+        b.suggested
+            .cmp(&a.suggested)
+            .then_with(|| b.freq.cmp(&a.freq))
+            .then_with(|| a.word.cmp(&b.word))
+    });
+
+    Ok(out)
+}
+
+/// 取文本末尾不超过 `max_chars` 个字符。中文按 char 计算,不会切坏 UTF-8。
+fn take_tail_excerpt(text: &str, max_chars: usize) -> String {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return text.to_string();
+    }
+    text.chars().skip(total - max_chars).collect()
 }
 
 /// 把用户在 modal 里勾选的词追加到 cfg.hotwords。前端可以自己合 cfg.hotwords

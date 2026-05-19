@@ -2233,10 +2233,10 @@ function AutoHotwordModal({
         </div>
 
         <div className="px-5 py-4 space-y-4 overflow-y-auto">
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-[2fr_1fr_2fr] gap-3 items-end">
             <Field label="来源">
               <select
-                className="input"
+                className="input w-full"
                 value={sourceId}
                 onChange={(e) => setSourceId(e.target.value)}
                 disabled={scanning}
@@ -2259,7 +2259,7 @@ function AutoHotwordModal({
             <Field label="最近 N 天">
               <input
                 type="number"
-                className="input"
+                className="input w-full"
                 min={1}
                 max={3650}
                 value={days}
@@ -2268,20 +2268,25 @@ function AutoHotwordModal({
               />
             </Field>
 
-            <Field label="LLM 筛选 Profile">
+            <Field label="LLM 后端(借用润色 profile)">
               <select
-                className="input"
+                className="input w-full"
                 value={profileId}
                 onChange={(e) => setProfileId(e.target.value)}
                 disabled={scanning}
               >
-                {llmProfiles.length === 0 && <option value="">(请先在 AI 润色配一个非 off 的 profile)</option>}
+                {llmProfiles.length === 0 && (
+                  <option value="">(先去 AI 润色配一个非 off 的 profile)</option>
+                )}
                 {llmProfiles.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.name}({POLISH_MODE_LABEL[p.mode] ?? p.mode})
+                    {p.name}
                   </option>
                 ))}
               </select>
+              <p className="text-[11px] text-gray-500 mt-1 leading-snug">
+                只借用 url / model / api key;筛词 prompt 由系统提供,不会用润色 prompt
+              </p>
             </Field>
           </div>
 
@@ -2396,9 +2401,3 @@ function AutoHotwordModal({
     </div>
   );
 }
-
-const POLISH_MODE_LABEL: Record<string, string> = {
-  ollama: "Ollama 本地",
-  openrouter: "OpenRouter",
-  cloud: "OpenAI 兼容",
-};

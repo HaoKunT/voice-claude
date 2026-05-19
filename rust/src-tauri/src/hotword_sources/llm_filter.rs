@@ -70,8 +70,12 @@ struct OllamaResponse {
 /// 调用 LLM 二次筛选候选词。返回 LLM 推荐保留的词列表(可能是 candidates 的
 /// 子集,也可能 LLM 加了一些它觉得相关但没在频率 top 里的词 —— 我们都接受,
 /// 最终用户在 modal 里勾选时还能再过)。
+///
+/// `raw_text_excerpt` 是原文摘录(传一段就行,不必传全量)。本地候选只切英文 /
+/// 数字 token,中文术语只能让 LLM 从原文里挑。
 pub async fn filter_candidates(
     candidates: &[Candidate],
+    raw_text_excerpt: &str,
     profile: &PolishProfile,
     timeout_secs: u64,
 ) -> Result<Vec<String>> {
@@ -82,7 +86,7 @@ pub async fn filter_candidates(
         );
     }
 
-    let prompt = build_filter_prompt(candidates);
+    let prompt = build_filter_prompt(candidates, raw_text_excerpt);
     let response = match profile.mode.as_str() {
         POLISH_MODE_OPENROUTER => {
             call_openai_compatible(
@@ -102,29 +106,43 @@ pub async fn filter_candidates(
 }
 
 /// 构造给 LLM 的提示词,要求它返回 JSON array of strings。
-/// 候选词附带频率,LLM 能据此判断重要性。
-fn build_filter_prompt(candidates: &[Candidate]) -> String {
+/// 候选词附带频率,LLM 能据此判断重要性。原文摘录用于补充中文术语 ——
+/// 本地分词只切英文 / 数字,中文专名得 LLM 从原文里挑。
+fn build_filter_prompt(candidates: &[Candidate], raw_text_excerpt: &str) -> String {
     let mut s = String::from(
         "你是语音识别词典审核员。\n\
          下面是从用户对话历史中按词频提取出的候选词,请筛选哪些适合加入\
          语音识别词典(boosting 用)。\n\n\
          加入标准:\n\
-         - 专有名词、项目名、公司名、人名(如 Claude / voice-claude / Anthropic / FireRedASR)\n\
+         - 专有名词、项目名、公司名、人名(如 Claude / voice-claude / Anthropic / FireRedASR / 豆包 / 讯飞)\n\
          - 易被语音识别错的英文术语 / 技术名词(如 CGEventTap / sherpa-onnx)\n\
+         - 中文专有名词、产品名、人名、技术领域术语(如 克劳德 / 思源笔记 / 飞书)\n\
          - 用户高频提到的领域术语\n\n\
          排除标准:\n\
          - 普通英文单词(如 about / problem / system,即便 freq 很高)\n\
          - 编程通用关键字(function / return / class)\n\
          - 缩写歧义大的(API / SDK,这种容易误识别但词典放进去帮助有限)\n\
-         - 单字符 / 双字符\n\n\
-         候选词(按出现次数排序):\n",
+         - 单字符 / 双字符 ASCII\n\
+         - 中文虚词、单字、常见动词(如 这个 / 然后 / 觉得 / 知道)\n\n\
+         候选词(按出现次数排序,这里只有英文 / 数字 token —— 中文术语\
+         没在本地分词里出现,需要你从下面的「原文摘录」里挑出来加入):\n",
     );
     for c in candidates.iter().take(MAX_CANDIDATES_TO_SEND) {
         s.push_str(&format!("- {} (freq={})\n", c.word, c.freq));
     }
+    if !raw_text_excerpt.trim().is_empty() {
+        s.push_str(
+            "\n原文摘录(从这里挑符合「加入标准」的中文术语 / 专名,加入返回\
+             列表;只能挑摘录里实际出现过的词,不要凭空创造):\n\
+             ----\n",
+        );
+        s.push_str(raw_text_excerpt);
+        s.push_str("\n----\n");
+    }
     s.push_str(
         "\n请输出 JSON array of strings,**只**输出 JSON,不要任何解释 / markdown 包装。\n\
-         例:[\"voice-claude\", \"Claude\", \"sherpa-onnx\"]\n",
+         可以同时包含英文候选词和从原文摘录里挑出的中文术语。\n\
+         例:[\"voice-claude\", \"Claude\", \"sherpa-onnx\", \"克劳德\", \"豆包\"]\n",
     );
     s
 }
@@ -307,9 +325,32 @@ mod tests {
                 freq: 30,
             },
         ];
-        let p = build_filter_prompt(&cands);
+        let p = build_filter_prompt(&cands, "");
         assert!(p.contains("voice-claude"));
         assert!(p.contains("freq=50"));
         assert!(p.contains("JSON array"));
+    }
+
+    #[test]
+    fn build_prompt_includes_excerpt_when_provided() {
+        let cands = vec![Candidate {
+            word: "Claude".into(),
+            freq: 20,
+        }];
+        let p = build_filter_prompt(&cands, "用户聊到了 克劳德 和 豆包 还有 飞书 这几个产品。");
+        assert!(p.contains("克劳德"));
+        // 既然原文摘录里实际有内容,prompt 里就会出现 section 起始标记 + 摘录围栏
+        assert!(p.contains("----"));
+    }
+
+    #[test]
+    fn build_prompt_skips_excerpt_when_empty() {
+        let cands = vec![Candidate {
+            word: "Claude".into(),
+            freq: 20,
+        }];
+        let p = build_filter_prompt(&cands, "  \n  ");
+        // 没有摘录时不应出现围栏分隔符
+        assert!(!p.contains("\n----\n"));
     }
 }

@@ -1,16 +1,22 @@
 //! Claude Code 历史 source。读 `~/.claude/projects/<encoded-cwd>/<session>.jsonl`
-//! 的 `type=="user"` 行,把 message.content 拼起来作为用户文本。
+//! 的 user / assistant 行,提取 plain text 内容做热词分析。
 //!
 //! jsonl 行结构(实测):
 //! ```
-//! {"type":"user","message":{"role":"user","content":"<text>"},
+//! {"type":"user","message":{"role":"user","content":"<text or blocks>"},
 //!  "timestamp":"2026-05-12T02:34:45.183Z","cwd":"...", ...}
+//! {"type":"assistant","message":{"role":"assistant","content":[
+//!     {"type":"thinking", ...},
+//!     {"type":"text","text":"..."},
+//!     {"type":"tool_use", ...}
+//! ]}, ...}
 //! ```
-//! `message.content` 可能是字符串,也可能是 array(用户上传图片 / file 时
-//! Anthropic API 格式),解析时两种都兼容。
 //!
-//! 隐私:只读用户自己编辑过的 user message,不读 assistant 回复(也读不动
-//! —— assistant 行 thinking 是 base64 加密)。
+//! **过滤规则**(用户明确要求):
+//! - 只取 user 真实输入文本 + assistant 回复文字内容(text 类型 block)
+//! - 跳过工具调用(`tool_use`)、工具执行结果(`tool_result`)
+//! - 跳过 thinking(Claude 内部推理,不是给用户看的回复)
+//! - 跳过 image / 其他媒体 block
 
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
@@ -39,8 +45,8 @@ impl HotwordSource for ClaudeCodeSource {
         };
         let cutoff = Utc::now() - Duration::days(days as i64);
         let mut buf = String::new();
-        let mut file_count = 0usize;
-        let mut user_msg_count = 0usize;
+        let mut stats = ScanStats::default();
+
         for project in std::fs::read_dir(&root)? {
             let project = project?;
             if !project.file_type()?.is_dir() {
@@ -52,7 +58,7 @@ impl HotwordSource for ClaudeCodeSource {
                 if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
                     continue;
                 }
-                file_count += 1;
+                stats.file_count += 1;
                 let content = match std::fs::read_to_string(&path) {
                     Ok(c) => c,
                     Err(_) => continue,
@@ -65,9 +71,11 @@ impl HotwordSource for ClaudeCodeSource {
                     let Ok(rec) = serde_json::from_str::<RawLine>(line) else {
                         continue;
                     };
-                    if rec.r#type.as_deref() != Some("user") {
-                        continue;
-                    }
+                    let role = match rec.r#type.as_deref() {
+                        Some("user") => Role::User,
+                        Some("assistant") => Role::Assistant,
+                        _ => continue,
+                    };
                     // 时间戳过滤
                     if let Some(ts) = rec.timestamp.as_deref() {
                         if let Ok(t) = DateTime::parse_from_rfc3339(ts) {
@@ -77,34 +85,75 @@ impl HotwordSource for ClaudeCodeSource {
                         }
                     }
                     let Some(msg) = rec.message else { continue };
-                    let text = match msg.content {
-                        Content::Text(s) => s,
-                        Content::Blocks(blocks) => blocks
-                            .into_iter()
-                            .filter_map(|b| match b {
-                                ContentBlock::Text { text } => Some(text),
-                                ContentBlock::Other => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                    };
+                    let text = extract_plain_text(msg.content, &mut stats);
                     if text.trim().is_empty() {
                         continue;
                     }
                     buf.push_str(&text);
                     buf.push('\n');
-                    user_msg_count += 1;
+                    match role {
+                        Role::User => stats.user_msg_count += 1,
+                        Role::Assistant => stats.assistant_msg_count += 1,
+                    }
                 }
             }
         }
         tracing::info!(
-            file_count,
-            user_msg_count,
+            file_count = stats.file_count,
+            user_msgs = stats.user_msg_count,
+            assistant_msgs = stats.assistant_msg_count,
+            text_blocks = stats.text_blocks,
+            skipped_tool_use = stats.skipped_tool_use,
+            skipped_tool_result = stats.skipped_tool_result,
+            skipped_thinking = stats.skipped_thinking,
+            skipped_other = stats.skipped_other,
             extracted_chars = buf.chars().count(),
             days,
             "Claude Code history scanned"
         );
         Ok(buf)
+    }
+}
+
+enum Role {
+    User,
+    Assistant,
+}
+
+#[derive(Default)]
+struct ScanStats {
+    file_count: usize,
+    user_msg_count: usize,
+    assistant_msg_count: usize,
+    text_blocks: usize,
+    skipped_tool_use: usize,
+    skipped_tool_result: usize,
+    skipped_thinking: usize,
+    skipped_other: usize,
+}
+
+fn extract_plain_text(content: Content, stats: &mut ScanStats) -> String {
+    match content {
+        Content::Text(s) => {
+            stats.text_blocks += 1;
+            s
+        }
+        Content::Blocks(blocks) => {
+            let mut parts = Vec::new();
+            for b in blocks {
+                match b {
+                    ContentBlock::Text { text } => {
+                        stats.text_blocks += 1;
+                        parts.push(text);
+                    }
+                    ContentBlock::ToolUse => stats.skipped_tool_use += 1,
+                    ContentBlock::ToolResult => stats.skipped_tool_result += 1,
+                    ContentBlock::Thinking => stats.skipped_thinking += 1,
+                    ContentBlock::Other => stats.skipped_other += 1,
+                }
+            }
+            parts.join("\n")
+        }
     }
 }
 
@@ -144,6 +193,76 @@ enum ContentBlock {
     Text {
         text: String,
     },
+    ToolUse,
+    ToolResult,
+    Thinking,
     #[serde(other)]
     Other,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_text_only_from_blocks() {
+        let mut stats = ScanStats::default();
+        let blocks = Content::Blocks(vec![
+            ContentBlock::Text {
+                text: "用户问题".into(),
+            },
+            ContentBlock::ToolUse,
+            ContentBlock::Text {
+                text: "更多内容".into(),
+            },
+            ContentBlock::ToolResult,
+            ContentBlock::Thinking,
+        ]);
+        let r = extract_plain_text(blocks, &mut stats);
+        assert_eq!(r, "用户问题\n更多内容");
+        assert_eq!(stats.text_blocks, 2);
+        assert_eq!(stats.skipped_tool_use, 1);
+        assert_eq!(stats.skipped_tool_result, 1);
+        assert_eq!(stats.skipped_thinking, 1);
+    }
+
+    #[test]
+    fn extract_string_content() {
+        let mut stats = ScanStats::default();
+        let r = extract_plain_text(Content::Text("hello".into()), &mut stats);
+        assert_eq!(r, "hello");
+        assert_eq!(stats.text_blocks, 1);
+    }
+
+    #[test]
+    fn unknown_block_type_counts_as_other() {
+        // tool_result 里实际格式可能是 {"type":"tool_result","content":"..."} —— serde 用 tag
+        // 区分,只要是 snake_case match 上 ToolResult/ToolUse/Thinking 就走对应分支,
+        // 否则走 Other(比如 image / 未来新增的 block 类型)
+        let json = r#"[{"type":"image","source":{"type":"base64","data":"..."}}]"#;
+        let blocks: Vec<ContentBlock> = serde_json::from_str(json).unwrap();
+        let mut stats = ScanStats::default();
+        for b in blocks {
+            match b {
+                ContentBlock::Other => stats.skipped_other += 1,
+                _ => panic!("expected Other for image block"),
+            }
+        }
+        assert_eq!(stats.skipped_other, 1);
+    }
+
+    #[test]
+    fn tool_result_block_routes_correctly() {
+        let json = r#"[{"type":"tool_result","tool_use_id":"x","content":"..."}]"#;
+        let blocks: Vec<ContentBlock> = serde_json::from_str(json).unwrap();
+        let mut stats = ScanStats::default();
+        for b in blocks {
+            if let ContentBlock::ToolResult = b {
+                stats.skipped_tool_result += 1;
+            } else {
+                panic!("expected ToolResult");
+            }
+        }
+        assert_eq!(stats.skipped_tool_result, 1);
+    }
 }
