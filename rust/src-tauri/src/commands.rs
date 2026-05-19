@@ -697,3 +697,115 @@ pub fn open_accessibility_settings() -> Result<(), String> {
         Err("仅 macOS 支持".into())
     }
 }
+
+// ─── 识别词典自动生成(从外部数据源 + LLM 二次筛选) ──────────────────
+
+/// 列出当前可用的词典数据源(目前只有 Claude Code 历史)。
+#[tauri::command]
+pub fn list_hotword_sources() -> Vec<crate::hotword_sources::SourceInfo> {
+    crate::hotword_sources::list_for_ui()
+}
+
+#[derive(serde::Serialize)]
+pub struct HotwordCandidate {
+    pub word: String,
+    pub freq: u32,
+    /// LLM 是否推荐加入(false 时前端默认不勾选,但仍展示给用户决定)。
+    pub suggested: bool,
+}
+
+/// 扫描数据源 → 频率统计 → LLM 二次筛选 → 返回候选给前端。
+///
+/// - `source_id`:`list_hotword_sources` 里某项的 id(当前 `"claude_code"`)
+/// - `days`:扫描最近 N 天的数据
+/// - `profile_id`:用哪个 polish profile 的 LLM 后端做筛选(必须是 mode != off 的)
+///
+/// 返回的列表已经过滤掉用户当前 cfg.hotwords 已有的词,前端 modal 直接展示让
+/// 用户勾选。 `suggested=true` 是 LLM 推荐的;`false` 是 LLM 没选但本地频率
+/// 给到的备选(用户也能在 modal 里手动勾选)。
+#[tauri::command]
+pub async fn scan_hotword_candidates(
+    source_id: String,
+    days: u32,
+    profile_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<HotwordCandidate>, String> {
+    use crate::hotword_sources::{analyze, find_source, llm_filter};
+    let cfg = state.snapshot();
+    let source = find_source(&source_id).ok_or_else(|| format!("未知数据源: {}", source_id))?;
+    if !source.available() {
+        return Err(format!("数据源 {} 不可用(目录不存在?)", source.label()));
+    }
+    let profile = cfg
+        .polish_profiles
+        .iter()
+        .find(|p| p.id == profile_id)
+        .ok_or_else(|| format!("未知 profile: {}", profile_id))?;
+
+    // Step 1: 抽取数据源用户文本
+    let text = source
+        .extract_user_text(days)
+        .map_err(|e| format!("读取数据源失败: {}", e))?;
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Step 2: 本地频率统计 + 停用词过滤 + 排除已有
+    let local_candidates = analyze::candidates_from_text(&text, &cfg.hotwords, 3, 200);
+    if local_candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Step 3: LLM 二次筛选(独立 task 跑,不阻塞主线程)
+    let timeout = cfg.correct_timeout_secs();
+    let profile_owned = profile.clone();
+    let candidates_for_llm = local_candidates.clone();
+    let suggested_set: std::collections::HashSet<String> =
+        match llm_filter::filter_candidates(&candidates_for_llm, &profile_owned, timeout).await {
+            Ok(list) => list.into_iter().collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "LLM 筛选失败,fallback 不带建议直接给所有候选");
+                std::collections::HashSet::new()
+            }
+        };
+
+    Ok(local_candidates
+        .into_iter()
+        .map(|c| HotwordCandidate {
+            suggested: suggested_set.contains(&c.word),
+            word: c.word,
+            freq: c.freq,
+        })
+        .collect())
+}
+
+/// 把用户在 modal 里勾选的词追加到 cfg.hotwords。前端可以自己合 cfg.hotwords
+/// 然后调 save_config —— 提供本命令是为了避免前端做 dedup / save 这种
+/// 跟存储格式相关的逻辑,后端集中处理。
+#[tauri::command]
+pub fn add_hotwords(
+    words: Vec<String>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<usize, String> {
+    use std::collections::HashSet;
+    let mut new_cfg = (*state.snapshot()).clone();
+    // 保留原顺序追加新词,case-insensitive 去重(跟 hotwords 模块保持一致)
+    let mut seen: HashSet<String> = new_cfg.hotwords.iter().map(|w| w.to_lowercase()).collect();
+    let mut added = 0;
+    for w in words {
+        let trimmed = w.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lc = trimmed.to_lowercase();
+        if seen.insert(lc) {
+            new_cfg.hotwords.push(trimmed.to_string());
+            added += 1;
+        }
+    }
+    new_cfg.save().map_err(|e| e.to_string())?;
+    state.replace(new_cfg);
+    let _ = app.emit("config-updated", ());
+    Ok(added)
+}

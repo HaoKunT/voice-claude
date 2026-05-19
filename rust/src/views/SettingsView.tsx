@@ -18,6 +18,9 @@ import {
   LocalEngineInfo,
   PunctModelInfo,
   PunctDownloadProgress,
+  HotwordSourceInfo,
+  HotwordCandidate,
+  POLISH_MODE_OFF,
 } from "../api";
 import {
   parseHotkeyKeys,
@@ -51,6 +54,7 @@ export function SettingsView({ section }: { section: SettingsSection }) {
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [errMsg, setErrMsg] = useState("");
   const [benchOpen, setBenchOpen] = useState(false);
+  const [autoHotwordOpen, setAutoHotwordOpen] = useState(false);
   // tray 改 ASR / profile 之类后端改 cfg 时,后端 emit "config-updated",
   // 前端 listener reload 后 setCfg(fresh) 会触发自动保存 useEffect 又写一次盘
   // —— 用 ref 标记"刚刚 reload 完",跳过紧接着那次自动保存。
@@ -504,6 +508,9 @@ export function SettingsView({ section }: { section: SettingsSection }) {
             <div className="flex gap-2 items-center">
               <span className="text-[11px] text-gray-500">{cfg.hotwords.length} 个词</span>
               <div className="flex-1" />
+              <button className="btn-ghost" onClick={() => setAutoHotwordOpen(true)}>
+                ✨ 从历史自动生成
+              </button>
               <button className="btn-ghost" onClick={() => handleExportCsv()}>
                 导出 CSV
               </button>
@@ -538,6 +545,22 @@ export function SettingsView({ section }: { section: SettingsSection }) {
       )}
 
       {benchOpen && <BenchModal onClose={() => setBenchOpen(false)} cfg={cfg} />}
+      {autoHotwordOpen && (
+        <AutoHotwordModal
+          cfg={cfg}
+          onClose={() => setAutoHotwordOpen(false)}
+          onAdded={async () => {
+            try {
+              const fresh = await api.getConfig();
+              skipNextSaveRef.current = true;
+              setCfg(fresh);
+            } catch {
+              /* 后端 add 已成功,前端拿不到 cfg 也不影响下次手动改字段 */
+            }
+            setAutoHotwordOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -2063,3 +2086,319 @@ function CopyTinyButton({ value }: { value: string }) {
     </button>
   );
 }
+
+function AutoHotwordModal({
+  cfg,
+  onClose,
+  onAdded,
+}: {
+  cfg: Config;
+  onClose: () => void;
+  onAdded: () => void | Promise<void>;
+}) {
+  const [sources, setSources] = useState<HotwordSourceInfo[]>([]);
+  const [sourceId, setSourceId] = useState<string>("");
+  const [days, setDays] = useState<number>(30);
+  const [profileId, setProfileId] = useState<string>(cfg.active_profile_id);
+  const [scanning, setScanning] = useState(false);
+  const [candidates, setCandidates] = useState<HotwordCandidate[] | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [errMsg, setErrMsg] = useState<string>("");
+  const [adding, setAdding] = useState(false);
+
+  // 只能用 mode != off 的 profile 做 LLM 二次筛选
+  const llmProfiles = useMemo(
+    () => cfg.polish_profiles.filter((p) => p.mode !== POLISH_MODE_OFF && p.mode !== ""),
+    [cfg.polish_profiles],
+  );
+
+  // 已存在的热词集合(case-insensitive),用来在结果列表里标"已存在"
+  const existingLc = useMemo(
+    () => new Set(cfg.hotwords.map((w) => w.toLowerCase())),
+    [cfg.hotwords],
+  );
+
+  useEffect(() => {
+    api
+      .listHotwordSources()
+      .then((list) => {
+        setSources(list);
+        // 默认选第一个 available 的 source
+        const first = list.find((s) => s.available) ?? list[0];
+        if (first) setSourceId(first.id);
+      })
+      .catch((e) => setErrMsg(`列出来源失败:${e}`));
+  }, []);
+
+  useEffect(() => {
+    // active profile 如果是 off,默认选第一个 LLM profile
+    if (llmProfiles.length === 0) {
+      setProfileId("");
+      return;
+    }
+    const exists = llmProfiles.find((p) => p.id === profileId);
+    if (!exists) setProfileId(llmProfiles[0].id);
+  }, [llmProfiles, profileId]);
+
+  const currentSource = sources.find((s) => s.id === sourceId);
+  const canScan =
+    !scanning &&
+    !!sourceId &&
+    !!currentSource?.available &&
+    !!profileId &&
+    days > 0;
+
+  const startScan = async () => {
+    setErrMsg("");
+    setCandidates(null);
+    setPicked(new Set());
+    setScanning(true);
+    try {
+      const list = await api.scanHotwordCandidates(sourceId, days, profileId);
+      setCandidates(list);
+      // 默认勾上 LLM 投赞成票的 + 排除已经存在于 hotwords 的
+      const auto = new Set<string>();
+      for (const c of list) {
+        if (c.suggested && !existingLc.has(c.word.toLowerCase())) {
+          auto.add(c.word);
+        }
+      }
+      setPicked(auto);
+    } catch (e) {
+      setErrMsg(String(e));
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const togglePick = (word: string) => {
+    const next = new Set(picked);
+    if (next.has(word)) next.delete(word);
+    else next.add(word);
+    setPicked(next);
+  };
+
+  const selectAll = () => {
+    if (!candidates) return;
+    setPicked(new Set(candidates.filter((c) => !existingLc.has(c.word.toLowerCase())).map((c) => c.word)));
+  };
+  const selectSuggested = () => {
+    if (!candidates) return;
+    setPicked(
+      new Set(
+        candidates
+          .filter((c) => c.suggested && !existingLc.has(c.word.toLowerCase()))
+          .map((c) => c.word),
+      ),
+    );
+  };
+  const clearPicked = () => setPicked(new Set());
+
+  const addPicked = async () => {
+    if (picked.size === 0) return;
+    setAdding(true);
+    setErrMsg("");
+    try {
+      await api.addHotwords(Array.from(picked));
+      await onAdded();
+    } catch (e) {
+      setErrMsg(`添加失败:${e}`);
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col rounded-2xl bg-bg-800 border border-white/10 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-3 border-b border-white/[0.06]">
+          <div>
+            <h2 className="text-base font-semibold text-gray-100">✨ 自动生成识别词典</h2>
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              扫描历史数据 → 本地词频提取 → LLM 二次筛选 → 用户勾选导入
+            </p>
+          </div>
+          <button
+            className="w-8 h-8 rounded-lg hover:bg-white/[0.06] text-gray-400 hover:text-gray-200 transition"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4 overflow-y-auto">
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="来源">
+              <select
+                className="input"
+                value={sourceId}
+                onChange={(e) => setSourceId(e.target.value)}
+                disabled={scanning}
+              >
+                {sources.length === 0 && <option value="">(无可用来源)</option>}
+                {sources.map((s) => (
+                  <option key={s.id} value={s.id} disabled={!s.available}>
+                    {s.label}
+                    {s.available ? "" : "(不可用)"}
+                  </option>
+                ))}
+              </select>
+              {currentSource && !currentSource.available && (
+                <p className="text-[11px] text-orange-300/80 mt-1">
+                  来源不可用 —— Claude Code 历史目录(~/.claude/projects)不存在
+                </p>
+              )}
+            </Field>
+
+            <Field label="最近 N 天">
+              <input
+                type="number"
+                className="input"
+                min={1}
+                max={3650}
+                value={days}
+                onChange={(e) => setDays(Math.max(1, Number(e.target.value) || 30))}
+                disabled={scanning}
+              />
+            </Field>
+
+            <Field label="LLM 筛选 Profile">
+              <select
+                className="input"
+                value={profileId}
+                onChange={(e) => setProfileId(e.target.value)}
+                disabled={scanning}
+              >
+                {llmProfiles.length === 0 && <option value="">(请先在 AI 润色配一个非 off 的 profile)</option>}
+                {llmProfiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}({POLISH_MODE_LABEL[p.mode] ?? p.mode})
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              className="btn-primary text-xs"
+              onClick={startScan}
+              disabled={!canScan}
+            >
+              {scanning ? "扫描中…" : candidates ? "重新扫描" : "开始扫描"}
+            </button>
+            {scanning && (
+              <span className="text-[11px] text-gray-400">
+                正在读历史 + 调 LLM,大概 5–30 秒…
+              </span>
+            )}
+            {!scanning && candidates && (
+              <span className="text-[11px] text-gray-500">
+                共 {candidates.length} 个候选,LLM 推荐 {candidates.filter((c) => c.suggested).length} 个
+              </span>
+            )}
+          </div>
+
+          {errMsg && (
+            <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-[12px] text-red-300">
+              {errMsg}
+            </div>
+          )}
+
+          {candidates && candidates.length === 0 && !scanning && (
+            <div className="px-3 py-6 rounded-lg bg-white/[0.02] border border-white/[0.06] text-center text-[12px] text-gray-400">
+              没找到候选词。试试加大「最近 N 天」,或换一个有更多历史数据的来源。
+            </div>
+          )}
+
+          {candidates && candidates.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <button className="btn-ghost !py-0.5 !px-2 text-[11px]" onClick={selectAll}>
+                  全选(去除已存在)
+                </button>
+                <button
+                  className="btn-ghost !py-0.5 !px-2 text-[11px]"
+                  onClick={selectSuggested}
+                >
+                  仅 LLM 推荐
+                </button>
+                <button className="btn-ghost !py-0.5 !px-2 text-[11px]" onClick={clearPicked}>
+                  清空
+                </button>
+                <span className="ml-auto text-[11px] text-gray-500">已选 {picked.size}</span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1.5 max-h-[40vh] overflow-y-auto pr-1">
+                {candidates.map((c) => {
+                  const exists = existingLc.has(c.word.toLowerCase());
+                  const checked = picked.has(c.word);
+                  return (
+                    <label
+                      key={c.word}
+                      className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-xs transition cursor-pointer ${
+                        exists
+                          ? "bg-white/[0.01] border-white/[0.04] text-gray-600"
+                          : checked
+                            ? "bg-accent/10 border-accent/40 text-gray-100"
+                            : "bg-white/[0.02] border-white/[0.06] text-gray-300 hover:bg-white/[0.04]"
+                      }`}
+                      title={exists ? "已存在于识别词典" : ""}
+                    >
+                      <input
+                        type="checkbox"
+                        className="accent-accent"
+                        checked={checked}
+                        disabled={exists}
+                        onChange={() => togglePick(c.word)}
+                      />
+                      <span className="font-mono truncate">{c.word}</span>
+                      <span className="ml-auto text-[10px] text-gray-500 flex-shrink-0">
+                        {c.suggested && (
+                          <span className="px-1 py-px rounded bg-accent/20 text-accent mr-1">
+                            ✓
+                          </span>
+                        )}
+                        {exists && (
+                          <span className="px-1 py-px rounded bg-white/[0.04] mr-1">
+                            已存在
+                          </span>
+                        )}
+                        ×{c.freq}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-white/[0.06]">
+          <button className="btn-ghost" onClick={onClose} disabled={adding}>
+            取消
+          </button>
+          <button
+            className="btn-primary"
+            onClick={addPicked}
+            disabled={picked.size === 0 || adding}
+          >
+            {adding ? "添加中…" : `添加 ${picked.size} 个到词典`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const POLISH_MODE_LABEL: Record<string, string> = {
+  ollama: "Ollama 本地",
+  openrouter: "OpenRouter",
+  cloud: "OpenAI 兼容",
+};

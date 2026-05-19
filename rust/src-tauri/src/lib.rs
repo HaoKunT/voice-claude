@@ -21,6 +21,7 @@ pub mod config;
 pub mod correct;
 pub mod dirs;
 pub mod history;
+pub mod hotword_sources;
 pub mod indicator;
 pub mod input;
 pub mod keyboard;
@@ -224,6 +225,9 @@ pub fn run() {
             commands::import_config,
             commands::check_accessibility,
             commands::open_accessibility_settings,
+            commands::list_hotword_sources,
+            commands::scan_hotword_candidates,
+            commands::add_hotwords,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

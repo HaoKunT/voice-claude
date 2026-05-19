@@ -140,6 +140,19 @@ export interface BenchResult {
   ms: number;
 }
 
+export interface HotwordSourceInfo {
+  id: string;
+  label: string;
+  available: boolean;
+}
+
+export interface HotwordCandidate {
+  word: string;
+  freq: number;
+  /** LLM 二次筛选投了赞成票的候选词;UI 默认勾上 */
+  suggested: boolean;
+}
+
 export interface AppInfo {
   name: string;
   version: string;
@@ -191,6 +204,14 @@ export const api = {
   importConfig: (json: string) => invoke<void>("import_config", { json }),
   checkAccessibility: () => invoke<boolean>("check_accessibility"),
   openAccessibilitySettings: () => invoke<void>("open_accessibility_settings"),
+  listHotwordSources: () => invoke<HotwordSourceInfo[]>("list_hotword_sources"),
+  scanHotwordCandidates: (sourceId: string, days: number, profileId: string) =>
+    invoke<HotwordCandidate[]>("scan_hotword_candidates", {
+      sourceId,
+      days,
+      profileId,
+    }),
+  addHotwords: (words: string[]) => invoke<number>("add_hotwords", { words }),
 };
 
 export const ASR_PROVIDERS = [
