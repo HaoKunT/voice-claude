@@ -58,6 +58,19 @@ impl HotwordSource for ClaudeCodeSource {
                 if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
                     continue;
                 }
+                // 文件级 mtime 短路:jsonl 一旦不再 append,mtime 就是最后一行
+                // 写入时间;mtime < cutoff 说明文件里所有行都早于 cutoff,
+                // 整个文件直接跳过(既快又对)。注意只能短路,反过来不行 ——
+                // 同一文件可能横跨好几天,mtime ≥ cutoff 仍要按行 timestamp 再过。
+                if let Ok(meta) = session.metadata() {
+                    if let Ok(mtime) = meta.modified() {
+                        let mtime_utc: DateTime<Utc> = mtime.into();
+                        if mtime_utc < cutoff {
+                            stats.files_skipped_by_mtime += 1;
+                            continue;
+                        }
+                    }
+                }
                 stats.file_count += 1;
                 let content = match std::fs::read_to_string(&path) {
                     Ok(c) => c,
@@ -76,13 +89,21 @@ impl HotwordSource for ClaudeCodeSource {
                         Some("assistant") => Role::Assistant,
                         _ => continue,
                     };
-                    // 时间戳过滤
-                    if let Some(ts) = rec.timestamp.as_deref() {
-                        if let Ok(t) = DateTime::parse_from_rfc3339(ts) {
-                            if t.with_timezone(&Utc) < cutoff {
-                                continue;
-                            }
-                        }
+                    // 时间戳过滤(safer default):没 timestamp / parse 失败一律
+                    // 跳过。之前是"没 timestamp 就放行",summary 行 / 特殊条目
+                    // 没 timestamp 就无视 days 都进候选,用户反馈"days=1 还是
+                    // 出好多天前的内容"就是这条。
+                    let Some(ts) = rec.timestamp.as_deref() else {
+                        stats.skipped_no_timestamp += 1;
+                        continue;
+                    };
+                    let Ok(t) = DateTime::parse_from_rfc3339(ts) else {
+                        stats.skipped_bad_timestamp += 1;
+                        continue;
+                    };
+                    if t.with_timezone(&Utc) < cutoff {
+                        stats.skipped_by_timestamp += 1;
+                        continue;
                     }
                     let Some(msg) = rec.message else { continue };
                     let text = extract_plain_text(msg.content, &mut stats);
@@ -100,9 +121,13 @@ impl HotwordSource for ClaudeCodeSource {
         }
         tracing::info!(
             file_count = stats.file_count,
+            files_skipped_by_mtime = stats.files_skipped_by_mtime,
             user_msgs = stats.user_msg_count,
             assistant_msgs = stats.assistant_msg_count,
             text_blocks = stats.text_blocks,
+            skipped_by_timestamp = stats.skipped_by_timestamp,
+            skipped_no_timestamp = stats.skipped_no_timestamp,
+            skipped_bad_timestamp = stats.skipped_bad_timestamp,
             skipped_tool_use = stats.skipped_tool_use,
             skipped_tool_result = stats.skipped_tool_result,
             skipped_thinking = stats.skipped_thinking,
@@ -123,9 +148,13 @@ enum Role {
 #[derive(Default)]
 struct ScanStats {
     file_count: usize,
+    files_skipped_by_mtime: usize,
     user_msg_count: usize,
     assistant_msg_count: usize,
     text_blocks: usize,
+    skipped_by_timestamp: usize,
+    skipped_no_timestamp: usize,
+    skipped_bad_timestamp: usize,
     skipped_tool_use: usize,
     skipped_tool_result: usize,
     skipped_thinking: usize,

@@ -15,10 +15,26 @@ use tokio_tungstenite::tungstenite::handshake::client::Request as HandshakeReque
 use tokio_tungstenite::tungstenite::http::Uri;
 use tokio_tungstenite::tungstenite::Message;
 
-/// 豆包双向流式热词直传上限:官方文档标称 100 tokens,保守按词数切;
-/// 每个中文词约 1-2 tokens,英文专有名词也多在 1-2 tokens 之内,取 50 个词。
+/// 防呆上限:cfg.hotwords 可能有上百上千词,完全无脑塞会让 init payload 巨大。
+/// 文档标称双向流式 100 tokens,但实测 269 chars(15 词)server 不报错,说明
+/// 火山可能只是软性建议或 server 端自己截。**不主动扔** —— 由 server 自己决定。
+/// 这里的 50 词只是防极端情况(用户配了上千词时不一次发完)。
 const MAX_INJECT_HOTWORDS: usize = 50;
 
+// **endpoint 选择**:用优化版 `bigmodel_async`(rtf / 首尾字时延更优,只在
+// 结果变化时返回数据包)。
+//
+// **热词的现状**(2026-05-19 验证):
+// 极小词典(只 1 词 `Claude`,context 32 chars 远低于文档 100 tokens 上限)
+// 实测 "用 Claude 写代码" 仍被识成 "用 Cloud Code 写代码",`all_matched_hotwords`
+// 一直为空。说明 `bigmodel_async` 上 inline `corpus.context` 注入的 hotwords
+// 在 server 端权重极低或根本不生效。
+//
+// 长期方案:火山控制台预建热词表 + `corpus.boosting_table_id` 引用(走自学习
+// 平台路径)。要做需要用户手动操作控制台,目前先保留 inline 注入(对部分
+// 不常见的中文术语 / 没同音替代品的英文词如 ClickHouse 仍有效),不强求 100%
+// 命中。voice-claude 的热词另一条路 —— LLM 校正 prompt 注入 —— 在 LLM 层
+// 仍能纠回写法(`Cloud code` → `Claude code`)。
 const VOLC_ENDPOINT: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
 
 // Protocol 常量
@@ -77,11 +93,24 @@ fn build_client_request(uid: &str, hotwords: &[String]) -> Vec<u8> {
         "end_window_size": 3000,
     });
     if !hotwords.is_empty() {
-        // 豆包 API 约定:corpus.context 的值是一个 JSON 字符串(内部 JSON 序列化)
+        // 豆包大模型流式 ASR 的"上下文热词"约定:`request.corpus.context` 是
+        // 一个**可被 unmarshal 的 JSON 字符串**(对,字符串里再包一层 JSON),
+        // schema 是 `{"hotwords":[{"word":"X"}, ...]}`。详见火山文档
+        // https://www.volcengine.com/docs/6561/1354869
+        //
+        // 文档说双向流式上限 100 tokens,但实测超过也不报错(server 静默截或
+        // 直接接受);我们这边只保 collect_hotwords 的 50 词防呆,不主动按
+        // char 数裁 —— 如果 server 真有问题会回 server error,届时再调。
         let ctx_inner = json!({
             "hotwords": hotwords.iter().map(|w| json!({ "word": w })).collect::<Vec<_>>(),
         });
-        request["corpus"] = json!({ "context": ctx_inner.to_string() });
+        let ctx_str = ctx_inner.to_string();
+        tracing::debug!(
+            words = hotwords.len(),
+            ctx_chars = ctx_str.chars().count(),
+            "豆包 corpus.context 拼接"
+        );
+        request["corpus"] = json!({ "context": ctx_str });
     }
     let payload = json!({
         "user": { "uid": uid },
@@ -94,7 +123,14 @@ fn build_client_request(uid: &str, hotwords: &[String]) -> Vec<u8> {
         },
         "request": request,
     });
-    serde_json::to_vec(&payload).unwrap_or_default()
+    let bytes = serde_json::to_vec(&payload).unwrap_or_default();
+    // dump 完整 init payload 到 debug 日志,方便用户对照官方文档验证 hotwords
+    // 字段在不在对的位置;debug 级别避免污染默认日志。
+    tracing::debug!(
+        payload = %String::from_utf8_lossy(&bytes),
+        "豆包 init payload"
+    );
+    bytes
 }
 
 #[derive(Deserialize, Default)]
@@ -428,13 +464,19 @@ mod tests {
 
     #[test]
     fn build_request_with_hotwords_stringifies_context() {
-        let hw = vec!["Claude".to_string(), "GitHub".to_string()];
+        // corpus.context 必须是可 unmarshal 的 JSON 字符串(豆包协议),
+        // 写纯文本会触发 server 端报 "fail to unmarshal corpusCtx"。
+        let hw = vec![
+            "Claude".to_string(),
+            "GitHub".to_string(),
+            "克劳德".to_string(),
+        ];
         let bytes = build_client_request("uid-1", &hw);
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        // corpus.context 必须是字符串而不是嵌套对象,API 特殊约定
         let ctx = v["request"]["corpus"]["context"].as_str().unwrap();
         let parsed: serde_json::Value = serde_json::from_str(ctx).unwrap();
         assert_eq!(parsed["hotwords"][0]["word"], "Claude");
         assert_eq!(parsed["hotwords"][1]["word"], "GitHub");
+        assert_eq!(parsed["hotwords"][2]["word"], "克劳德");
     }
 }

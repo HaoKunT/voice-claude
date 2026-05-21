@@ -506,24 +506,9 @@ export function SettingsView({ section }: { section: SettingsSection }) {
               <code className="px-1 rounded bg-white/[0.04] mx-0.5">{"{glossary}"}</code>
               占位符,或直接写映射规则。
             </p>
-            <textarea
-              className="input font-mono w-full min-h-[200px] resize-y"
-              placeholder="一行一个词,如:&#10;Claude&#10;voice-claude&#10;FireRedASR"
-              value={cfg.hotwords.join("\n")}
-              onChange={(e) => {
-                const list = e.target.value
-                  .split("\n")
-                  .map((s) => s.trim())
-                  .filter((s) => s.length > 0);
-                // 去重,保留首次出现的顺序(用户输入顺序)
-                const seen = new Set<string>();
-                const dedup = list.filter((w) => {
-                  if (seen.has(w)) return false;
-                  seen.add(w);
-                  return true;
-                });
-                setCfg({ ...cfg, hotwords: dedup });
-              }}
+            <HotwordsEditor
+              hotwords={cfg.hotwords}
+              onCommit={(words) => setCfg({ ...cfg, hotwords: words })}
             />
             <div className="flex gap-2 items-center">
               <span className="text-[11px] text-gray-500">{cfg.hotwords.length} 个词</span>
@@ -2116,6 +2101,70 @@ function CopyTinyButton({ value }: { value: string }) {
     >
       {copied ? "✓" : "⎘"}
     </button>
+  );
+}
+
+/// 识别词典文本框。用本地 state 维持 raw 文本,仅 onBlur 时 normalize +
+/// commit 回 cfg。
+///
+/// 之前直接 `value={cfg.hotwords.join("\n")} onChange={split→trim→filter→setCfg}`
+/// 是不可输入的:受控 value 比用户输入更激进 normalize(空行 / 行首空格 /
+/// 重复词都被立刻吃掉),光标乱跳,Enter 后看似换行但下次重渲染消失。
+///
+/// 解法:本地 state hold raw 字符串,onChange 只更新本地;onBlur 才 split +
+/// trim + dedup 写回 cfg。外部 cfg.hotwords 变化(如 add_hotwords 后 listener
+/// 同步)用 ref 标记上次 commit 过的内容,避免 commit 触发 cfg 更新又反向
+/// 覆盖本地输入造成 loop。
+function HotwordsEditor({
+  hotwords,
+  onCommit,
+}: {
+  hotwords: string[];
+  onCommit: (words: string[]) => void;
+}) {
+  const [text, setText] = useState<string>(() => hotwords.join("\n"));
+  // 上次 commit / sync 时本地文本对应的 normalized 列表(JSON 化后比较),
+  // 用来识别"外部 cfg 真的变了"vs"我们刚 commit 触发的 cfg 变化"。
+  const lastSyncedRef = useRef<string>(JSON.stringify(hotwords));
+
+  useEffect(() => {
+    const incoming = JSON.stringify(hotwords);
+    if (incoming !== lastSyncedRef.current) {
+      // 外部变了(import / add_hotwords / 其他 listener 触发)→ 同步本地
+      setText(hotwords.join("\n"));
+      lastSyncedRef.current = incoming;
+    }
+  }, [hotwords]);
+
+  const commit = () => {
+    const seen = new Set<string>();
+    const dedup: string[] = [];
+    for (const line of text.split("\n")) {
+      const w = line.trim();
+      if (!w) continue;
+      if (seen.has(w)) continue;
+      seen.add(w);
+      dedup.push(w);
+    }
+    const dedupKey = JSON.stringify(dedup);
+    if (dedupKey === JSON.stringify(hotwords)) {
+      // 内容没变(只是格式被 normalize),刷新本地显示成 normalized 形式但
+      // 不 commit 避免无谓 setCfg / save
+      setText(dedup.join("\n"));
+      return;
+    }
+    lastSyncedRef.current = dedupKey;
+    onCommit(dedup);
+  };
+
+  return (
+    <textarea
+      className="input font-mono w-full min-h-[200px] resize-y"
+      placeholder={"一行一个词,如:\nClaude\nvoice-claude\nFireRedASR"}
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+    />
   );
 }
 
