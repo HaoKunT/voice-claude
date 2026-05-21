@@ -27,6 +27,7 @@ pub struct CaptureDevice {
 }
 
 /// 枚举所有录音设备。
+#[allow(deprecated)] // cpal 0.17 推荐 description()/id(),但 .name() 默认实现等价,改造代价大
 pub fn list_capture_devices() -> Result<Vec<CaptureDevice>> {
     let host = cpal::default_host();
     let devices = host.input_devices().context("list input devices")?;
@@ -102,6 +103,7 @@ impl Recorder {
     ///
     /// 兼容各种麦克风：用设备默认 config（通常 44.1/48kHz 立体声 F32），
     /// 在回调里线性降采样到 16kHz mono PCM16。
+    #[allow(deprecated)] // cpal 0.17 推荐 description()/id(),但 .name() 默认实现等价,改造代价大
     pub fn start(&self) -> Result<()> {
         let host = cpal::default_host();
         let device = if self.device_name.is_empty() {
@@ -125,13 +127,13 @@ impl Recorder {
                 .unwrap_or_default();
             let supports_16k_mono = ranges.iter().any(|r| {
                 r.channels() == 1
-                    && r.min_sample_rate().0 <= SAMPLE_RATE
-                    && r.max_sample_rate().0 >= SAMPLE_RATE
+                    && r.min_sample_rate() <= SAMPLE_RATE
+                    && r.max_sample_rate() >= SAMPLE_RATE
             });
             if supports_16k_mono {
                 let cfg = cpal::StreamConfig {
                     channels: 1,
-                    sample_rate: cpal::SampleRate(SAMPLE_RATE),
+                    sample_rate: SAMPLE_RATE,
                     buffer_size: cpal::BufferSize::Default,
                 };
                 (cfg, default_cfg.sample_format(), SAMPLE_RATE, 1u16)
@@ -140,7 +142,7 @@ impl Recorder {
                 (
                     cfg,
                     default_cfg.sample_format(),
-                    default_cfg.sample_rate().0,
+                    default_cfg.sample_rate(),
                     default_cfg.channels(),
                 )
             }
