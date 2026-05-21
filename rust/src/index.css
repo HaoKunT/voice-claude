@@ -1,6 +1,42 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Tailwind v4 CSS-first 配置(代替原 tailwind.config.js)。
+ *
+ * v3 → v4 关键变化:
+ * - @tailwind base/components/utilities → @import "tailwindcss"
+ * - 自定义 token 从 JS theme.extend 移到 @theme 里的 CSS 变量
+ * - 颜色嵌套(bg.900)→ 扁平 kebab-case (--color-bg-900),类名仍是 bg-bg-900
+ * - shadow.card → --shadow-card,使用方仍是 shadow-card
+ * - backdropBlur.heavy 是 backdrop-filter,在 v4 里走 --blur-* 变量,引用为 backdrop-blur-heavy
+ * - content 字段不再需要,v4 自动扫描;但前端两个 entry html 在仓库根目录之外的目录里,
+ *   仍需 @source 显式声明确保被扫
+ */
+@import "tailwindcss";
+
+@source "./**/*.{ts,tsx,js,jsx}";
+@source "../index.html";
+@source "../indicator.html";
+
+@theme {
+  --color-bg-900: #0b0b0f;
+  --color-bg-800: #13131a;
+  --color-bg-700: #1c1c25;
+  --color-bg-600: #26262f;
+  --color-bg-500: #323240;
+
+  --color-accent: #ff5c5c;
+  --color-accent-hi: #ff3838;
+
+  --color-brand-purple: #9b87f5;
+  --color-brand-blue: #7dd3fc;
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+
+  --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.3);
+  --shadow-glow: 0 0 20px rgba(155, 135, 245, 0.3);
+
+  --blur-heavy: 40px;
+}
 
 @layer base {
   :root {
@@ -43,62 +79,65 @@
   }
 }
 
-@layer components {
-  .card {
-    @apply bg-bg-800/90 rounded-2xl p-5 border border-white/5 shadow-card backdrop-blur-heavy;
-  }
+/* v4 用 @utility 注册自定义 utility,这样既能在 HTML class 里直接用,又能被
+ * 其他 @utility/@apply 引用(v3 时代 @layer components 里的类被 @apply 引用
+ * 在 v4 是 unknown utility)。kbd 是元素选择器,不是 utility,留在 @layer base。 */
+@utility card {
+  @apply bg-bg-800/90 rounded-2xl p-5 border border-white/5 shadow-card backdrop-blur-heavy;
+}
 
-  .btn {
-    @apply inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium
-           transition-all active:scale-[0.98];
-  }
-  .btn-primary {
-    @apply btn bg-gradient-to-b from-accent to-accent-hi text-white
-           shadow-[0_1px_0_rgba(255,255,255,0.15)_inset,0_2px_8px_rgba(255,92,92,0.3)]
-           hover:brightness-110;
-  }
-  .btn-ghost {
-    @apply btn bg-white/[0.06] hover:bg-white/10 text-gray-200
-           border border-white/5;
-  }
-  .btn-danger {
-    @apply btn bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/20;
-  }
+@utility btn {
+  @apply inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium
+         transition-all active:scale-[0.98];
+}
+@utility btn-primary {
+  @apply btn bg-gradient-to-b from-accent to-accent-hi text-white
+         shadow-[0_1px_0_rgba(255,255,255,0.15)_inset,0_2px_8px_rgba(255,92,92,0.3)]
+         hover:brightness-110;
+}
+@utility btn-ghost {
+  @apply btn bg-white/[0.06] hover:bg-white/10 text-gray-200
+         border border-white/5;
+}
+@utility btn-danger {
+  @apply btn bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/20;
+}
 
-  .input {
-    @apply w-full bg-bg-900/50 border border-white/[0.08] rounded-xl px-3.5 py-2.5 text-sm
-           outline-none transition-all
-           focus:border-accent/60 focus:bg-bg-900/80 focus:shadow-[0_0_0_3px_rgba(255,92,92,0.15)]
-           placeholder:text-gray-500;
-  }
+@utility input {
+  @apply w-full bg-bg-900/50 border border-white/[0.08] rounded-xl px-3.5 py-2.5 text-sm
+         outline-none transition-all
+         focus:border-accent/60 focus:bg-bg-900/80 focus:shadow-[0_0_0_3px_rgba(255,92,92,0.15)]
+         placeholder:text-gray-500;
+}
 
-  .label {
-    @apply block text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-2;
-  }
+@utility label {
+  @apply block text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-2;
+}
 
-  .section-title {
-    @apply flex items-center gap-2 text-sm font-semibold text-gray-200 mb-4;
-  }
+@utility section-title {
+  @apply flex items-center gap-2 text-sm font-semibold text-gray-200 mb-4;
+}
 
-  .nav-item {
-    @apply w-full text-left px-3 py-2 rounded-lg text-sm
-           transition-colors flex items-center gap-2;
-  }
-  .nav-item-active {
-    @apply bg-white/[0.08] text-white;
-  }
-  .nav-item-inactive {
-    @apply text-gray-400 hover:bg-white/[0.04] hover:text-gray-200;
-  }
+@utility nav-item {
+  @apply w-full text-left px-3 py-2 rounded-lg text-sm
+         transition-colors flex items-center gap-2;
+}
+@utility nav-item-active {
+  @apply bg-white/[0.08] text-white;
+}
+@utility nav-item-inactive {
+  @apply text-gray-400 hover:bg-white/[0.04] hover:text-gray-200;
+}
 
-  /* Raycast 风格 kbd */
+@layer base {
+  /* Raycast 风格 kbd —— 元素选择器仍走 @layer base */
   kbd {
     @apply inline-flex items-center justify-center min-w-[20px] px-1.5 py-0.5
            bg-white/10 border border-white/10 rounded text-[11px] font-mono text-gray-300;
   }
 }
 
-/* 渐变顶部细光条，Raycast 的招牌 */
+/* 渐变顶部细光条,Raycast 的招牌 */
 .top-accent {
   background: linear-gradient(
     90deg,
