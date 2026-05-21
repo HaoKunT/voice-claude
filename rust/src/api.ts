@@ -9,6 +9,10 @@ export interface PolishProfile {
   model: string;
   api_key: string;
   prompt: string;
+  /** 内置模板 id;有值表示这个 profile 是「内置模板」类型,prompt 文本由后端从
+   *  registry 动态读出(升级新版应用模板内容自动同步,用户改不了)。`undefined` =
+   *  自定义 profile,prompt 字段是真源。前端"复制为自定义版本"会清掉这个字段。 */
+  template_id?: string;
 }
 
 export interface Config {
@@ -165,9 +169,20 @@ export interface AppInfo {
   debug: boolean;
 }
 
+export interface ProfileTemplateInfo {
+  id: string;
+  name: string;
+  description: string;
+  mode: string;
+  /** 当前 prompt 文本 —— 真源在 Rust profile_templates.rs,前端只读展示。 */
+  prompt: string;
+}
+
 export const api = {
   getConfig: () => invoke<Config>("get_config"),
   saveConfig: (cfg: Config) => invoke<void>("save_config", { cfg }),
+  listProfileTemplates: () =>
+    invoke<ProfileTemplateInfo[]>("list_profile_templates"),
   listDevices: () => invoke<DeviceInfo[]>("list_devices"),
   loadHistory: (limit = 200) => invoke<HistoryEntry[]>("load_history", { limit }),
   deleteHistory: (id: number) => invoke<void>("delete_history", { id }),

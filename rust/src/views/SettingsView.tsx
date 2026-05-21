@@ -21,6 +21,7 @@ import {
   HotwordSourceInfo,
   HotwordCandidate,
   POLISH_MODE_OFF,
+  ProfileTemplateInfo,
 } from "../api";
 import {
   parseHotkeyKeys,
@@ -30,7 +31,6 @@ import {
   IS_MAC,
 } from "../lib/hotkey";
 import { saveTextToFile, readTextFromFile } from "../lib/fileDialogHelpers";
-import { PROMPT_TEMPLATES, PromptTemplate } from "../lib/promptTemplates";
 
 export type SettingsSection = "asr" | "polish" | "record" | "hotwords" | "log";
 
@@ -177,14 +177,12 @@ export function SettingsView({ section }: { section: SettingsSection }) {
           </Field>
 
           {cfg.asr_provider === "zhipu" && (
-            <Field label="智谱 API Key">
-              <input
-                type="password"
-                className="input"
-                value={cfg.asr_api_key}
-                onChange={(e) => update("asr_api_key", e.target.value)}
-              />
-            </Field>
+            <TextField
+              label="智谱 API Key"
+              value={cfg.asr_api_key}
+              onChange={(v) => update("asr_api_key", v)}
+              password
+            />
           )}
 
           {cfg.asr_provider === "xfyun" && (
@@ -750,8 +748,16 @@ function PolishSection({
     () => new Set([cfg.active_profile_id]),
   );
   const [showTemplates, setShowTemplates] = useState(false);
+  const [profileTemplates, setProfileTemplates] = useState<ProfileTemplateInfo[]>([]);
   const profiles = cfg.polish_profiles;
   const multi = profiles.length > 1;
+
+  useEffect(() => {
+    api
+      .listProfileTemplates()
+      .then(setProfileTemplates)
+      .catch(() => setProfileTemplates([]));
+  }, []);
 
   const replaceProfiles = (next: PolishProfile[], nextActive?: string) => {
     setCfg({
@@ -781,7 +787,7 @@ function PolishSection({
     setShowTemplates(false);
   };
 
-  const addFromTemplate = (t: PromptTemplate) => {
+  const addFromTemplate = (t: ProfileTemplateInfo) => {
     const id = cryptoId();
     const newProfile: PolishProfile = {
       id,
@@ -790,7 +796,9 @@ function PolishSection({
       url: t.mode === "ollama" ? "http://localhost:11434/api/generate" : "",
       model: "",
       api_key: "",
-      prompt: t.prompt,
+      // builtin profile:prompt 字段不用,后端 effective_prompt 走 template_id 取
+      prompt: "",
+      template_id: t.id,
     };
     replaceProfiles([...profiles, newProfile]);
     setExpanded((s) => new Set(s).add(id));
@@ -855,6 +863,11 @@ function PolishSection({
           <ProfileCard
             key={profile.id}
             profile={profile}
+            template={
+              profile.template_id
+                ? profileTemplates.find((t) => t.id === profile.template_id)
+                : undefined
+            }
             active={profile.id === cfg.active_profile_id}
             expanded={expanded.has(profile.id)}
             canDelete={profiles.length > 1}
@@ -888,7 +901,7 @@ function PolishSection({
         </div>
         {showTemplates && (
           <div className="grid gap-2 mt-2">
-            {PROMPT_TEMPLATES.map((t) => (
+            {profileTemplates.map((t) => (
               <button
                 key={t.id}
                 className="text-left p-3 rounded-lg bg-white/[0.02] hover:bg-white/[0.06] border border-white/[0.06] hover:border-white/[0.15] transition"
@@ -928,6 +941,7 @@ function PolishSection({
 
 function ProfileCard({
   profile,
+  template,
   active,
   expanded,
   canDelete,
@@ -938,6 +952,7 @@ function ProfileCard({
   onDelete,
 }: {
   profile: PolishProfile;
+  template?: ProfileTemplateInfo;
   active: boolean;
   expanded: boolean;
   canDelete: boolean;
@@ -947,10 +962,27 @@ function ProfileCard({
   onDuplicate: () => void;
   onDelete: () => void;
 }) {
+  const isBuiltin = !!profile.template_id;
   const modelHint =
     profile.mode === "off"
       ? "—"
       : `${profile.mode}/${profile.model || "(未设)"}`;
+
+  // 内置模板:把当前 prompt 文本物化到 prompt 字段,清空 template_id —— 从此变成
+  // 普通 custom profile,用户可以随便改,不再随版本变化。
+  const convertToCustom = () => {
+    if (!template) return;
+    if (
+      !confirm(
+        `把「${profile.name}」转为自定义版本?\n\n转换后 prompt 不再随应用更新自动同步,但可以自由编辑。`,
+      )
+    )
+      return;
+    onChange({
+      template_id: undefined,
+      prompt: template.prompt,
+    });
+  };
 
   return (
     <div
@@ -966,6 +998,14 @@ function ProfileCard({
         onClick={onToggleExpanded}
       >
         <span className="text-sm text-gray-100 font-medium">{profile.name}</span>
+        {isBuiltin && (
+          <span
+            title='内置模板:prompt 由应用维护,升级版本会自动同步。点开后可"复制为自定义版本"解锁编辑。'
+            className="px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-blue-400/10 text-blue-300 border border-blue-400/25"
+          >
+            内置
+          </span>
+        )}
         {active && (
           <span className="px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-green-400/10 text-green-400 border border-green-400/25">
             活跃
@@ -1074,19 +1114,44 @@ function ProfileCard({
                 label={
                   <>
                     <span>Prompt 模板</span>
+                    {isBuiltin && (
+                      <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-400/10 text-blue-300 border border-blue-400/25">
+                        🔒 内置,只读
+                      </span>
+                    )}
                     <span className="ml-auto text-[11px] text-gray-500 font-mono">
-                      {"{text}"} = 识别原文
+                      {"{text}"} = 识别原文 · {"{glossary}"} = 词典
                     </span>
                   </>
                 }
               >
                 <textarea
-                  className="input font-mono text-[12px] leading-relaxed"
+                  className={
+                    "input font-mono text-[12px] leading-relaxed " +
+                    (isBuiltin ? "opacity-70 cursor-not-allowed" : "")
+                  }
                   rows={5}
-                  value={profile.prompt}
-                  onChange={(e) => onChange({ prompt: e.target.value })}
+                  value={isBuiltin ? template?.prompt ?? "" : profile.prompt}
+                  readOnly={isBuiltin}
+                  onChange={(e) => {
+                    if (isBuiltin) return;
+                    onChange({ prompt: e.target.value });
+                  }}
                   placeholder="把下面这段语音识别结果润色为 ...：\n\n{text}"
                 />
+                {isBuiltin && (
+                  <div className="mt-2 flex items-center gap-2 text-[11px]">
+                    <span className="text-gray-500">
+                      内置模板的 prompt 由应用维护,升级版本会自动用上新版。
+                    </span>
+                    <button
+                      className="ml-auto px-2.5 py-1 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] hover:border-white/[0.18] text-gray-300 hover:text-gray-100 transition text-[11px]"
+                      onClick={convertToCustom}
+                    >
+                      复制为自定义版本
+                    </button>
+                  </div>
+                )}
               </Field>
             </>
           )}
@@ -1239,15 +1304,43 @@ function Field(props: { label: React.ReactNode; children: React.ReactNode }) {
   );
 }
 
-function TextField(props: { label: string; value: string; onChange: (v: string) => void; password?: boolean }) {
+function TextField(props: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  password?: boolean;
+}) {
+  const [reveal, setReveal] = useState(false);
+  if (!props.password) {
+    return (
+      <Field label={props.label}>
+        <input
+          type="text"
+          className="input"
+          value={props.value}
+          onChange={(e) => props.onChange(e.target.value)}
+        />
+      </Field>
+    );
+  }
   return (
     <Field label={props.label}>
-      <input
-        type={props.password ? "password" : "text"}
-        className="input"
-        value={props.value}
-        onChange={(e) => props.onChange(e.target.value)}
-      />
+      <div className="relative">
+        <input
+          type={reveal ? "text" : "password"}
+          className="input pr-10"
+          value={props.value}
+          onChange={(e) => props.onChange(e.target.value)}
+        />
+        <button
+          type="button"
+          title={reveal ? "隐藏" : "显示明文"}
+          className="absolute right-1.5 top-1/2 -translate-y-1/2 w-7 h-7 rounded-md text-gray-500 hover:bg-white/[0.06] hover:text-gray-200 flex items-center justify-center transition text-[13px]"
+          onClick={() => setReveal((s) => !s)}
+        >
+          {reveal ? "🙈" : "👁"}
+        </button>
+      </div>
     </Field>
   );
 }
