@@ -2,7 +2,7 @@
 //! 的 user / assistant 行,提取 plain text 内容做热词分析。
 //!
 //! jsonl 行结构(实测):
-//! ```
+//! ```text
 //! {"type":"user","message":{"role":"user","content":"<text or blocks>"},
 //!  "timestamp":"2026-05-12T02:34:45.183Z","cwd":"...", ...}
 //! {"type":"assistant","message":{"role":"assistant","content":[
