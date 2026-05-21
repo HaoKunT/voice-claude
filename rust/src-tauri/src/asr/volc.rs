@@ -307,7 +307,7 @@ pub async fn transcribe_stream(
         &init_payload,
     );
     write
-        .send(Message::Binary(init_msg))
+        .send(Message::Binary(init_msg.into()))
         .await
         .context("发送初始化请求失败")?;
 
@@ -322,8 +322,8 @@ pub async fn transcribe_stream(
         let mut final_text = String::new();
         while let Some(msg) = read.next().await {
             let bytes = match msg {
-                Ok(Message::Binary(b)) => b,
-                Ok(Message::Text(t)) => t.into_bytes(),
+                Ok(Message::Binary(b)) => b.to_vec(),
+                Ok(Message::Text(t)) => t.as_bytes().to_vec(),
                 Ok(Message::Close(_)) => break,
                 Ok(_) => continue,
                 Err(_) => break,
@@ -362,7 +362,7 @@ pub async fn transcribe_stream(
                 COMP_NONE,
                 &chunk,
             );
-            if write.send(Message::Binary(msg)).await.is_err() {
+            if write.send(Message::Binary(msg.into())).await.is_err() {
                 return write;
             }
         }
@@ -374,7 +374,7 @@ pub async fn transcribe_stream(
             COMP_NONE,
             &[],
         );
-        let _ = write.send(Message::Binary(end)).await;
+        let _ = write.send(Message::Binary(end.into())).await;
         write
     });
 
