@@ -190,41 +190,42 @@ fn append_mono_f32(
 /// 高一档质量,对 ASR 足够;sinc 算法精度最高但 CPU 开销大,bench 场景
 /// 不必要。chunk_size 取 1024 平衡延迟和分配次数。
 fn resample_to_16k(samples: &[f32], from_rate: u32) -> Result<Vec<f32>> {
-    use rubato::{FastFixedIn, PolynomialDegree, Resampler};
+    use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
+    use rubato::{Async, FixedAsync, PolynomialDegree, Resampler};
 
     if samples.is_empty() {
         return Ok(Vec::new());
     }
     const CHUNK: usize = 1024;
     let ratio = 16_000.0 / from_rate as f64;
-    let mut resampler = FastFixedIn::<f32>::new(ratio, 1.0, PolynomialDegree::Cubic, CHUNK, 1)
-        .map_err(|e| anyhow!("rubato init: {}", e))?;
+    let mut resampler = Async::<f32>::new_poly(
+        ratio,
+        1.0,
+        PolynomialDegree::Cubic,
+        CHUNK,
+        1, // mono
+        FixedAsync::Input,
+    )
+    .map_err(|e| anyhow!("rubato init: {}", e))?;
 
-    let input = vec![samples.to_vec()];
-    let mut out: Vec<f32> = Vec::with_capacity((samples.len() as f64 * ratio) as usize);
-    let mut consumed = 0usize;
-    let total = samples.len();
-    let mut output_buf = resampler.output_buffer_allocate(true);
+    // process_all_into_buffer 一次性处理整段(自动 chunk + tail),需要预分配能容纳
+    // 全部 output 的 buffer。留 output_frames_max 余量避免边界不够装下尾巴。
+    let estimated_out =
+        (samples.len() as f64 * ratio).ceil() as usize + resampler.output_frames_max();
+    let in_vec = vec![samples.to_vec()];
+    let mut out_vec = vec![vec![0f32; estimated_out]];
 
-    // 分 chunk 跑 —— 最后一块不足 CHUNK 时用 process_partial 收尾
-    while consumed + CHUNK <= total {
-        let chunk = &input[0][consumed..consumed + CHUNK];
-        let in_slice = &[chunk];
-        let (in_used, out_filled) = resampler
-            .process_into_buffer(in_slice, &mut output_buf, None)
-            .map_err(|e| anyhow!("rubato process: {}", e))?;
-        out.extend_from_slice(&output_buf[0][..out_filled]);
-        consumed += in_used;
-    }
-    // 尾巴
-    if consumed < total {
-        let tail: Vec<f32> = input[0][consumed..].to_vec();
-        let (_, out_filled) = resampler
-            .process_partial_into_buffer(Some(&[tail.as_slice()]), &mut output_buf, None)
-            .map_err(|e| anyhow!("rubato tail: {}", e))?;
-        out.extend_from_slice(&output_buf[0][..out_filled]);
-    }
-    let _ = input; // explicit drop of input alloc
+    let buffer_in = SequentialSliceOfVecs::new(in_vec.as_slice(), 1, samples.len())
+        .map_err(|e| anyhow!("rubato input adapter: {}", e))?;
+    let mut buffer_out = SequentialSliceOfVecs::new_mut(out_vec.as_mut_slice(), 1, estimated_out)
+        .map_err(|e| anyhow!("rubato output adapter: {}", e))?;
+
+    let (_, out_frames) = resampler
+        .process_all_into_buffer(&buffer_in, &mut buffer_out, samples.len(), None)
+        .map_err(|e| anyhow!("rubato process_all: {}", e))?;
+
+    let mut out = out_vec.into_iter().next().unwrap_or_default();
+    out.truncate(out_frames);
     Ok(out)
 }
 

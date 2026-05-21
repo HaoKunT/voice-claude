@@ -85,7 +85,7 @@ tar = "0.4"
 symphonia = { version = "0.5", default-features = false, features = ["wav", "mp3", "isomp4", "aac", "alac", "pcm"] }
 # Audio resampling(rubato 是 Rust 生态里 sinc/polynomial resampler 的事实
 # 标准,避免自己手搓线性插值 / anti-aliasing filter)
-rubato = "0.16"
+rubato = "3.0"
 
 [dependencies.sherpa-onnx]
 version = "1.13.2"
