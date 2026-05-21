@@ -387,6 +387,32 @@ pub fn list_local_engines() -> Vec<LocalEngineInfo> {
         .collect()
 }
 
+#[derive(Serialize)]
+pub struct ProfileTemplateInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub mode: String,
+    pub prompt: String,
+}
+
+/// 给前端 Profile 设置页用 —— 列举所有内置模板(id/name/description + 当前 prompt 文本)。
+/// 前端"📋 从模板"挑一个新建 builtin profile;ProfileCard 显示 builtin profile 时
+/// 也按 template_id 在这个列表里查 prompt 文本展示(只读)。
+#[tauri::command]
+pub fn list_profile_templates() -> Vec<ProfileTemplateInfo> {
+    crate::profile_templates::ALL_TEMPLATES
+        .iter()
+        .map(|t| ProfileTemplateInfo {
+            id: t.id.into(),
+            name: t.name.into(),
+            description: t.description.into(),
+            mode: t.mode.into(),
+            prompt: t.prompt.into(),
+        })
+        .collect()
+}
+
 /// 按 id 查询单个引擎信息(刷新下载状态)。
 #[tauri::command]
 pub fn get_local_engine_info(id: String) -> LocalEngineInfo {

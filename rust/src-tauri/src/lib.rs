@@ -26,6 +26,7 @@ pub mod indicator;
 pub mod input;
 pub mod keyboard;
 pub mod logger;
+pub mod profile_templates;
 pub mod recorder;
 pub mod result;
 pub mod tray;
@@ -211,6 +212,7 @@ pub fn run() {
             commands::read_recent_logs,
             commands::open_config_dir,
             commands::list_local_engines,
+            commands::list_profile_templates,
             commands::get_local_engine_info,
             commands::download_local_engine,
             commands::import_local_engine_tarball,

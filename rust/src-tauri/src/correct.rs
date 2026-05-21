@@ -4,6 +4,7 @@
 use crate::config::{
     PolishProfile, POLISH_MODE_CLOUD, POLISH_MODE_OFF, POLISH_MODE_OLLAMA, POLISH_MODE_OPENROUTER,
 };
+use crate::profile_templates::effective_prompt;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -78,7 +79,7 @@ pub async fn correct(
 fn render_prompt(profile: &PolishProfile, text: &str, glossary: &[String]) -> (String, String) {
     // glossary 段落:仅当词典非空时注入
     let glossary_block = format_glossary(glossary);
-    let prompt = &profile.prompt;
+    let prompt = effective_prompt(profile);
 
     let body = match (prompt.contains("{text}"), prompt.contains("{glossary}")) {
         (true, true) => prompt

@@ -37,6 +37,12 @@ pub const DEFAULT_POLISH_PROMPT: &str =
 原文：{text}";
 
 /// 单个 AI 润色 profile：一套完整的后端配置 + prompt 模板。
+///
+/// `template_id` = `Some(id)` 表示这个 profile 是「内置模板」类型,prompt
+/// 文本走 `profile_templates::effective_prompt()` 从 Rust registry 实时读 ——
+/// 升级新版本应用 → 老用户的 builtin profile 自动用上新 prompt,不用动 config。
+/// 用户想改:前端"复制为自定义版本" → 清空 template_id 并把当前 prompt 物化到
+/// `prompt` 字段,从此 profile 变 custom,内容不再随版本变化。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolishProfile {
     pub id: String,
@@ -51,6 +57,9 @@ pub struct PolishProfile {
     pub api_key: String,
     #[serde(default = "default_polish_prompt")]
     pub prompt: String,
+    /// 内置模板 id;`None` = 自定义 profile,prompt 字段用户自由编辑。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
 }
 
 impl PolishProfile {
@@ -63,7 +72,12 @@ impl PolishProfile {
             model: default_correct_model(),
             api_key: String::new(),
             prompt: default_polish_prompt(),
+            template_id: None,
         }
+    }
+
+    pub fn is_builtin(&self) -> bool {
+        self.template_id.is_some()
     }
 }
 
@@ -355,6 +369,7 @@ impl Config {
         cfg.migrate_polish_profiles();
         cfg.migrate_vad_threshold();
         cfg.migrate_hotwords_mapping(legacy_mapping);
+        cfg.migrate_builtin_template_ids();
         cfg
     }
 
@@ -429,9 +444,30 @@ impl Config {
             },
             api_key,
             prompt: DEFAULT_POLISH_PROMPT.into(),
+            template_id: None,
         };
         self.polish_profiles = vec![profile];
         self.active_profile_id = DEFAULT_PROFILE_ID.into();
+    }
+
+    /// 把老 profile 里跟内置模板(当前/历史版本)文本对得上的 prompt 自动转成 builtin:
+    /// 设置 `template_id` + 清空 `prompt` 字段。这样升级模板内容老用户能立刻吃上。
+    /// 用户手动魔改过的 prompt(normalize 后跟任何已知模板都不等)保留为 custom,不动。
+    fn migrate_builtin_template_ids(&mut self) {
+        for profile in self.polish_profiles.iter_mut() {
+            if profile.template_id.is_some() {
+                continue; // 已经是 builtin
+            }
+            if let Some(id) = crate::profile_templates::detect_template_id(&profile.prompt) {
+                tracing::info!(
+                    profile = %profile.id,
+                    template = %id,
+                    "把 profile 的 prompt 迁移到内置模板"
+                );
+                profile.template_id = Some(id.into());
+                profile.prompt.clear();
+            }
+        }
     }
 
     /// 返回当前活跃 profile；若 active_profile_id 找不到，回退到第一个。
