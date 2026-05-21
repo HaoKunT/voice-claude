@@ -179,8 +179,8 @@ pub async fn transcribe_stream(
                 Err(_) => break,
             };
             let data = match msg {
-                Message::Text(t) => t.into_bytes(),
-                Message::Binary(b) => b,
+                Message::Text(t) => t.as_bytes().to_vec(),
+                Message::Binary(b) => b.to_vec(),
                 Message::Close(_) => break,
                 _ => continue,
             };
@@ -223,7 +223,7 @@ pub async fn transcribe_stream(
             buf.extend_from_slice(&chunk);
             while buf.len() >= CHUNK_SIZE {
                 let part = buf[..CHUNK_SIZE].to_vec();
-                if write.send(Message::Binary(part)).await.is_err() {
+                if write.send(Message::Binary(part.into())).await.is_err() {
                     return write;
                 }
                 buf.drain(..CHUNK_SIZE);
@@ -231,7 +231,7 @@ pub async fn transcribe_stream(
             }
         }
         if !buf.is_empty() {
-            let _ = write.send(Message::Binary(buf)).await;
+            let _ = write.send(Message::Binary(buf.into())).await;
         }
         write
     });
@@ -242,7 +242,7 @@ pub async fn transcribe_stream(
     } else {
         json!({ "end": true, "sessionId": session_id }).to_string()
     };
-    let _ = write.send(Message::Text(end_msg)).await;
+    let _ = write.send(Message::Text(end_msg.into())).await;
 
     if let Ok(Ok((f, sid))) = tokio::time::timeout(Duration::from_secs(5), recv_task).await {
         finals = f;
