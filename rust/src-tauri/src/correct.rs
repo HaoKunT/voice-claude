@@ -81,7 +81,9 @@ fn render_prompt(profile: &PolishProfile, text: &str, glossary: &[String]) -> (S
     let glossary_block = format_glossary(glossary);
     let prompt = effective_prompt(profile);
 
-    let body = match (prompt.contains("{text}"), prompt.contains("{glossary}")) {
+    let has_text_ph = prompt.contains("{text}");
+    let has_glossary_ph = prompt.contains("{glossary}");
+    let body = match (has_text_ph, has_glossary_ph) {
         (true, true) => prompt
             .replace("{glossary}", &glossary_block)
             .replace("{text}", text),
@@ -112,6 +114,17 @@ fn render_prompt(profile: &PolishProfile, text: &str, glossary: &[String]) -> (S
             s
         }
     };
+    let glossary_words = glossary.iter().filter(|s| !s.trim().is_empty()).count();
+    let glossary_injected = !glossary_block.is_empty() && body.contains(&glossary_block);
+    tracing::debug!(
+        glossary_words,
+        glossary_injected,
+        glossary_chars = glossary_block.chars().count(),
+        has_text_ph,
+        has_glossary_ph,
+        body_chars = body.chars().count(),
+        "润色 prompt 渲染完成"
+    );
     (String::new(), body)
 }
 
