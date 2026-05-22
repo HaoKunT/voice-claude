@@ -224,26 +224,31 @@ async fn run(
     tracing::info!(text = %raw_text, "识别结果");
 
     let profile = cfg.active_profile();
+    let backend = cfg.backend_by_id(&profile.backend_id);
     let timeout_secs = cfg.correct_timeout_secs();
     let timeout_ms = (timeout_secs * 1000) as i64;
     // 润色 timing:off profile / 非超时 Err 都视为 0(未实际产生可观测延时);
     // 超时场景例外 —— polish_ms 记 timeout_ms 入 p99,polish_timeout=1 单独统计,
     // 否则 p99 会漏掉"老是卡到上限"的 model 分布
     let polish_start = std::time::Instant::now();
-    let polish_result = correct::correct(&raw_text, profile, timeout_secs, &cfg.hotwords).await;
+    // profile.backend_id 空 / 找不到 backend → 用户主动选了"关闭",原文直出。
+    // 等价于老的 backend.mode = "off",但语义在 profile 层面表达,每个 profile
+    // 各自决定要不要润色。
+    let polish_result = match backend {
+        Some(b) if b.is_active() => {
+            correct::correct(&raw_text, profile, b, timeout_secs, &cfg.hotwords).await
+        }
+        _ => Ok(raw_text.clone()),
+    };
     let elapsed_ms = polish_start.elapsed().as_millis() as i64;
-    let polish_provider = compute_polish_provider(profile);
-    use crate::config::POLISH_MODE_OFF;
-    let profile_active = !(profile.mode == POLISH_MODE_OFF || profile.mode.is_empty());
+    let polish_provider = compute_polish_provider(backend);
+    // 统计意义上的"润色生效":有 backend 且 backend 配置有效。空 backend_id /
+    // backend.is_active() = false 都视为没跑润色(p99 不计入,polish_model/mode 留空)。
+    let profile_active = backend.map(|b| b.is_active()).unwrap_or(false);
+    let polish_model = backend.map(|b| b.model.clone()).unwrap_or_default();
     let (corrected, polish_ms, polish_model, polish_mode, polish_timeout) = match polish_result {
         Ok(c) if !profile_active => (c, 0i64, String::new(), String::new(), false),
-        Ok(c) => (
-            c,
-            elapsed_ms,
-            profile.model.clone(),
-            polish_provider.clone(),
-            false,
-        ),
+        Ok(c) => (c, elapsed_ms, polish_model, polish_provider.clone(), false),
         Err(e) => {
             // reqwest timeout 是硬超时(到时间抛 Err),用 elapsed 接近 timeout 作近似判定;
             // 200ms 容错足够区分 timeout 和其他早期 Err(400 / 网络断 / 反序列化失败等)
@@ -253,7 +258,7 @@ async fn run(
                 (
                     raw_text.clone(),
                     timeout_ms,
-                    profile.model.clone(),
+                    polish_model,
                     polish_provider.clone(),
                     true,
                 )
@@ -593,14 +598,17 @@ async fn run_batch(
 ///
 /// - ollama / openrouter mode:直接用 mode 名(URL 固定,没必要拆 host)
 /// - cloud mode:多 base URL 场景下 mode 字面值("cloud")辨识度不够,
-///   从 profile.url 提取 host(如 api.groq.com)作为 provider
-/// - off / 未知 mode:空字符串(不展示徽章)
-fn compute_polish_provider(profile: &crate::config::PolishProfile) -> String {
+///   从 backend.url 提取 host(如 api.groq.com)作为 provider
+/// - off / 未知 mode / backend = None:空字符串(不展示徽章)
+fn compute_polish_provider(backend: Option<&crate::config::LlmBackend>) -> String {
     use crate::config::{POLISH_MODE_CLOUD, POLISH_MODE_OLLAMA, POLISH_MODE_OPENROUTER};
-    match profile.mode.as_str() {
+    let Some(backend) = backend else {
+        return String::new();
+    };
+    match backend.mode.as_str() {
         POLISH_MODE_OLLAMA => "ollama".to_string(),
         POLISH_MODE_OPENROUTER => "openrouter".to_string(),
-        POLISH_MODE_CLOUD => host_of(&profile.url).unwrap_or_else(|| "cloud".to_string()),
+        POLISH_MODE_CLOUD => host_of(&backend.url).unwrap_or_else(|| "cloud".to_string()),
         _ => String::new(),
     }
 }
@@ -620,48 +628,51 @@ fn host_of(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{
-        PolishProfile, POLISH_MODE_CLOUD, POLISH_MODE_OLLAMA, POLISH_MODE_OPENROUTER,
-    };
+    use crate::config::{LlmBackend, POLISH_MODE_CLOUD, POLISH_MODE_OLLAMA, POLISH_MODE_OPENROUTER};
 
-    fn profile(mode: &str, url: &str) -> PolishProfile {
-        let mut p = PolishProfile::default_named("t", "t");
-        p.mode = mode.to_string();
-        p.url = url.to_string();
-        p
+    fn backend(mode: &str, url: &str) -> LlmBackend {
+        let mut b = LlmBackend::default_named("t", "t");
+        b.mode = mode.to_string();
+        b.url = url.to_string();
+        b
     }
 
     #[test]
     fn provider_ollama_is_literal() {
-        let p = profile(POLISH_MODE_OLLAMA, "http://localhost:11434/api/generate");
-        assert_eq!(compute_polish_provider(&p), "ollama");
+        let b = backend(POLISH_MODE_OLLAMA, "http://localhost:11434/api/generate");
+        assert_eq!(compute_polish_provider(Some(&b)), "ollama");
     }
 
     #[test]
     fn provider_openrouter_is_literal() {
-        let p = profile(POLISH_MODE_OPENROUTER, "https://openrouter.ai/api/v1");
-        assert_eq!(compute_polish_provider(&p), "openrouter");
+        let b = backend(POLISH_MODE_OPENROUTER, "https://openrouter.ai/api/v1");
+        assert_eq!(compute_polish_provider(Some(&b)), "openrouter");
     }
 
     #[test]
     fn provider_cloud_uses_host() {
-        let p = profile(
+        let b = backend(
             POLISH_MODE_CLOUD,
             "https://api.groq.com/openai/v1/chat/completions",
         );
-        assert_eq!(compute_polish_provider(&p), "api.groq.com");
+        assert_eq!(compute_polish_provider(Some(&b)), "api.groq.com");
     }
 
     #[test]
     fn provider_cloud_fallback_on_bad_url() {
-        let p = profile(POLISH_MODE_CLOUD, "");
-        assert_eq!(compute_polish_provider(&p), "cloud");
+        let b = backend(POLISH_MODE_CLOUD, "");
+        assert_eq!(compute_polish_provider(Some(&b)), "cloud");
     }
 
     #[test]
     fn provider_off_is_empty() {
-        let p = profile("off", "");
-        assert_eq!(compute_polish_provider(&p), "");
+        let b = backend("off", "");
+        assert_eq!(compute_polish_provider(Some(&b)), "");
+    }
+
+    #[test]
+    fn provider_none_is_empty() {
+        assert_eq!(compute_polish_provider(None), "");
     }
 
     #[test]

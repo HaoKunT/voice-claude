@@ -25,6 +25,7 @@ pub mod hotword_sources;
 pub mod indicator;
 pub mod input;
 pub mod keyboard;
+pub mod llm_client;
 pub mod logger;
 pub mod profile_templates;
 pub mod recorder;

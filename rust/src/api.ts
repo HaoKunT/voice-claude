@@ -1,13 +1,23 @@
 // Tauri IPC 调用封装。
 import { invoke } from "@tauri-apps/api/core";
 
-export interface PolishProfile {
+export interface LlmBackend {
   id: string;
   name: string;
   mode: string;
   url: string;
   model: string;
   api_key: string;
+}
+
+export interface PolishProfile {
+  id: string;
+  name: string;
+  /** 引用的 LlmBackend.id;profile 自身不再持 mode/url/model/api_key,
+   *  这些跟 hotword 自动生成共用一份 backend 配置。
+   *  空字符串 `""` 表示这个 profile 不要润色 —— ASR 原文直出,prompt / 历史 backend
+   *  绑定全保留,切到有效 backend 立即恢复。每个 profile 独立选,跟其他 profile 解耦。 */
+  backend_id: string;
   prompt: string;
   /** 内置模板 id;有值表示这个 profile 是「内置模板」类型,prompt 文本由后端从
    *  registry 动态读出(升级新版应用模板内容自动同步,用户改不了)。`undefined` =
@@ -34,6 +44,9 @@ export interface Config {
   correct_model: string;
   correct_api_key: string;
   polish_profiles: PolishProfile[];
+  /** 共享的 LLM 后端连接池。每个 profile 通过 backend_id 引用其中一项;
+   *  hotword 自动生成也复用 active profile 的 backend。 */
+  llm_backends: LlmBackend[];
   active_profile_id: string;
   hotkey: string;
   gain: number;
@@ -220,11 +233,11 @@ export const api = {
   checkAccessibility: () => invoke<boolean>("check_accessibility"),
   openAccessibilitySettings: () => invoke<void>("open_accessibility_settings"),
   listHotwordSources: () => invoke<HotwordSourceInfo[]>("list_hotword_sources"),
-  scanHotwordCandidates: (sourceId: string, days: number, profileId: string) =>
+  scanHotwordCandidates: (sourceId: string, days: number, backendId: string) =>
     invoke<HotwordCandidate[]>("scan_hotword_candidates", {
       sourceId,
       days,
-      profileId,
+      backendId,
     }),
   addHotwords: (words: string[]) => invoke<number>("add_hotwords", { words }),
 };
@@ -243,8 +256,10 @@ export const POLISH_MODE_OLLAMA = "ollama";
 export const POLISH_MODE_OPENROUTER = "openrouter";
 export const POLISH_MODE_CLOUD = "cloud";
 
+// LLM backend mode 选项。"off" 是兼容老配置的 sentinel,UI 不再暴露——
+// 关闭润色走 profile 的 backend dropdown 选"(关闭)"(backend_id == ""),
+// backend 永远代表"配了哪种连接"。
 export const POLISH_MODES = [
-  { value: POLISH_MODE_OFF, label: "关闭(原文直出)" },
   { value: POLISH_MODE_OLLAMA, label: "Ollama 本地" },
   { value: POLISH_MODE_OPENROUTER, label: "OpenRouter 云端" },
   { value: POLISH_MODE_CLOUD, label: "OpenAI 兼容 API" },

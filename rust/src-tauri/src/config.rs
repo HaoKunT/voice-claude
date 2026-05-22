@@ -28,6 +28,7 @@ pub const TRIGGER_MODE_PTT: &str = "push_to_talk";
 pub const TRIGGER_MODE_DOUBLE_TAP_HOLD: &str = "double_tap_hold";
 
 pub const DEFAULT_PROFILE_ID: &str = "default";
+pub const DEFAULT_BACKEND_ID: &str = "default";
 pub const DEFAULT_POLISH_PROMPT: &str =
     "你是一个语音识别润色助手。用户通过语音输入文字，可能有同音字错误、漏字、多字等问题。
 请只纠正明显的语音识别错误，不要改变用户的意思，不要添加或删除内容。
@@ -36,25 +37,65 @@ pub const DEFAULT_POLISH_PROMPT: &str =
 
 原文：{text}";
 
-/// 单个 AI 润色 profile：一套完整的后端配置 + prompt 模板。
+/// 一个 LLM 后端连接：mode + url + model + api_key,跟 prompt / 业务逻辑解耦。
+///
+/// 多个 PolishProfile 可以共享同一个 backend(只换 prompt);hotword 自动生成
+/// 阶段也复用 active profile 的 backend。0.4 起从 PolishProfile 抽出来,老配置
+/// 在 `Config::load` 阶段自动迁移(profile 的连接字段去重抽成 backend)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmBackend {
+    pub id: String,
+    pub name: String,
+    #[serde(default = "default_backend_mode")]
+    pub mode: String,
+    #[serde(default = "default_correct_url")]
+    pub url: String,
+    #[serde(default = "default_correct_model")]
+    pub model: String,
+    #[serde(default)]
+    pub api_key: String,
+}
+
+impl LlmBackend {
+    pub fn default_named(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            mode: default_backend_mode(),
+            url: default_correct_url(),
+            model: default_correct_model(),
+            api_key: String::new(),
+        }
+    }
+
+    /// 0.4 之后 backend.mode 不再含 "off" —— "关掉润色"由 profile.backend_id == ""
+    /// 表达。这里仍兜底跳过 "off" / 空 mode,防御用户手改 config.json 或老迁移漏跑
+    /// 的场景,避免路由到 `llm_client::call` 后 `bail!`。
+    pub fn is_active(&self) -> bool {
+        !(self.mode == POLISH_MODE_OFF || self.mode.is_empty())
+    }
+}
+
+/// 单个 AI 润色 profile：prompt 模板 + 引用一个 LLM 后端。
 ///
 /// `template_id` = `Some(id)` 表示这个 profile 是「内置模板」类型,prompt
 /// 文本走 `profile_templates::effective_prompt()` 从 Rust registry 实时读 ——
 /// 升级新版本应用 → 老用户的 builtin profile 自动用上新 prompt,不用动 config。
 /// 用户想改:前端"复制为自定义版本" → 清空 template_id 并把当前 prompt 物化到
 /// `prompt` 字段,从此 profile 变 custom,内容不再随版本变化。
+///
+/// `backend_id` 引用 `Config.llm_backends` 里的某条:
+///   - 非空且能在 `llm_backends` 里找到 → 用此 backend 跑润色
+///   - 空字符串 `""` = 用户主动选了"关闭",ASR 原文直出(profile/prompt 仍保留,
+///     切回有效 backend 即可恢复)
+///   - 非空但找不到对应 backend → 异常态(用户手改 config 删错了),运行时按"关闭"
+///     处理,不报错
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolishProfile {
     pub id: String,
     pub name: String,
-    #[serde(default = "default_polish_mode")]
-    pub mode: String,
     #[serde(default)]
-    pub url: String,
-    #[serde(default)]
-    pub model: String,
-    #[serde(default)]
-    pub api_key: String,
+    pub backend_id: String,
     #[serde(default = "default_polish_prompt")]
     pub prompt: String,
     /// 内置模板 id;`None` = 自定义 profile,prompt 字段用户自由编辑。
@@ -67,10 +108,7 @@ impl PolishProfile {
         Self {
             id: id.into(),
             name: name.into(),
-            mode: default_polish_mode(),
-            url: default_correct_url(),
-            model: default_correct_model(),
-            api_key: String::new(),
+            backend_id: DEFAULT_BACKEND_ID.into(),
             prompt: default_polish_prompt(),
             template_id: None,
         }
@@ -127,6 +165,11 @@ pub struct Config {
     pub polish_profiles: Vec<PolishProfile>,
     #[serde(default = "default_active_profile_id")]
     pub active_profile_id: String,
+    /// 0.4+:LLM 后端连接配置(从 PolishProfile 抽出来,多个 profile 共享)。
+    /// 老 config(profile 自带 mode/url/model/api_key)在 `Config::load` 阶段
+    /// 自动迁移成 backend。
+    #[serde(default)]
+    pub llm_backends: Vec<LlmBackend>,
     #[serde(default = "default_hotkey")]
     pub hotkey: String,
     #[serde(default = "default_gain")]
@@ -197,6 +240,12 @@ fn default_volc_resource_id() -> String {
 }
 fn default_polish_mode() -> String {
     POLISH_MODE_OFF.into()
+}
+/// 新建 LlmBackend 时默认的 mode。0.4 起不再用 "off"(profile 用 backend_id="" 表
+/// 达"关闭"),默认给 ollama —— 用户大概率从这里入门(本地零成本),改成云端再
+/// 填 url/api_key。
+fn default_backend_mode() -> String {
+    POLISH_MODE_OLLAMA.into()
 }
 fn default_polish_prompt() -> String {
     DEFAULT_POLISH_PROMPT.into()
@@ -278,6 +327,7 @@ impl Default for Config {
             correct_api_key: String::new(),
             polish_profiles: vec![PolishProfile::default_named(DEFAULT_PROFILE_ID, "默认")],
             active_profile_id: default_active_profile_id(),
+            llm_backends: vec![LlmBackend::default_named(DEFAULT_BACKEND_ID, "默认后端")],
             hotkey: default_hotkey(),
             gain: default_gain(),
             device_name: String::new(),
@@ -298,7 +348,204 @@ impl Default for Config {
     }
 }
 
-/// 从 raw JSON 里提取老 hotwords dict,原地改成 array,返回 (k, v) mapping 给
+/// 从 raw JSON 里把老 PolishProfile 的 mode/url/model/api_key 抽成独立 LlmBackend。
+///
+/// 触发条件:`raw.llm_backends` 为空(或缺失) **且** 至少有一个 profile 带这些老
+/// 字段。按 `(mode, url, model, api_key)` 元组去重,生成 backend id。每个 profile
+/// 写回 `backend_id`,删除老的 mode/url/model/api_key 字段(让 `Config` 反序列化
+/// 时不报警)。
+fn migrate_legacy_polish_backends(raw: &mut serde_json::Value) {
+    let Some(obj) = raw.as_object_mut() else {
+        return;
+    };
+    // 已有 llm_backends 非空 → 已是新格式,不动
+    if let Some(serde_json::Value::Array(arr)) = obj.get("llm_backends") {
+        if !arr.is_empty() {
+            return;
+        }
+    }
+    let Some(serde_json::Value::Array(profiles)) = obj.get_mut("polish_profiles") else {
+        return;
+    };
+
+    use std::collections::BTreeMap;
+    // 去重表:(mode, url, model, api_key) → backend_id
+    let mut dedup: BTreeMap<(String, String, String, String), String> = BTreeMap::new();
+    let mut backends: Vec<serde_json::Value> = Vec::new();
+    let mut next_idx = 0usize;
+
+    fn take_str(profile: &mut serde_json::Map<String, serde_json::Value>, key: &str) -> String {
+        profile
+            .remove(key)
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_default()
+    }
+
+    for profile in profiles.iter_mut() {
+        let Some(profile_obj) = profile.as_object_mut() else {
+            continue;
+        };
+        // profile 已经是新格式(有 backend_id 且无 mode 等)→ 跳过
+        let has_legacy = profile_obj.contains_key("mode")
+            || profile_obj.contains_key("url")
+            || profile_obj.contains_key("model")
+            || profile_obj.contains_key("api_key");
+        if !has_legacy {
+            continue;
+        }
+        let mode = take_str(profile_obj, "mode");
+        let url = take_str(profile_obj, "url");
+        let model = take_str(profile_obj, "model");
+        let api_key = take_str(profile_obj, "api_key");
+        let mode_eff = if mode.is_empty() {
+            POLISH_MODE_OFF.to_string()
+        } else {
+            mode
+        };
+
+        let key = (mode_eff.clone(), url.clone(), model.clone(), api_key.clone());
+        let backend_id = dedup
+            .entry(key)
+            .or_insert_with(|| {
+                let id = if next_idx == 0 {
+                    DEFAULT_BACKEND_ID.to_string()
+                } else {
+                    format!("backend_{}", next_idx)
+                };
+                next_idx += 1;
+                let name = derive_backend_name(&mode_eff, &model, &url);
+                let backend = serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "mode": mode_eff,
+                    "url": url,
+                    "model": model,
+                    "api_key": api_key,
+                });
+                backends.push(backend);
+                id
+            })
+            .clone();
+        profile_obj.insert("backend_id".into(), serde_json::Value::String(backend_id));
+    }
+
+    if !backends.is_empty() {
+        obj.insert("llm_backends".into(), serde_json::Value::Array(backends));
+    }
+}
+
+/// 给迁移出来的 backend 取个能让用户区分的默认名(mode + model 主要信息)。
+fn derive_backend_name(mode: &str, model: &str, url: &str) -> String {
+    if !model.is_empty() {
+        return format!("{} ({})", mode, model);
+    }
+    if !url.is_empty() {
+        return format!("{} ({})", mode, url);
+    }
+    mode.to_string()
+}
+
+/// 0.4 起 backend.mode 不再有 "off"。"关闭润色"由 profile.backend_id == ""
+/// 表达 —— 每个 profile 自己决定要不要润色,跟 backend 配置解耦。
+///
+/// 老 config 加载时:
+///   - 找出所有 mode == "off" / 空 mode 的 backend id
+///   - 把所有引用这些 id 的 profile 的 backend_id 清空("")—— 用户切到这些 profile
+///     就等于"关闭润色",ASR 原文直出
+///   - 把这些 backend 的 mode 重写成 ollama + 默认 url/model,UI dropdown 不再
+///     需要"off"选项,backend 永远代表"配了哪种连接"
+///
+/// 在 `migrate_legacy_polish_backends`(profile→backend 拆分)之后执行,
+/// 让两个迁移可以串起来:profile 自带 mode=off → 拆出 off backend → 这里再
+/// 把这些 backend 的 mode 改成 ollama,引用它的 profile backend_id 清空。
+fn migrate_polish_off_to_empty_backend_id(raw: &mut serde_json::Value) {
+    let Some(obj) = raw.as_object_mut() else {
+        return;
+    };
+
+    // Step 1:扫一遍 backends,收集所有 mode = "off" / 空 mode 的 id
+    use std::collections::BTreeSet;
+    let mut off_ids: BTreeSet<String> = BTreeSet::new();
+    if let Some(serde_json::Value::Array(backends)) = obj.get("llm_backends") {
+        for b in backends {
+            let Some(id) = b.get("id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let mode = b.get("mode").and_then(|v| v.as_str()).unwrap_or("");
+            if mode == POLISH_MODE_OFF || mode.is_empty() {
+                off_ids.insert(id.to_string());
+            }
+        }
+    }
+
+    // Step 2:profile.backend_id 指向 off backend → 清空,表示"关闭"
+    if !off_ids.is_empty() {
+        if let Some(serde_json::Value::Array(profiles)) = obj.get_mut("polish_profiles") {
+            for p in profiles.iter_mut() {
+                let Some(map) = p.as_object_mut() else {
+                    continue;
+                };
+                let bid = map
+                    .get("backend_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if off_ids.contains(bid) {
+                    map.insert(
+                        "backend_id".into(),
+                        serde_json::Value::String(String::new()),
+                    );
+                }
+            }
+        }
+    }
+
+    // Step 3:重写所有 mode = "off" 的 backend(无论 Step 2 是否清了 profile),
+    // 让 UI BackendCard 的 mode dropdown 不再需要 "off" 选项。
+    // url / model 为空时填默认值,用户接着改更顺手。
+    if let Some(serde_json::Value::Array(backends)) = obj.get_mut("llm_backends") {
+        for b in backends.iter_mut() {
+            let Some(map) = b.as_object_mut() else {
+                continue;
+            };
+            let mode_is_off = map
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .map(|s| s == POLISH_MODE_OFF || s.is_empty())
+                .unwrap_or(true);
+            if !mode_is_off {
+                continue;
+            }
+            map.insert(
+                "mode".into(),
+                serde_json::Value::String(POLISH_MODE_OLLAMA.into()),
+            );
+            if map
+                .get("url")
+                .and_then(|v| v.as_str())
+                .map(|s| s.is_empty())
+                .unwrap_or(true)
+            {
+                map.insert(
+                    "url".into(),
+                    serde_json::Value::String(default_correct_url()),
+                );
+            }
+            if map
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(|s| s.is_empty())
+                .unwrap_or(true)
+            {
+                map.insert(
+                    "model".into(),
+                    serde_json::Value::String(default_correct_model()),
+                );
+            }
+        }
+    }
+}
+
+
 /// `Config::migrate_hotwords_mapping` 用 —— 把 mapping 拼到默认 profile prompt 末尾,
 /// LLM 校正阶段还能做跨语种 / 写法映射(原 ASR 后字符串替换的等价能力)。
 ///
@@ -364,12 +611,15 @@ impl Config {
                 return Self::default();
             }
         };
+        migrate_legacy_polish_backends(&mut raw_value);
+        migrate_polish_off_to_empty_backend_id(&mut raw_value);
         let legacy_mapping = take_legacy_hotwords_mapping(&mut raw_value);
         let mut cfg: Self = serde_json::from_value(raw_value).unwrap_or_default();
         cfg.migrate_polish_profiles();
         cfg.migrate_vad_threshold();
         cfg.migrate_hotwords_mapping(legacy_mapping);
         cfg.migrate_builtin_template_ids();
+        cfg.ensure_default_backend();
         cfg
     }
 
@@ -413,7 +663,9 @@ impl Config {
         );
     }
 
-    /// 首次升级到多 profile 版本时，把老的 correct_* 字段迁成一个「默认」profile。
+    /// 首次升级到多 profile 版本时，把老的 correct_* 字段迁成一个「默认」profile +
+    /// 一个「默认」backend。该函数在 `migrate_legacy_polish_backends` 之后执行,
+    /// 覆盖的是 0.1.x ↓ 这种连 polish_profiles 都没有的更老格式。
     fn migrate_polish_profiles(&mut self) {
         if !self.polish_profiles.is_empty() {
             return; // 已有 profiles，无需迁移
@@ -424,30 +676,80 @@ impl Config {
             } else {
                 self.correct_api_key.clone()
             };
+        // 0.4 起 backend.mode 不再有 "off"。老 correct_mode = "off" 表示用户当时关着润色 →
+        // profile.backend_id 设成 "" 表"关闭",backend.mode 用默认 ollama 占位
+        // (用户开了之后还得自己挑 mode,但起码 dropdown 不报错)。
+        let legacy_off = self.correct_mode == POLISH_MODE_OFF || self.correct_mode.is_empty();
+        let mode = if legacy_off {
+            POLISH_MODE_OLLAMA.to_string()
+        } else {
+            self.correct_mode.clone()
+        };
+        let url = if self.correct_url.is_empty() {
+            default_correct_url()
+        } else {
+            self.correct_url.clone()
+        };
+        let model = if self.correct_model.is_empty() {
+            default_correct_model()
+        } else {
+            self.correct_model.clone()
+        };
+
+        // 老格式没 backend → 创建一个,id = DEFAULT_BACKEND_ID
+        if self.llm_backends.is_empty() {
+            self.llm_backends = vec![LlmBackend {
+                id: DEFAULT_BACKEND_ID.into(),
+                name: derive_backend_name(&mode, &model, &url),
+                mode,
+                url,
+                model,
+                api_key,
+            }];
+        }
         let profile = PolishProfile {
             id: DEFAULT_PROFILE_ID.into(),
             name: "默认".into(),
-            mode: if self.correct_mode.is_empty() {
-                POLISH_MODE_OFF.into()
+            // legacy_off → 用空 backend_id 表"关闭";否则指向新建的默认 backend
+            backend_id: if legacy_off {
+                String::new()
             } else {
-                self.correct_mode.clone()
+                DEFAULT_BACKEND_ID.into()
             },
-            url: if self.correct_url.is_empty() {
-                default_correct_url()
-            } else {
-                self.correct_url.clone()
-            },
-            model: if self.correct_model.is_empty() {
-                default_correct_model()
-            } else {
-                self.correct_model.clone()
-            },
-            api_key,
             prompt: DEFAULT_POLISH_PROMPT.into(),
             template_id: None,
         };
         self.polish_profiles = vec![profile];
         self.active_profile_id = DEFAULT_PROFILE_ID.into();
+    }
+
+    /// 安全网:`llm_backends` 为空(用户手改 config.json 删光了)时塞一个默认占位
+    /// backend,避免运行时找不到 backend_id panic。
+    ///
+    /// **不**回填空 backend_id —— 0.4 起 `backend_id == ""` 是 profile "关闭润色"
+    /// 的合法 sentinel,不能当作未配置回填掉。只修非空但找不到对应 backend 的 ID
+    /// (用户手改删错了引用)→ 视为异常态,清空成"关闭",运行时不报错。
+    fn ensure_default_backend(&mut self) {
+        if self.llm_backends.is_empty() {
+            self.llm_backends = vec![LlmBackend::default_named(DEFAULT_BACKEND_ID, "默认后端")];
+        }
+        for profile in self.polish_profiles.iter_mut() {
+            if profile.backend_id.is_empty() {
+                continue; // "" 是合法 "关闭" sentinel,保留
+            }
+            let exists = self
+                .llm_backends
+                .iter()
+                .any(|b| b.id == profile.backend_id);
+            if !exists {
+                tracing::warn!(
+                    profile = %profile.id,
+                    bad_backend_id = %profile.backend_id,
+                    "profile 引用了不存在的 backend,清空 backend_id 当作'关闭'处理"
+                );
+                profile.backend_id.clear();
+            }
+        }
     }
 
     /// 把老 profile 里跟内置模板(当前/历史版本)文本对得上的 prompt 自动转成 builtin:
@@ -477,6 +779,18 @@ impl Config {
             .find(|p| p.id == self.active_profile_id)
             .or_else(|| self.polish_profiles.first())
             .expect("polish_profiles 至少应有一个 profile")
+    }
+
+    /// 按 id 查 backend;找不到返回 None。
+    pub fn backend_by_id(&self, id: &str) -> Option<&LlmBackend> {
+        self.llm_backends.iter().find(|b| b.id == id)
+    }
+
+    /// 当前 active profile 引用的 backend(找不到 → 第一个 backend → None)。
+    pub fn active_backend(&self) -> Option<&LlmBackend> {
+        let profile = self.active_profile();
+        self.backend_by_id(&profile.backend_id)
+            .or_else(|| self.llm_backends.first())
     }
 
     /// 写入磁盘（pretty JSON，权限 0o600）。
@@ -621,5 +935,225 @@ mod tests {
             .find(|p| p.id == DEFAULT_PROFILE_ID)
             .unwrap();
         assert_eq!(p2.prompt, prompt_before);
+    }
+
+    #[test]
+    fn migrate_legacy_polish_backends_extracts_and_dedupes() {
+        // 老 cfg:两个 profile 跑同一个 backend(mode/url/model/api_key 完全一样)→ 合一份
+        let mut v: serde_json::Value = serde_json::from_str(
+            r#"{
+              "polish_profiles": [
+                {"id":"a","name":"A","mode":"openrouter","url":"https://openrouter.ai/api/v1","model":"sonnet","api_key":"sk-1","prompt":"X"},
+                {"id":"b","name":"B","mode":"openrouter","url":"https://openrouter.ai/api/v1","model":"sonnet","api_key":"sk-1","prompt":"Y"}
+              ]
+            }"#,
+        )
+        .unwrap();
+        migrate_legacy_polish_backends(&mut v);
+        let backends = v["llm_backends"].as_array().unwrap();
+        assert_eq!(backends.len(), 1, "完全相同的 backend 应去重为一份");
+        let bid = backends[0]["id"].as_str().unwrap();
+        let profiles = v["polish_profiles"].as_array().unwrap();
+        for p in profiles {
+            assert_eq!(p["backend_id"].as_str().unwrap(), bid);
+            // 老字段已剥离
+            assert!(p.get("mode").is_none());
+            assert!(p.get("url").is_none());
+            assert!(p.get("model").is_none());
+            assert!(p.get("api_key").is_none());
+            // prompt 还在
+            assert!(p["prompt"].is_string());
+        }
+    }
+
+    #[test]
+    fn migrate_legacy_polish_backends_keeps_distinct_profiles_separate() {
+        let mut v: serde_json::Value = serde_json::from_str(
+            r#"{
+              "polish_profiles": [
+                {"id":"a","name":"A","mode":"ollama","url":"http://localhost:11434/api/generate","model":"qwen2.5","api_key":"","prompt":""},
+                {"id":"b","name":"B","mode":"openrouter","url":"https://openrouter.ai/api/v1","model":"sonnet","api_key":"sk-2","prompt":""}
+              ]
+            }"#,
+        )
+        .unwrap();
+        migrate_legacy_polish_backends(&mut v);
+        let backends = v["llm_backends"].as_array().unwrap();
+        assert_eq!(backends.len(), 2, "不同 mode/url/model 应保留两份 backend");
+        let profiles = v["polish_profiles"].as_array().unwrap();
+        let bid_a = profiles[0]["backend_id"].as_str().unwrap();
+        let bid_b = profiles[1]["backend_id"].as_str().unwrap();
+        assert_ne!(bid_a, bid_b, "两个 profile 应指向不同 backend");
+    }
+
+    #[test]
+    fn migrate_legacy_polish_backends_skips_when_already_migrated() {
+        // 已经是新格式(llm_backends 非空)→ 不动
+        let mut v: serde_json::Value = serde_json::from_str(
+            r#"{
+              "llm_backends":[{"id":"x","name":"已存在","mode":"off","url":"","model":"","api_key":""}],
+              "polish_profiles":[{"id":"a","name":"A","backend_id":"x","prompt":""}]
+            }"#,
+        )
+        .unwrap();
+        let before = v.clone();
+        migrate_legacy_polish_backends(&mut v);
+        assert_eq!(v, before, "已迁移 cfg 不应被再次处理");
+    }
+
+    #[test]
+    fn migrate_legacy_polish_backends_handles_empty_profiles() {
+        // 空 profiles → llm_backends 不写入(由后续 ensure_default_backend 兜底)
+        let mut v: serde_json::Value = serde_json::from_str(r#"{"polish_profiles": []}"#).unwrap();
+        migrate_legacy_polish_backends(&mut v);
+        assert!(
+            v.get("llm_backends").is_none(),
+            "无可迁移内容时不应写入 llm_backends"
+        );
+    }
+
+    #[test]
+    fn full_load_migrates_legacy_cfg_end_to_end() {
+        let raw = r#"{
+          "polish_profiles":[
+            {"id":"a","name":"快速","mode":"openrouter","url":"https://openrouter.ai/api/v1","model":"sonnet","api_key":"sk-A","prompt":"P1"},
+            {"id":"b","name":"精修","mode":"openrouter","url":"https://openrouter.ai/api/v1","model":"sonnet","api_key":"sk-A","prompt":"P2"}
+          ],
+          "active_profile_id":"a"
+        }"#;
+        let mut raw_value: serde_json::Value = serde_json::from_str(raw).unwrap();
+        // 跑跟 Config::load 一样的两步
+        migrate_legacy_polish_backends(&mut raw_value);
+        let mut cfg: Config = serde_json::from_value(raw_value).unwrap();
+        cfg.ensure_default_backend();
+        assert_eq!(cfg.llm_backends.len(), 1, "同样的 backend 配置应只有一份");
+        assert!(cfg.polish_profiles.iter().all(|p| !p.backend_id.is_empty()));
+        let bid = &cfg.llm_backends[0].id;
+        assert!(cfg.polish_profiles.iter().all(|p| p.backend_id == *bid));
+        // active backend 应可解析
+        assert!(cfg.active_backend().is_some());
+    }
+
+    #[test]
+    fn migrate_polish_off_clears_backend_id_on_referencing_profile() {
+        // 老 cfg: profile 引用的 backend mode = "off" → profile.backend_id 清空,
+        // backend.mode 改写成 ollama + 默认 url/model
+        let mut v: serde_json::Value = serde_json::from_str(
+            r#"{
+              "llm_backends":[{"id":"x","name":"老配置","mode":"off","url":"","model":"","api_key":""}],
+              "polish_profiles":[{"id":"a","name":"A","backend_id":"x","prompt":""}],
+              "active_profile_id":"a"
+            }"#,
+        )
+        .unwrap();
+        migrate_polish_off_to_empty_backend_id(&mut v);
+        assert_eq!(
+            v["polish_profiles"][0]["backend_id"], "",
+            "引用 off backend 的 profile 应清空 backend_id"
+        );
+        let backends = v["llm_backends"].as_array().unwrap();
+        assert_eq!(backends[0]["mode"], "ollama");
+        assert!(!backends[0]["url"].as_str().unwrap().is_empty());
+        assert!(!backends[0]["model"].as_str().unwrap().is_empty());
+    }
+
+    #[test]
+    fn migrate_polish_off_keeps_profile_pointing_at_active_backend() {
+        let mut v: serde_json::Value = serde_json::from_str(
+            r#"{
+              "llm_backends":[{"id":"x","name":"已配","mode":"openrouter","url":"https://openrouter.ai/api/v1","model":"sonnet","api_key":"sk-1"}],
+              "polish_profiles":[{"id":"a","name":"A","backend_id":"x","prompt":""}],
+              "active_profile_id":"a"
+            }"#,
+        )
+        .unwrap();
+        migrate_polish_off_to_empty_backend_id(&mut v);
+        assert_eq!(
+            v["polish_profiles"][0]["backend_id"], "x",
+            "引用非 off backend 的 profile 不应被清空"
+        );
+        // 非 off backend 不被改写
+        assert_eq!(v["llm_backends"][0]["mode"], "openrouter");
+    }
+
+    #[test]
+    fn migrate_polish_off_only_clears_profiles_pointing_at_off_backend() {
+        // 多 profile:只有引用 off backend 的那个被清空,引用非 off 的不变
+        let mut v: serde_json::Value = serde_json::from_str(
+            r#"{
+              "llm_backends":[
+                {"id":"x","name":"老","mode":"off","url":"","model":"","api_key":""},
+                {"id":"y","name":"新","mode":"openrouter","url":"https://openrouter.ai/api/v1","model":"sonnet","api_key":"sk-2"}
+              ],
+              "polish_profiles":[
+                {"id":"a","name":"A","backend_id":"x","prompt":""},
+                {"id":"b","name":"B","backend_id":"y","prompt":""}
+              ],
+              "active_profile_id":"a"
+            }"#,
+        )
+        .unwrap();
+        migrate_polish_off_to_empty_backend_id(&mut v);
+        assert_eq!(v["polish_profiles"][0]["backend_id"], "");
+        assert_eq!(v["polish_profiles"][1]["backend_id"], "y");
+        // 两个 backend 的 mode:off 被改写成 ollama,openrouter 保留
+        assert_eq!(v["llm_backends"][0]["mode"], "ollama");
+        assert_eq!(v["llm_backends"][1]["mode"], "openrouter");
+    }
+
+    #[test]
+    fn migrate_polish_off_full_load_path_legacy_off_backend() {
+        // 完整 Config::load 路径:profile 自带 mode=off → 拆 backend → backend_id 清空
+        let raw = r#"{
+          "polish_profiles":[
+            {"id":"a","name":"A","mode":"off","url":"","model":"","api_key":"","prompt":"P"}
+          ],
+          "active_profile_id":"a"
+        }"#;
+        let mut raw_value: serde_json::Value = serde_json::from_str(raw).unwrap();
+        migrate_legacy_polish_backends(&mut raw_value);
+        migrate_polish_off_to_empty_backend_id(&mut raw_value);
+        let mut cfg: Config = serde_json::from_value(raw_value).unwrap();
+        cfg.ensure_default_backend();
+        assert_eq!(cfg.polish_profiles[0].backend_id, "", "应表'关闭'");
+        // backend mode 已被重写成非 off
+        assert_eq!(cfg.llm_backends.len(), 1);
+        assert_ne!(cfg.llm_backends[0].mode, POLISH_MODE_OFF);
+        // active backend 解析得为空(profile 关闭)
+        assert!(cfg.active_profile().backend_id.is_empty());
+    }
+
+    #[test]
+    fn ensure_default_backend_preserves_empty_backend_id_sentinel() {
+        // 用户主动选了"关闭"(backend_id="") → ensure_default_backend 不应回填
+        let mut cfg = Config {
+            polish_profiles: vec![PolishProfile {
+                id: "a".into(),
+                name: "A".into(),
+                backend_id: String::new(), // 空 = "关闭"
+                prompt: String::new(),
+                template_id: None,
+            }],
+            ..Config::default()
+        };
+        cfg.ensure_default_backend();
+        assert_eq!(cfg.polish_profiles[0].backend_id, "", "空 backend_id 应保留");
+    }
+
+    #[test]
+    fn ensure_default_backend_clears_dangling_backend_id() {
+        // profile 引用了不存在的 backend → 当作"关闭"清空(异常态兜底)
+        let mut cfg = Config {
+            polish_profiles: vec![PolishProfile {
+                id: "a".into(),
+                name: "A".into(),
+                backend_id: "doesnt_exist".into(),
+                prompt: String::new(),
+                template_id: None,
+            }],
+            ..Config::default()
+        };
+        cfg.ensure_default_backend();
+        assert_eq!(cfg.polish_profiles[0].backend_id, "");
     }
 }

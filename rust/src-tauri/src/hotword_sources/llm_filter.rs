@@ -1,4 +1,4 @@
-//! LLM 单层提取 —— 把对话原文整段喂给用户配置的 polish profile 后端,让
+//! LLM 单层提取 —— 把对话原文整段喂给用户配置的 LLM 后端,让
 //! LLM 自己从原文里识别值得加入语音识别词典的术语 / 专名(中英文混合)。
 //!
 //! **设计**:不再做本地分词 + 频率统计 + 停用词过滤的两层结构。本地分词
@@ -6,104 +6,40 @@
 //! 英文候选列表也跟着只挑英文 —— 反而成了误导。删掉本地层后由 LLM 直接
 //! 从原文挑词,中英文都能出。
 //!
-//! **架构 note**:这里 inline 复制了 `correct.rs` 的 LLM 调用逻辑。原因是
-//! 这次只 tap polish profile 的后端(url/model/api_key/mode)做"自由 prompt"
-//! 调用,跟 polish 流程的 prompt 渲染语义不同。等用户决定把 LLM 后端配置
-//! 抽成独立模块时,把这里和 correct.rs 一起重构,共享 LLM 调用层。
+//! **架构 note**:0.4 起 LLM 调用统一走 `crate::llm_client`,跟 polish 流程
+//! 共用同一份 backend 配置(url/model/api_key/mode),各自的 prompt 由调用方
+//! 渲染后传入。这里只剩下 prompt 模板 + 响应解析。
 
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use crate::config::LlmBackend;
+use crate::llm_client;
+use anyhow::Result;
 
-use crate::config::{
-    PolishProfile, POLISH_MODE_CLOUD, POLISH_MODE_OFF, POLISH_MODE_OLLAMA, POLISH_MODE_OPENROUTER,
-};
-
-const MAX_BODY_BYTES: usize = 64 * 1024;
 /// 给 LLM 的对话原文最长字符数。云端大模型(Claude / GPT-4 / OpenRouter 上常用 32k+)
-/// 都能容下;ollama 用户得自己保证 num_ctx 够大,默认 2048 撑不住,需要在 profile
+/// 都能容下;ollama 用户得自己保证 num_ctx 够大,默认 2048 撑不住,需要在 backend
 /// url 里加 num_ctx 参数,或者用更小的天数 / 缩小这个值。
 const MAX_RAW_TEXT_CHARS: usize = 30_000;
-
-#[derive(Serialize)]
-struct OpenAIMessage<'a> {
-    role: &'a str,
-    content: &'a str,
-}
-
-#[derive(Serialize)]
-struct OpenAIRequest<'a> {
-    model: &'a str,
-    messages: Vec<OpenAIMessage<'a>>,
-}
-
-#[derive(Deserialize)]
-struct OpenAIResponse {
-    #[serde(default)]
-    choices: Vec<OpenAIChoice>,
-}
-
-#[derive(Deserialize)]
-struct OpenAIChoice {
-    #[serde(default)]
-    message: OpenAIMessageOwned,
-}
-
-#[derive(Deserialize, Default)]
-struct OpenAIMessageOwned {
-    #[serde(default)]
-    content: String,
-}
-
-#[derive(Serialize)]
-struct OllamaRequest<'a> {
-    model: &'a str,
-    prompt: &'a str,
-    stream: bool,
-}
-
-#[derive(Deserialize)]
-struct OllamaResponse {
-    #[serde(default)]
-    response: String,
-}
 
 /// 把对话原文整段交给 LLM,让它识别并提取值得加入识别词典的术语 / 专名,
 /// 返回 LLM 推荐的词列表(中英混合)。
 ///
 /// - `raw_text`:对话原文(经 source 抽取 + 工具调用过滤 + thinking 过滤)
 /// - `existing`:用户当前 cfg.hotwords,告知 LLM 不要重复推荐
-/// - `profile`:借用其后端配置(url/model/api_key/mode)
+/// - `backend`:LLM 后端连接(url/model/api_key/mode)
 /// - `timeout_secs`:HTTP 超时
 pub async fn extract_hotwords(
     raw_text: &str,
     existing: &[String],
-    profile: &PolishProfile,
+    backend: &LlmBackend,
     timeout_secs: u64,
 ) -> Result<Vec<String>> {
-    if profile.mode == POLISH_MODE_OFF || profile.mode.is_empty() {
+    if !backend.is_active() {
         anyhow::bail!(
-            "profile 「{}」的模式是 off,LLM 提取需要一个有效的 polish profile",
-            profile.name
+            "backend 「{}」mode 是 off,LLM 提取需要一个有效的后端",
+            backend.name
         );
     }
-
     let prompt = build_prompt(raw_text, existing);
-    let response = match profile.mode.as_str() {
-        POLISH_MODE_OPENROUTER => {
-            call_openai_compatible(
-                &prompt,
-                profile,
-                "https://openrouter.ai/api/v1/chat/completions",
-                timeout_secs,
-            )
-            .await?
-        }
-        POLISH_MODE_CLOUD => call_cloud(&prompt, profile, timeout_secs).await?,
-        POLISH_MODE_OLLAMA => call_ollama(&prompt, profile, timeout_secs).await?,
-        other => anyhow::bail!("不支持的 polish mode: {}", other),
-    };
-
+    let response = llm_client::call(backend, &prompt, timeout_secs).await?;
     Ok(parse_word_list(&response))
 }
 
@@ -200,111 +136,6 @@ fn parse_word_list(response: &str) -> Vec<String> {
         .filter(|l| !l.is_empty() && l.chars().count() <= 60 && !l.contains(' '))
         .map(|l| l.to_string())
         .collect()
-}
-
-// === 以下是 LLM 调用,跟 correct.rs 的实现一致(临时复制,等 LLM 后端
-// 配置抽离重构时合并) ===
-
-async fn call_openai_compatible(
-    user: &str,
-    profile: &PolishProfile,
-    url: &str,
-    timeout_secs: u64,
-) -> Result<String> {
-    if profile.api_key.is_empty() {
-        anyhow::bail!("profile 「{}」缺少 API Key", profile.name);
-    }
-    let body = OpenAIRequest {
-        model: &profile.model,
-        messages: vec![OpenAIMessage {
-            role: "user",
-            content: user,
-        }],
-    };
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout_secs))
-        .build()?;
-    let resp = client
-        .post(url)
-        .bearer_auth(&profile.api_key)
-        .json(&body)
-        .send()
-        .await
-        .context("call openai compatible")?;
-    parse_openai_response(resp).await
-}
-
-async fn call_cloud(user: &str, profile: &PolishProfile, timeout_secs: u64) -> Result<String> {
-    let url = if profile.url.ends_with("/chat/completions") {
-        profile.url.clone()
-    } else {
-        format!("{}/v1/chat/completions", profile.url.trim_end_matches('/'))
-    };
-    let body = OpenAIRequest {
-        model: &profile.model,
-        messages: vec![OpenAIMessage {
-            role: "user",
-            content: user,
-        }],
-    };
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout_secs))
-        .build()?;
-    let mut req = client.post(&url).json(&body);
-    if !profile.api_key.is_empty() {
-        req = req.bearer_auth(&profile.api_key);
-    }
-    let resp = req.send().await.context("call cloud endpoint")?;
-    parse_openai_response(resp).await
-}
-
-async fn parse_openai_response(resp: reqwest::Response) -> Result<String> {
-    let status = resp.status();
-    let text_body = truncate_body(resp.text().await.unwrap_or_default());
-    if !status.is_success() {
-        anyhow::bail!("LLM API {}: {}", status, text_body);
-    }
-    let parsed: OpenAIResponse = serde_json::from_str(&text_body)?;
-    Ok(parsed
-        .choices
-        .first()
-        .map(|c| c.message.content.trim().to_string())
-        .unwrap_or_default())
-}
-
-async fn call_ollama(user: &str, profile: &PolishProfile, timeout_secs: u64) -> Result<String> {
-    let req = OllamaRequest {
-        model: &profile.model,
-        prompt: user,
-        stream: false,
-    };
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout_secs))
-        .build()?;
-    let resp = client
-        .post(&profile.url)
-        .json(&req)
-        .send()
-        .await
-        .context("call ollama")?;
-    let status = resp.status();
-    let text_body = truncate_body(resp.text().await.unwrap_or_default());
-    if !status.is_success() {
-        anyhow::bail!("ollama API {}: {}", status, text_body);
-    }
-    let parsed: OllamaResponse = serde_json::from_str(&text_body)?;
-    Ok(parsed.response.trim().to_string())
-}
-
-fn truncate_body(s: String) -> String {
-    if s.len() <= MAX_BODY_BYTES {
-        s
-    } else {
-        let mut t = s.into_bytes();
-        t.truncate(MAX_BODY_BYTES);
-        let truncated = String::from_utf8_lossy(&t).to_string();
-        format!("{}... (truncated)", truncated)
-    }
 }
 
 #[cfg(test)]

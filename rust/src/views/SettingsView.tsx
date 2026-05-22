@@ -15,12 +15,12 @@ import {
   DeviceInfo,
   DownloadProgress,
   PolishProfile,
+  LlmBackend,
   LocalEngineInfo,
   PunctModelInfo,
   PunctDownloadProgress,
   HotwordSourceInfo,
   HotwordCandidate,
-  POLISH_MODE_OFF,
   ProfileTemplateInfo,
 } from "../api";
 import {
@@ -32,10 +32,14 @@ import {
 } from "../lib/hotkey";
 import { saveTextToFile, readTextFromFile } from "../lib/fileDialogHelpers";
 
-export type SettingsSection = "asr" | "polish" | "record" | "hotwords" | "log";
+export type SettingsSection = "asr" | "llm_backends" | "polish" | "record" | "hotwords" | "log";
 
 const SECTION_META: Record<SettingsSection, { title: string; subtitle: string }> = {
   asr: { title: "语音识别", subtitle: "识别后端与对应的密钥" },
+  llm_backends: {
+    title: "LLM 后端",
+    subtitle: "连接配置(url / model / api key)。多个 profile 可共用一份后端;识别词典自动生成也复用 active profile 的后端",
+  },
   polish: {
     title: "AI 润色",
     subtitle: "识别完成后交给 LLM 按你的 prompt 再润一遍；可建多个 profile 按场景切换",
@@ -103,15 +107,15 @@ export function SettingsView({ section }: { section: SettingsSection }) {
       return;
     }
     setSaveState("saving");
-    const activeMode = cfg.polish_profiles.find((p) => p.id === cfg.active_profile_id)?.mode;
     console.debug("[settings] autosave queued", {
       active_profile_id: cfg.active_profile_id,
-      active_mode: activeMode,
     });
     const timer = setTimeout(async () => {
       try {
         await api.saveConfig(cfg);
-        console.debug("[settings] autosave done", { active_mode: activeMode });
+        console.debug("[settings] autosave done", {
+          active_profile_id: cfg.active_profile_id,
+        });
         setSaveState("saved");
         setErrMsg("");
         setTimeout(() => setSaveState("idle"), 1500);
@@ -266,6 +270,10 @@ export function SettingsView({ section }: { section: SettingsSection }) {
             <LocalEnginePanel cfg={cfg} update={update} />
           )}
         </section>
+      )}
+
+      {section === "llm_backends" && (
+        <BackendsSection cfg={cfg} setCfg={setCfg} />
       )}
 
       {section === "polish" && (
@@ -737,6 +745,69 @@ function levelColor(level: LogLevel): string {
   }
 }
 
+function BackendsSection({
+  cfg,
+  setCfg,
+}: {
+  cfg: Config;
+  setCfg: (c: Config) => void;
+}) {
+  const profiles = cfg.polish_profiles;
+  const replaceBackends = (next: LlmBackend[]) => {
+    setCfg({ ...cfg, llm_backends: next });
+  };
+
+  const updateBackend = (id: string, patch: Partial<LlmBackend>) => {
+    replaceBackends(
+      cfg.llm_backends.map((b) => (b.id === id ? { ...b, ...patch } : b)),
+    );
+  };
+
+  const addBackend = () => {
+    const id = cryptoId();
+    const newBackend: LlmBackend = {
+      id,
+      name: generateBackendName("ollama", cfg.llm_backends),
+      mode: "ollama",
+      url: "http://localhost:11434/api/generate",
+      model: "qwen2.5:3b",
+      api_key: "",
+    };
+    replaceBackends([...cfg.llm_backends, newBackend]);
+  };
+
+  const removeBackend = (id: string) => {
+    if (cfg.llm_backends.length <= 1) return;
+    const ref = profiles.find((p) => p.backend_id === id);
+    if (ref) {
+      alert(`后端正被 profile「${ref.name}」引用,请先在 profile 里换一个再删`);
+      return;
+    }
+    replaceBackends(cfg.llm_backends.filter((b) => b.id !== id));
+  };
+
+  return (
+    <section className="card space-y-3">
+      {cfg.llm_backends.map((b) => (
+        <BackendCard
+          key={b.id}
+          backend={b}
+          canDelete={cfg.llm_backends.length > 1}
+          inUseBy={profiles.filter((p) => p.backend_id === b.id).map((p) => p.name)}
+          onChange={(patch) => updateBackend(b.id, patch)}
+          onDelete={() => removeBackend(b.id)}
+        />
+      ))}
+      <button
+        className="w-full py-2.5 rounded-xl bg-white/[0.03] border border-dashed border-white/10 text-gray-400 hover:bg-white/[0.05] hover:text-gray-200 hover:border-white/20 transition text-sm"
+        onClick={addBackend}
+      >
+        ＋ 新建后端
+      </button>
+    </section>
+  );
+}
+
 function PolishSection({
   cfg,
   setCfg,
@@ -771,15 +842,16 @@ function PolishSection({
     replaceProfiles(profiles.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   };
 
+  const replaceBackends = (next: LlmBackend[]) => {
+    setCfg({ ...cfg, llm_backends: next });
+  };
+
   const addProfile = () => {
     const id = cryptoId();
     const newProfile: PolishProfile = {
       id,
       name: "新 Profile",
-      mode: "off",
-      url: "http://localhost:11434/api/generate",
-      model: "qwen2.5:3b",
-      api_key: "",
+      backend_id: cfg.llm_backends[0]?.id ?? "",
       prompt: "润色以下文字，保留原意：\n\n{text}",
     };
     replaceProfiles([...profiles, newProfile]);
@@ -789,13 +861,26 @@ function PolishSection({
 
   const addFromTemplate = (t: ProfileTemplateInfo) => {
     const id = cryptoId();
+    // 模板的 mode 决定它"应该"绑哪种 backend。优先复用 cfg.llm_backends 里第一个
+    // 同 mode 的;没有就新建一个 mode=t.mode 的占位 backend(用户后续要去填 url/key)
+    let backendId = cfg.llm_backends.find((b) => b.mode === t.mode)?.id;
+    if (!backendId) {
+      const newId = cryptoId();
+      const newBackend: LlmBackend = {
+        id: newId,
+        name: t.name,
+        mode: t.mode,
+        url: t.mode === "ollama" ? "http://localhost:11434/api/generate" : "",
+        model: "",
+        api_key: "",
+      };
+      replaceBackends([...cfg.llm_backends, newBackend]);
+      backendId = newId;
+    }
     const newProfile: PolishProfile = {
       id,
       name: t.name,
-      mode: t.mode,
-      url: t.mode === "ollama" ? "http://localhost:11434/api/generate" : "",
-      model: "",
-      api_key: "",
+      backend_id: backendId,
       // builtin profile:prompt 字段不用,后端 effective_prompt 走 template_id 取
       prompt: "",
       template_id: t.id,
@@ -852,7 +937,8 @@ function PolishSection({
             </select>
           </div>
           <p className="text-[11px] text-gray-500 mt-2">
-            或从菜单栏托盘图标里快速切换（无需打开设置）
+            或从菜单栏托盘图标里快速切换（无需打开设置）。每个 profile 自己决定要不要润色:
+            想"原文直出"就把它的 LLM 后端选成"(关闭)"。
           </p>
         </section>
       )}
@@ -868,6 +954,7 @@ function PolishSection({
                 ? profileTemplates.find((t) => t.id === profile.template_id)
                 : undefined
             }
+            backends={cfg.llm_backends}
             active={profile.id === cfg.active_profile_id}
             expanded={expanded.has(profile.id)}
             canDelete={profiles.length > 1}
@@ -942,6 +1029,7 @@ function PolishSection({
 function ProfileCard({
   profile,
   template,
+  backends,
   active,
   expanded,
   canDelete,
@@ -953,6 +1041,7 @@ function ProfileCard({
 }: {
   profile: PolishProfile;
   template?: ProfileTemplateInfo;
+  backends: LlmBackend[];
   active: boolean;
   expanded: boolean;
   canDelete: boolean;
@@ -963,10 +1052,15 @@ function ProfileCard({
   onDelete: () => void;
 }) {
   const isBuiltin = !!profile.template_id;
-  const modelHint =
-    profile.mode === "off"
+  // backend_id 空字符串 = 用户主动选了"(关闭)",ASR 原文直出。这时 backend 仍是
+  // undefined,但语义跟"找不到引用"区分:isOff 用于 UI label。
+  const isOff = profile.backend_id === "";
+  const backend = backends.find((b) => b.id === profile.backend_id);
+  const modelHint = isOff
+    ? "(关闭 — 原文直出)"
+    : !backend
       ? "—"
-      : `${profile.mode}/${profile.model || "(未设)"}`;
+      : `${backend.name}/${backend.model || "(未设)"}`;
 
   // 内置模板:把当前 prompt 文本物化到 prompt 字段,清空 template_id —— 从此变成
   // 普通 custom profile,用户可以随便改,不再随版本变化。
@@ -1074,42 +1168,27 @@ function ProfileCard({
               onChange={(e) => onChange({ name: e.target.value })}
             />
           </Field>
-          <Field label="润色后端">
+          <Field label="LLM 后端">
             <select
               className="input"
-              value={profile.mode}
-              onChange={(e) => {
-                console.debug("[polish] mode change", {
-                  profile_id: profile.id,
-                  from: profile.mode,
-                  to: e.target.value,
-                });
-                onChange({ mode: e.target.value });
-              }}
+              value={profile.backend_id}
+              onChange={(e) => onChange({ backend_id: e.target.value })}
             >
-              {POLISH_MODES.map((m) => (
-                <option key={m.value} value={m.value}>{m.label}</option>
+              <option value="">(关闭 — 原文直出)</option>
+              {backends.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
               ))}
             </select>
+            <p className="text-[11px] text-gray-500 mt-1">
+              选"(关闭)"时这个 profile 不调 LLM,识别原文直接输出 ——
+              想试 prompt 但不耗 token 就用它。连接(url / model / api key)在左侧
+              「🔌 LLM 后端」里编辑或新建,多个 profile 可共用一份。
+            </p>
           </Field>
-          {profile.mode !== "off" && (
+          {(isOff || backend) && (
             <>
-              <TextField
-                label={profile.mode === "ollama" ? "Ollama API 地址" : "API 地址"}
-                value={profile.url}
-                onChange={(v) => onChange({ url: v })}
-              />
-              <TextField
-                label="模型"
-                value={profile.model}
-                onChange={(v) => onChange({ model: v })}
-              />
-              <TextField
-                label="API Key"
-                value={profile.api_key}
-                onChange={(v) => onChange({ api_key: v })}
-                password
-              />
               <Field
                 label={
                   <>
@@ -1156,6 +1235,89 @@ function ProfileCard({
             </>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+function BackendCard({
+  backend,
+  canDelete,
+  inUseBy,
+  onChange,
+  onDelete,
+}: {
+  backend: LlmBackend;
+  canDelete: boolean;
+  inUseBy: string[];
+  onChange: (patch: Partial<LlmBackend>) => void;
+  onDelete: () => void;
+}) {
+  const [showKey, setShowKey] = useState(false);
+  return (
+    <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3 space-y-3">
+      <div className="flex items-center gap-2">
+        <div className="flex-1 px-3 py-2 rounded-lg bg-white/[0.02] border border-white/[0.04] text-sm text-gray-200 font-medium truncate">
+          {backend.name}
+        </div>
+        <button
+          title={canDelete ? "删除后端" : "至少保留一个后端"}
+          className={
+            "w-7 h-7 rounded-md flex items-center justify-center transition text-xs " +
+            (canDelete
+              ? "text-gray-500 hover:bg-red-500/15 hover:text-red-400"
+              : "text-gray-700 cursor-not-allowed opacity-40")
+          }
+          disabled={!canDelete}
+          onClick={() => {
+            if (!canDelete) return;
+            if (confirm(`删除后端「${backend.name}」？`)) onDelete();
+          }}
+        >
+          ✕
+        </button>
+      </div>
+      <Field label="模式">
+        <select
+          className="input"
+          value={backend.mode}
+          onChange={(e) => onChange({ mode: e.target.value })}
+        >
+          {POLISH_MODES.map((m) => (
+            <option key={m.value} value={m.value}>{m.label}</option>
+          ))}
+        </select>
+      </Field>
+      <TextField
+        label={backend.mode === "ollama" ? "Ollama API 地址" : "API 地址"}
+        value={backend.url}
+        onChange={(v) => onChange({ url: v })}
+      />
+      <TextField
+        label="模型"
+        value={backend.model}
+        onChange={(v) => onChange({ model: v })}
+      />
+      <Field label="API Key">
+        <div className="flex gap-2">
+          <input
+            className="input flex-1"
+            type={showKey ? "text" : "password"}
+            value={backend.api_key}
+            onChange={(e) => onChange({ api_key: e.target.value })}
+          />
+          <button
+            className="px-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-gray-300 text-[11px]"
+            onClick={() => setShowKey((s) => !s)}
+          >
+            {showKey ? "隐藏" : "显示"}
+          </button>
+        </div>
+      </Field>
+      {inUseBy.length > 0 && (
+        <p className="text-[11px] text-gray-500">
+          被引用:{inUseBy.join(", ")}
+        </p>
       )}
     </div>
   );
@@ -1260,6 +1422,18 @@ function cryptoId(): string {
       ? crypto.randomUUID()
       : Math.random().toString(36).slice(2);
   return u.replace(/-/g, "").slice(0, 8);
+}
+
+// 后端 name 不让用户改 —— 创建时按 mode 的 label 自动起;遇重名加 "(2)" "(3)" 后缀。
+// 多 ollama 后端用模型名口语区分还是有点麻烦,但一般用户不会同时建多个同 mode 后端,
+// 真要建也能从下拉框里看 url/model 区分。
+function generateBackendName(mode: string, existing: LlmBackend[]): string {
+  const base = POLISH_MODES.find((m) => m.value === mode)?.label ?? "新后端";
+  if (!existing.some((b) => b.name === base)) return base;
+  for (let i = 2; ; i++) {
+    const candidate = `${base} (${i})`;
+    if (!existing.some((b) => b.name === candidate)) return candidate;
+  }
 }
 
 function SaveIndicator({ state, errMsg }: { state: "idle" | "saving" | "saved" | "error"; errMsg: string }) {
@@ -2273,18 +2447,18 @@ function AutoHotwordModal({
   const [sources, setSources] = useState<HotwordSourceInfo[]>([]);
   const [sourceId, setSourceId] = useState<string>("");
   const [days, setDays] = useState<number>(30);
-  const [profileId, setProfileId] = useState<string>(cfg.active_profile_id);
+  // 默认选 active profile 引用的 backend(用户最熟那个);active profile 关闭润色
+  // (backend_id == "") 时回退到第一个 backend。
+  const [backendId, setBackendId] = useState<string>(() => {
+    const active = cfg.polish_profiles.find((p) => p.id === cfg.active_profile_id);
+    if (active && active.backend_id) return active.backend_id;
+    return cfg.llm_backends[0]?.id ?? "";
+  });
   const [scanning, setScanning] = useState(false);
   const [candidates, setCandidates] = useState<HotwordCandidate[] | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [errMsg, setErrMsg] = useState<string>("");
   const [adding, setAdding] = useState(false);
-
-  // 只能用 mode != off 的 profile 做 LLM 二次筛选
-  const llmProfiles = useMemo(
-    () => cfg.polish_profiles.filter((p) => p.mode !== POLISH_MODE_OFF && p.mode !== ""),
-    [cfg.polish_profiles],
-  );
 
   // 已存在的热词集合(case-insensitive),用来在结果列表里标"已存在"
   const existingLc = useMemo(
@@ -2305,21 +2479,22 @@ function AutoHotwordModal({
   }, []);
 
   useEffect(() => {
-    // active profile 如果是 off,默认选第一个 LLM profile
-    if (llmProfiles.length === 0) {
-      setProfileId("");
+    // backend 列表变化时,如果当前选的不存在了就回退到第一个
+    if (cfg.llm_backends.length === 0) {
+      setBackendId("");
       return;
     }
-    const exists = llmProfiles.find((p) => p.id === profileId);
-    if (!exists) setProfileId(llmProfiles[0].id);
-  }, [llmProfiles, profileId]);
+    if (!cfg.llm_backends.some((b) => b.id === backendId)) {
+      setBackendId(cfg.llm_backends[0].id);
+    }
+  }, [cfg.llm_backends, backendId]);
 
   const currentSource = sources.find((s) => s.id === sourceId);
   const canScan =
     !scanning &&
     !!sourceId &&
     !!currentSource?.available &&
-    !!profileId &&
+    !!backendId &&
     days > 0;
 
   const startScan = async () => {
@@ -2328,7 +2503,7 @@ function AutoHotwordModal({
     setPicked(new Set());
     setScanning(true);
     try {
-      const list = await api.scanHotwordCandidates(sourceId, days, profileId);
+      const list = await api.scanHotwordCandidates(sourceId, days, backendId);
       setCandidates(list);
       // 默认全勾(已存在的除外)—— LLM 已经做过筛选,候选都值得加
       const auto = new Set<string>();
@@ -2430,16 +2605,16 @@ function AutoHotwordModal({
             <Field label="LLM 后端">
               <select
                 className="input w-full h-[42px]"
-                value={profileId}
-                onChange={(e) => setProfileId(e.target.value)}
+                value={backendId}
+                onChange={(e) => setBackendId(e.target.value)}
                 disabled={scanning}
               >
-                {llmProfiles.length === 0 && (
-                  <option value="">(先去 AI 润色配一个非 off 的 profile)</option>
+                {cfg.llm_backends.length === 0 && (
+                  <option value="">(先去 LLM 后端配一个)</option>
                 )}
-                {llmProfiles.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
+                {cfg.llm_backends.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
                   </option>
                 ))}
               </select>
@@ -2449,7 +2624,7 @@ function AutoHotwordModal({
           {/* 把所有 helper text 放 grid 外面单独行,避免它撑高某一列让三个
               Field 错位(尤其当三列里只有一个有 helper text 时)。 */}
           <p className="text-[11px] text-gray-500 leading-snug -mt-1">
-            「LLM 后端」只借用润色 profile 的 url / model / api key,筛词 prompt 由系统提供,不会用润色 prompt
+            筛词 prompt 由系统提供,跟 AI 润色 profile 的 prompt 解耦 —— 用哪个 backend 都不影响润色行为
           </p>
           {currentSource && !currentSource.available && (
             <p className="text-[11px] text-orange-300/80 leading-snug">

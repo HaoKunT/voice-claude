@@ -10,6 +10,7 @@ import { UpdateProvider, useUpdate } from "./contexts/UpdateContext";
 
 type Route =
   | "asr"
+  | "llm_backends"
   | "polish"
   | "record"
   | "hotwords"
@@ -20,6 +21,7 @@ type Route =
 
 const ROUTE_HASHES: Record<Route, string> = {
   asr: "#/",
+  llm_backends: "#/llm-backends",
   polish: "#/polish",
   record: "#/record",
   hotwords: "#/hotwords",
@@ -31,6 +33,7 @@ const ROUTE_HASHES: Record<Route, string> = {
 
 const NAV_ITEMS: { route: Route; icon: string; label: string }[] = [
   { route: "asr", icon: "🎙", label: "语音识别" },
+  { route: "llm_backends", icon: "🔌", label: "LLM 后端" },
   { route: "polish", icon: "🧠", label: "AI 润色" },
   { route: "record", icon: "🎤", label: "录音参数" },
   { route: "hotwords", icon: "📝", label: "热词替换" },

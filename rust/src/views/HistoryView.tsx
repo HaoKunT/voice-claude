@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, Config, HistoryEntry, HistoryStats, PolishProfile } from "../api";
+import { api, Config, HistoryEntry, HistoryStats, LlmBackend, PolishProfile } from "../api";
 import { formatTrigger } from "../lib/hotkey";
 
 export function HistoryView() {
@@ -7,6 +7,7 @@ export function HistoryView() {
   const [selected, setSelected] = useState<HistoryEntry | null>(null);
   const [loading, setLoading] = useState(true);
   const [profiles, setProfiles] = useState<PolishProfile[]>([]);
+  const [backends, setBackends] = useState<LlmBackend[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string>("");
   const [trigger, setTrigger] = useState<{ trigger_mode: string; hotkey: string; double_tap_modifier: string } | null>(null);
   const [stats, setStats] = useState<HistoryStats | null>(null);
@@ -16,10 +17,12 @@ export function HistoryView() {
   const [repolishing, setRepolishing] = useState(false);
   const [repolishError, setRepolishError] = useState<string>("");
 
-  // 过滤出真正能跑的 profile:mode != off 且必要凭证不空
+  // 能跑重润色 = profile 选了有效 backend。backend_id == "" 的"关闭"profile
+  // 自然被排掉(空字符串不会匹配任何 backend.id)。
   const runnableProfiles = useMemo(
-    () => profiles.filter((p) => p.mode && p.mode !== "off"),
-    [profiles],
+    () =>
+      profiles.filter((p) => backends.some((bb) => bb.id === p.backend_id)),
+    [profiles, backends],
   );
 
   const reload = async () => {
@@ -40,6 +43,7 @@ export function HistoryView() {
     try {
       const cfg: Config = await api.getConfig();
       setProfiles(cfg.polish_profiles ?? []);
+      setBackends(cfg.llm_backends ?? []);
       setActiveProfileId(cfg.active_profile_id ?? "");
       setTrigger({
         trigger_mode: cfg.trigger_mode ?? "toggle",
@@ -48,6 +52,7 @@ export function HistoryView() {
       });
     } catch {
       setProfiles([]);
+      setBackends([]);
       setActiveProfileId("");
       setTrigger(null);
     }

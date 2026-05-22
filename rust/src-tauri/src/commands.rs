@@ -153,15 +153,32 @@ pub async fn repolish_history(
             cfg.active_profile()
         }
     };
+    let backend = match cfg.backend_by_id(&profile.backend_id) {
+        Some(b) => b,
+        None => {
+            if profile.backend_id.is_empty() {
+                return Err(format!(
+                    "profile 「{}」选了「关闭」,无法重润色",
+                    profile.name
+                ));
+            }
+            return Err(format!(
+                "profile 「{}」引用的 backend 「{}」不存在",
+                profile.name, profile.backend_id
+            ));
+        }
+    };
     tracing::info!(
         profile = %profile.name,
-        mode = %profile.mode,
-        model = %profile.model,
+        backend = %backend.name,
+        mode = %backend.mode,
+        model = %backend.model,
         "repolish: 开始润色"
     );
     correct::correct(
         &entry.raw_text,
         profile,
+        backend,
         cfg.correct_timeout_secs(),
         &cfg.hotwords,
     )
@@ -171,7 +188,9 @@ pub async fn repolish_history(
 
 #[tauri::command]
 pub async fn check_ollama(url: String) -> Result<(), String> {
-    correct::check_ollama(&url).await.map_err(|e| e.to_string())
+    crate::llm_client::check_ollama(&url)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 找日志目录下 mtime 最新的日志文件。
@@ -744,7 +763,7 @@ pub struct HotwordCandidate {
 ///
 /// - `source_id`:`list_hotword_sources` 里某项的 id(当前 `"claude_code"`)
 /// - `days`:扫描最近 N 天的数据
-/// - `profile_id`:用哪个 polish profile 的 LLM 后端做筛选(必须是 mode != off 的)
+/// - `backend_id`:用哪个 LLM 后端做筛选(直接选 backend,不再绕 polish profile)
 ///
 /// 返回的列表已经过滤掉用户当前 cfg.hotwords 已有的词,前端 modal 直接展示让
 /// 用户勾选。 `suggested=true` 是 LLM 推荐的;`false` 是 LLM 没选但本地频率
@@ -753,7 +772,7 @@ pub struct HotwordCandidate {
 pub async fn scan_hotword_candidates(
     source_id: String,
     days: u32,
-    profile_id: String,
+    backend_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<HotwordCandidate>, String> {
     use crate::hotword_sources::{find_source, llm_filter};
@@ -762,11 +781,10 @@ pub async fn scan_hotword_candidates(
     if !source.available() {
         return Err(format!("数据源 {} 不可用(目录不存在?)", source.label()));
     }
-    let profile = cfg
-        .polish_profiles
-        .iter()
-        .find(|p| p.id == profile_id)
-        .ok_or_else(|| format!("未知 profile: {}", profile_id))?;
+    let backend = cfg
+        .backend_by_id(&backend_id)
+        .ok_or_else(|| format!("未知 backend: {}", backend_id))?
+        .clone();
 
     // Step 1: 抽取数据源用户文本
     let text = source
@@ -790,21 +808,20 @@ pub async fn scan_hotword_candidates(
     // 在大上下文上 prefill 很慢。300s = 5min 是经验值,xiaomi/mimo-v2-flash
     // 类的中等模型实测 1-3 分钟,GPT-4 Turbo / Claude Sonnet 30s 内。
     const HOTWORD_LLM_TIMEOUT_SECS: u64 = 300;
-    let profile_owned = profile.clone();
     let existing_owned = cfg.hotwords.clone();
     tracing::info!(
         excerpt_chars = excerpt.chars().count(),
         existing_count = existing_owned.len(),
-        profile = %profile_owned.name,
-        mode = %profile_owned.mode,
-        model = %profile_owned.model,
+        backend = %backend.name,
+        mode = %backend.mode,
+        model = %backend.model,
         timeout_secs = HOTWORD_LLM_TIMEOUT_SECS,
         "hotwords: 调 LLM 提取"
     );
     let llm_words: Vec<String> = match llm_filter::extract_hotwords(
         &excerpt,
         &existing_owned,
-        &profile_owned,
+        &backend,
         HOTWORD_LLM_TIMEOUT_SECS,
     )
     .await

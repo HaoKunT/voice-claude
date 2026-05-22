@@ -9,7 +9,6 @@ use tauri::{
     AppHandle, Manager, Wry,
 };
 
-use crate::config::POLISH_MODE_OFF;
 use crate::AppState;
 
 /// 嵌入的托盘图标（专用于菜单栏：只有线条、透明底）。
@@ -142,7 +141,8 @@ fn build_asr_submenu(app: &AppHandle<Wry>, current: &str) -> Result<Submenu<Wry>
 }
 
 /// "AI 润色" submenu。每个 profile 一项 CheckMenuItem;active profile ✓;
-/// 若 active profile 自己 mode=off,label 加"(关闭)"提示用户当前没在润色。
+/// 单个 profile 的 backend_id 空 / 引用了不存在的 backend → label 加"(关闭)"提示
+/// 切到这个 profile 等于不润色。
 fn build_polish_submenu(app: &AppHandle<Wry>, cfg: &crate::config::Config) -> Result<Submenu<Wry>> {
     let mut items: Vec<CheckMenuItem<Wry>> = Vec::with_capacity(cfg.polish_profiles.len().max(1));
     if cfg.polish_profiles.is_empty() {
@@ -159,7 +159,9 @@ fn build_polish_submenu(app: &AppHandle<Wry>, cfg: &crate::config::Config) -> Re
     } else {
         for p in &cfg.polish_profiles {
             let event_id = format!("{}{}", POLISH_SWITCH_PREFIX, p.id);
-            let label = if p.mode == POLISH_MODE_OFF {
+            let off = p.backend_id.is_empty()
+                || cfg.backend_by_id(&p.backend_id).is_none();
+            let label = if off {
                 format!("{}(关闭)", p.name)
             } else {
                 p.name.clone()
