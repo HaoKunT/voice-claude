@@ -27,15 +27,15 @@
     "lucide-react": "^1.16.0"
   },
   "devDependencies": {
-    "@types/react": "^19.1.8",
+    "@types/react": "^19.2.15",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^5.2.0",
     "typescript": "~6.0.3",
-    "vite": "^8.0.13",
+    "vite": "^8.0.14",
     "@tauri-apps/cli": "^2",
     "tailwindcss": "^4.3.0",
     "@tailwindcss/postcss": "^4.3.0",
-    "postcss": "^8.4.49",
+    "postcss": "^8.5.15",
     "autoprefixer": "^10.4.20",
     "@typescript-eslint/eslint-plugin": "^8.59.4",
     "@typescript-eslint/parser": "^8.59.4",
