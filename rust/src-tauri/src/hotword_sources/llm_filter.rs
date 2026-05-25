@@ -87,8 +87,19 @@ fn build_prompt(raw_text: &str, existing: &[String]) -> String {
          Voice-Claude 二选一,不要两个都返回)。\n\n",
     );
     if !existing.is_empty() {
-        s.push_str("已在词典里的词(不要重复推荐):\n");
-        for w in existing.iter().take(500) {
+        // 词典里同一个词的大小写变体只列一次(case-insensitive 去重,保留首次出现
+        // 的形式),且 prompt 文案明确告知 LLM 比对时忽略大小写 —— 防止 LLM 看到
+        // "Claude" 后又把 "claude" 当成新词推荐(后处理会兜底过滤,但提前在
+        // prompt 层就避免重复能省 token / 提高 LLM 判断准确度)。
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut deduped: Vec<&str> = Vec::new();
+        for w in existing.iter() {
+            if seen.insert(w.to_lowercase()) {
+                deduped.push(w.as_str());
+            }
+        }
+        s.push_str("已在词典里的词(不区分大小写,不要重复推荐 —— 大小写变体也算重复):\n");
+        for w in deduped.iter().take(500) {
             s.push_str(&format!("- {}\n", w));
         }
         s.push('\n');
@@ -184,6 +195,29 @@ mod tests {
     fn build_prompt_skips_existing_section_when_empty() {
         let p = build_prompt("hello world", &[]);
         assert!(!p.contains("已在词典里的词"));
+    }
+
+    #[test]
+    fn build_prompt_dedupes_existing_case_insensitive() {
+        // 词典里有同一个词的大小写变体时,prompt 里只列一次(去重 by lowercase)。
+        // 同时文案明确"不区分大小写"避免 LLM 把变体当新词。
+        let p = build_prompt(
+            "hello",
+            &[
+                "Claude".into(),
+                "claude".into(),
+                "CLAUDE".into(),
+                "voice-claude".into(),
+                "Voice-Claude".into(),
+            ],
+        );
+        assert!(p.contains("不区分大小写"));
+        // 首次出现的形式保留 —— "Claude" / "voice-claude"
+        assert_eq!(p.matches("- Claude\n").count(), 1);
+        assert_eq!(p.matches("- claude\n").count(), 0);
+        assert_eq!(p.matches("- CLAUDE\n").count(), 0);
+        assert_eq!(p.matches("- voice-claude\n").count(), 1);
+        assert_eq!(p.matches("- Voice-Claude\n").count(), 0);
     }
 
     #[test]

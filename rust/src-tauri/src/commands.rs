@@ -843,14 +843,17 @@ pub async fn scan_hotword_candidates(
     // Step 4: 后处理 ——
     //   a. case-insensitive 同词归一:LLM 偶尔同时返回 Claude / claude /
     //      Voice-Claude / voice-claude 这种大小写变体。按 lowercase 分组,
-    //      保留**原文里实际出现次数最多**的那个写法(case-sensitive count),
-    //      让最终词典里的形式跟用户实际书写习惯一致。
+    //      保留 freq 最高的那个 form。
     //   b. blacklist 兜底:LLM 即便 prompt 写了排除标准,偶尔会漏出英文
     //      虚词 / 编程关键字 / 路径片段 / 中文虚词,后端再过一道。
-    //   c. 凭空生造的词(原文里 substring count == 0)丢掉。
+    //   c. 凭空生造的词(原文里 case-insensitive substring count == 0)丢掉。
     //   d. 已存在 cfg.hotwords 的(case-insensitive)直接跳过。
     let existing_lc: std::collections::HashSet<String> =
         cfg.hotwords.iter().map(|w| w.to_lowercase()).collect();
+    // freq 比较走 case-insensitive —— LLM 给的 case 跟原文不一定一致
+    // (LLM 返回 "Claude" 而原文里全是 "claude" 是常见情况),纯 case-sensitive
+    // matches 会让这种合理候选 freq=0 被默默丢掉。
+    let text_lc = text.to_lowercase();
     // (form, freq) — 保留 freq 最大的 form
     let mut by_lc: std::collections::HashMap<String, (String, u32)> =
         std::collections::HashMap::new();
@@ -866,7 +869,7 @@ pub async fn scan_hotword_candidates(
         if existing_lc.contains(&lc) {
             continue;
         }
-        let freq = text.matches(trimmed).count() as u32;
+        let freq = text_lc.matches(&lc).count() as u32;
         if freq == 0 {
             continue;
         }
