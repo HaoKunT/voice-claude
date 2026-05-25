@@ -76,7 +76,7 @@ url = "2"
 # 本地 SenseVoice（离线 ASR）依赖：
 # - sherpa-onnx 走 feature gate `local-asr`，默认关闭（C 库编译时间长）
 # - bzip2 + tar 是模型下载 / 解压用，永远启用（download_model 主功能代码不 cfg 切分）
-bzip2 = "0.4"
+bzip2 = "0.6"
 tar = "0.4"
 
 # 横向 ASR 测试功能(asr/bench.rs)用 —— 解码 wav/mp3/m4a 到 PCM。
