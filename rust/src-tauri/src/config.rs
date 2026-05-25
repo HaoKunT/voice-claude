@@ -403,7 +403,12 @@ fn migrate_legacy_polish_backends(raw: &mut serde_json::Value) {
             mode
         };
 
-        let key = (mode_eff.clone(), url.clone(), model.clone(), api_key.clone());
+        let key = (
+            mode_eff.clone(),
+            url.clone(),
+            model.clone(),
+            api_key.clone(),
+        );
         let backend_id = dedup
             .entry(key)
             .or_insert_with(|| {
@@ -485,10 +490,7 @@ fn migrate_polish_off_to_empty_backend_id(raw: &mut serde_json::Value) {
                 let Some(map) = p.as_object_mut() else {
                     continue;
                 };
-                let bid = map
-                    .get("backend_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let bid = map.get("backend_id").and_then(|v| v.as_str()).unwrap_or("");
                 if off_ids.contains(bid) {
                     map.insert(
                         "backend_id".into(),
@@ -544,7 +546,6 @@ fn migrate_polish_off_to_empty_backend_id(raw: &mut serde_json::Value) {
         }
     }
 }
-
 
 /// `Config::migrate_hotwords_mapping` 用 —— 把 mapping 拼到默认 profile prompt 末尾,
 /// LLM 校正阶段还能做跨语种 / 写法映射(原 ASR 后字符串替换的等价能力)。
@@ -737,10 +738,7 @@ impl Config {
             if profile.backend_id.is_empty() {
                 continue; // "" 是合法 "关闭" sentinel,保留
             }
-            let exists = self
-                .llm_backends
-                .iter()
-                .any(|b| b.id == profile.backend_id);
+            let exists = self.llm_backends.iter().any(|b| b.id == profile.backend_id);
             if !exists {
                 tracing::warn!(
                     profile = %profile.id,
@@ -1137,7 +1135,10 @@ mod tests {
             ..Config::default()
         };
         cfg.ensure_default_backend();
-        assert_eq!(cfg.polish_profiles[0].backend_id, "", "空 backend_id 应保留");
+        assert_eq!(
+            cfg.polish_profiles[0].backend_id, "",
+            "空 backend_id 应保留"
+        );
     }
 
     #[test]

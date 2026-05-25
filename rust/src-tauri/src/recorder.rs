@@ -628,7 +628,9 @@ fn host_of(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{LlmBackend, POLISH_MODE_CLOUD, POLISH_MODE_OLLAMA, POLISH_MODE_OPENROUTER};
+    use crate::config::{
+        LlmBackend, POLISH_MODE_CLOUD, POLISH_MODE_OLLAMA, POLISH_MODE_OPENROUTER,
+    };
 
     fn backend(mode: &str, url: &str) -> LlmBackend {
         let mut b = LlmBackend::default_named("t", "t");

@@ -141,7 +141,9 @@ mod tests {
         let mut b = off_backend();
         b.mode = String::new();
         assert_eq!(
-            correct("hello", &test_profile(), &b, 10, &[]).await.unwrap(),
+            correct("hello", &test_profile(), &b, 10, &[])
+                .await
+                .unwrap(),
             "hello"
         );
     }

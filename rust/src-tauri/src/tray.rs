@@ -159,8 +159,7 @@ fn build_polish_submenu(app: &AppHandle<Wry>, cfg: &crate::config::Config) -> Re
     } else {
         for p in &cfg.polish_profiles {
             let event_id = format!("{}{}", POLISH_SWITCH_PREFIX, p.id);
-            let off = p.backend_id.is_empty()
-                || cfg.backend_by_id(&p.backend_id).is_none();
+            let off = p.backend_id.is_empty() || cfg.backend_by_id(&p.backend_id).is_none();
             let label = if off {
                 format!("{}(关闭)", p.name)
             } else {
