@@ -1,6 +1,6 @@
 [package]
 name = "voice-claude"
-version = "0.3.1"
+version = "0.4.0"
 description = "按住热键，语音输入到当前焦点窗口"
 authors = ["tanghaokun"]
 edition = "2021"
