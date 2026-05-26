@@ -26,11 +26,11 @@ pub fn is_local_engine(id: &str) -> bool {
 /// 解码任意 symphonia 支持的文件(wav/mp3/m4a/aac)→ 16kHz mono PCM16 WAV bytes。
 /// 内部:解码 → downmix(stereo→mono 取均值) → 线性插值 resample → f32→i16 → wav header。
 pub fn decode_to_pcm16k_mono_wav(path: &Path) -> Result<Vec<u8>> {
-    use symphonia::core::codecs::DecoderOptions;
-    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::codecs::audio::AudioDecoderOptions;
+    use symphonia::core::formats::probe::Hint;
+    use symphonia::core::formats::{FormatOptions, TrackType};
     use symphonia::core::io::MediaSourceStream;
     use symphonia::core::meta::MetadataOptions;
-    use symphonia::core::probe::Hint;
 
     let file = std::fs::File::open(path)?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -40,40 +40,39 @@ pub fn decode_to_pcm16k_mono_wav(path: &Path) -> Result<Vec<u8>> {
         hint.with_extension(ext);
     }
 
-    let probed = symphonia::default::get_probe().format(
+    let mut format = symphonia::default::get_probe().probe(
         &hint,
         mss,
-        &FormatOptions::default(),
-        &MetadataOptions::default(),
+        FormatOptions::default(),
+        MetadataOptions::default(),
     )?;
-    let mut format = probed.format;
     let track = format
-        .default_track()
+        .default_track(TrackType::Audio)
         .ok_or_else(|| anyhow!("文件不含音频轨道"))?;
     let track_id = track.id;
-    let codec_params = track.codec_params.clone();
+    let audio_params = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .ok_or_else(|| anyhow!("音频轨道缺少 codec params"))?;
     // 容器层有时不声明 sample_rate / channels(常见于 m4a / aac),等首个
-    // decoded buffer 拿到 SignalSpec 再确定 —— 容器层仅作为 hint。
-    let mut source_rate: u32 = codec_params.sample_rate.unwrap_or(0);
-    let mut channels: usize = codec_params.channels.map(|c| c.count()).unwrap_or(0);
+    // decoded buffer 拿到 AudioSpec 再确定 —— 容器层仅作为 hint。
+    let mut source_rate: u32 = audio_params.sample_rate.unwrap_or(0);
+    let mut channels: usize = audio_params
+        .channels
+        .as_ref()
+        .map(|c| c.count())
+        .unwrap_or(0);
 
-    let mut decoder =
-        symphonia::default::get_codecs().make(&codec_params, &DecoderOptions::default())?;
+    let mut decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(audio_params, &AudioDecoderOptions::default())?;
 
-    // 解码累积 f32 mono samples
+    // 解码累积 f32 mono samples。GenericAudioBufferRef 提供
+    // copy_to_slice_interleaved 自动做 sample format 转换,无需自己 match enum。
     let mut samples: Vec<f32> = Vec::new();
-    loop {
-        let packet = match format.next_packet() {
-            Ok(p) => p,
-            Err(symphonia::core::errors::Error::IoError(ref e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                break;
-            }
-            Err(symphonia::core::errors::Error::ResetRequired) => break,
-            Err(e) => return Err(e.into()),
-        };
-        if packet.track_id() != track_id {
+    let mut interleaved: Vec<f32> = Vec::new();
+    while let Some(packet) = format.next_packet()? {
+        if packet.track_id != track_id {
             continue;
         }
         let decoded = match decoder.decode(&packet) {
@@ -81,15 +80,26 @@ pub fn decode_to_pcm16k_mono_wav(path: &Path) -> Result<Vec<u8>> {
             Err(symphonia::core::errors::Error::DecodeError(_)) => continue, // 跳过坏包
             Err(e) => return Err(e.into()),
         };
-        // 第一次拿到 buffer 才知道真实 spec(m4a 容器经常不声明)
-        let (rate, ch) = buffer_spec(&decoded);
+        let spec = decoded.spec();
         if source_rate == 0 {
-            source_rate = rate;
+            source_rate = spec.rate();
         }
         if channels == 0 {
-            channels = ch;
+            channels = spec.channels().count();
         }
-        append_mono_f32(decoded, channels, &mut samples)?;
+        if channels == 0 {
+            continue;
+        }
+        interleaved.resize(decoded.samples_interleaved(), 0f32);
+        decoded.copy_to_slice_interleaved(&mut interleaved[..]);
+        if channels == 1 {
+            samples.extend_from_slice(&interleaved);
+        } else {
+            // stereo 取左右均值;多声道(>2)只取前两声道
+            for chunk in interleaved.chunks_exact(channels) {
+                samples.push((chunk[0] + chunk[1]) * 0.5);
+            }
+        }
     }
 
     if samples.is_empty() {
@@ -114,76 +124,6 @@ pub fn decode_to_pcm16k_mono_wav(path: &Path) -> Result<Vec<u8>> {
         pcm.extend_from_slice(&v.to_le_bytes());
     }
     Ok(crate::asr::wav::build_wav(&pcm))
-}
-
-/// 从 AudioBufferRef 拿 (rate, channels)。symphonia 的 SignalSpec 在所有
-/// AudioBuffer<T> 上一致,这里 match enum 取 inner buffer 的 spec —— m4a
-/// / aac 容器层经常不声明,只能等 decoder 第一帧后从这里读。
-fn buffer_spec(buf: &symphonia::core::audio::AudioBufferRef<'_>) -> (u32, usize) {
-    use symphonia::core::audio::AudioBufferRef;
-    macro_rules! pick {
-        ($b:ident) => {{
-            let s = $b.spec();
-            (s.rate, s.channels.count())
-        }};
-    }
-    match buf {
-        AudioBufferRef::U8(b) => pick!(b),
-        AudioBufferRef::U16(b) => pick!(b),
-        AudioBufferRef::U24(b) => pick!(b),
-        AudioBufferRef::U32(b) => pick!(b),
-        AudioBufferRef::S8(b) => pick!(b),
-        AudioBufferRef::S16(b) => pick!(b),
-        AudioBufferRef::S24(b) => pick!(b),
-        AudioBufferRef::S32(b) => pick!(b),
-        AudioBufferRef::F32(b) => pick!(b),
-        AudioBufferRef::F64(b) => pick!(b),
-    }
-}
-
-/// 把任意 sample 格式的 AudioBufferRef 转成 mono f32,append 到 out。
-/// stereo 取左右均值;多声道(>2)只取首声道(简化处理)。
-fn append_mono_f32(
-    buf: symphonia::core::audio::AudioBufferRef<'_>,
-    channels: usize,
-    out: &mut Vec<f32>,
-) -> Result<()> {
-    use symphonia::core::audio::{AudioBufferRef, Signal};
-    macro_rules! handle {
-        ($buf:ident, $to_f32:expr) => {{
-            let frames = $buf.frames();
-            if channels == 1 {
-                let ch0 = $buf.chan(0);
-                out.extend(ch0.iter().take(frames).map(|&s| ($to_f32)(s)));
-            } else if channels >= 2 {
-                let l = $buf.chan(0);
-                let r = $buf.chan(1);
-                for i in 0..frames {
-                    out.push((($to_f32)(l[i]) + ($to_f32)(r[i])) * 0.5);
-                }
-            }
-        }};
-    }
-    match buf {
-        AudioBufferRef::U8(b) => handle!(b, |s: u8| (s as f32 - 128.0) / 128.0),
-        AudioBufferRef::U16(b) => handle!(b, |s: u16| (s as f32 - 32768.0) / 32768.0),
-        AudioBufferRef::U24(b) => handle!(b, |s: symphonia::core::sample::u24| {
-            let v: u32 = s.0;
-            ((v as f32) - 8_388_608.0) / 8_388_608.0
-        }),
-        AudioBufferRef::U32(b) => handle!(b, |s: u32| {
-            (s as f32 - 2_147_483_648.0) / 2_147_483_648.0
-        }),
-        AudioBufferRef::S8(b) => handle!(b, |s: i8| s as f32 / 128.0),
-        AudioBufferRef::S16(b) => handle!(b, |s: i16| s as f32 / 32768.0),
-        AudioBufferRef::S24(b) => handle!(b, |s: symphonia::core::sample::i24| {
-            s.inner() as f32 / 8_388_608.0
-        }),
-        AudioBufferRef::S32(b) => handle!(b, |s: i32| s as f32 / 2_147_483_648.0),
-        AudioBufferRef::F32(b) => handle!(b, |s: f32| s),
-        AudioBufferRef::F64(b) => handle!(b, |s: f64| s as f32),
-    }
-    Ok(())
 }
 
 /// 用 rubato 把 mono samples resample 到 16kHz。Polynomial cubic 比线性插值
