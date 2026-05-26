@@ -152,78 +152,81 @@ export function HistoryView() {
           onClick={() => setSelected(null)}
         >
           <div
-            className="card max-w-xl w-full space-y-4 !p-6"
+            className="card max-w-xl w-full !p-6 flex flex-col max-h-[85vh]"
             onClick={(ev) => ev.stopPropagation()}
           >
-            <div className="flex justify-between items-center text-xs text-gray-500 font-mono">
-              <span>{formatTime(selected.created_at)}</span>
-              <div className="flex items-center gap-2">
-                {selected.duration_ms > 0 && (
-                  <span>{formatDuration(selected.duration_ms)}</span>
-                )}
-                <span className="px-1.5 py-0.5 rounded bg-white/5">{selected.asr_provider}</span>
-              </div>
-            </div>
-            <div>
-              <div className="label">原文</div>
-              <div className="bg-bg-900/60 rounded-xl p-3 text-sm whitespace-pre-wrap border border-white/5">
-                {selected.raw_text}
-              </div>
-            </div>
-            <div>
-              <div className="label">最终文字</div>
-              <div className="bg-bg-900/60 rounded-xl p-3 text-sm whitespace-pre-wrap border border-white/5">
-                {selected.corrected_text}
-              </div>
-            </div>
-
-            {/* 用其他 profile 重新润色:试不同 profile 不用重新说话 */}
-            {runnableProfiles.length > 0 && (
-              <div>
-                <div className="label">用其他 Profile 重新润色</div>
-                <div className="flex gap-2 items-center">
-                  <select
-                    className="input flex-1 !py-1.5"
-                    value={repolishProfileId}
-                    onChange={(ev) => setRepolishProfileId(ev.target.value)}
-                    disabled={repolishing}
-                  >
-                    {runnableProfiles.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.id === activeProfileId ? `${p.name}（当前）` : p.name}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    className="btn-ghost"
-                    onClick={onRepolish}
-                    disabled={repolishing || !repolishProfileId}
-                  >
-                    {repolishing ? "润色中…" : "重新润色"}
-                  </button>
+            {/* 内容区独立滚动,长文本不会把下面的 footer 按钮挤出可视区 */}
+            <div className="flex-1 overflow-y-auto space-y-4 -mr-2 pr-2">
+              <div className="flex justify-between items-center text-xs text-gray-500 font-mono">
+                <span>{formatTime(selected.created_at)}</span>
+                <div className="flex items-center gap-2">
+                  {selected.duration_ms > 0 && (
+                    <span>{formatDuration(selected.duration_ms)}</span>
+                  )}
+                  <span className="px-1.5 py-0.5 rounded bg-white/5">{selected.asr_provider}</span>
                 </div>
-                {repolishError && (
-                  <div className="mt-2 text-xs text-red-400">{repolishError}</div>
-                )}
-                {repolishResult && (
-                  <div className="mt-2">
-                    <div className="bg-bg-900/60 rounded-xl p-3 text-sm whitespace-pre-wrap border border-white/5">
-                      {repolishResult}
-                    </div>
-                    <div className="flex justify-end mt-2">
-                      <button
-                        className="btn-ghost !py-1 !px-3 text-xs"
-                        onClick={() => navigator.clipboard.writeText(repolishResult)}
-                      >
-                        复制结果
-                      </button>
-                    </div>
-                  </div>
-                )}
               </div>
-            )}
+              <div>
+                <div className="label">原文</div>
+                <div className="bg-bg-900/60 rounded-xl p-3 text-sm whitespace-pre-wrap border border-white/5">
+                  {selected.raw_text}
+                </div>
+              </div>
+              <div>
+                <div className="label">最终文字</div>
+                <div className="bg-bg-900/60 rounded-xl p-3 text-sm whitespace-pre-wrap border border-white/5">
+                  {selected.corrected_text}
+                </div>
+              </div>
 
-            <div className="flex gap-2 justify-end">
+              {/* 用其他 profile 重新润色:试不同 profile 不用重新说话 */}
+              {runnableProfiles.length > 0 && (
+                <div>
+                  <div className="label">用其他 Profile 重新润色</div>
+                  <div className="flex gap-2 items-center">
+                    <select
+                      className="input flex-1 !py-1.5"
+                      value={repolishProfileId}
+                      onChange={(ev) => setRepolishProfileId(ev.target.value)}
+                      disabled={repolishing}
+                    >
+                      {runnableProfiles.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.id === activeProfileId ? `${p.name}（当前）` : p.name}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      className="btn-ghost"
+                      onClick={onRepolish}
+                      disabled={repolishing || !repolishProfileId}
+                    >
+                      {repolishing ? "润色中…" : "重新润色"}
+                    </button>
+                  </div>
+                  {repolishError && (
+                    <div className="mt-2 text-xs text-red-400">{repolishError}</div>
+                  )}
+                  {repolishResult && (
+                    <div className="mt-2">
+                      <div className="bg-bg-900/60 rounded-xl p-3 text-sm whitespace-pre-wrap border border-white/5">
+                        {repolishResult}
+                      </div>
+                      <div className="flex justify-end mt-2">
+                        <button
+                          className="btn-ghost !py-1 !px-3 text-xs"
+                          onClick={() => navigator.clipboard.writeText(repolishResult)}
+                        >
+                          复制结果
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-2 justify-end pt-4 mt-4 border-t border-white/5">
               <button
                 className="btn-ghost"
                 onClick={() => navigator.clipboard.writeText(selected.corrected_text)}

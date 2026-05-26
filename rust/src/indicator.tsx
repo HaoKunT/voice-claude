@@ -1,6 +1,8 @@
 // 录音指示器：Raycast 风格波形 + 实时识别文字 + 录音计时。
 // panel 输出模式的识别结果展示/编辑由独立的 result 窗口负责（见 result.tsx）。
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import { parseHotkeyKeys, formatHotkeyKey, formatDoubleTapModifier } from "./lib/hotkey";
 
 const BAR_COUNT = 40;
@@ -150,6 +152,43 @@ function updateTimerDisplay() {
 
 // ==== 事件订阅 ====
 
+// 实时识别文本越长越占行,需要把 indicator 窗口跟着撑高,否则下面的 bottom 栏会被
+// 挤出可视区。后端窗口固定 W=520 H=180,这里通过 webview API 直接 setSize,
+// 不重新调位置(从底部往下扩,顶部 y 不变,避免视觉抖动)。
+const W = 520;
+const BASE_H = 180;
+const MAX_H = 360;
+const PARTIAL_BASELINE = 18;
+const win = getCurrentWindow();
+let lastH = BASE_H;
+let fitPending = false;
+
+function scheduleFit() {
+  if (fitPending) return;
+  fitPending = true;
+  requestAnimationFrame(async () => {
+    fitPending = false;
+    const partialH = partialEl.offsetHeight;
+    const extra = Math.max(0, partialH - PARTIAL_BASELINE);
+    const target = Math.min(MAX_H, BASE_H + extra);
+    if (Math.abs(target - lastH) < 4) return;
+    lastH = target;
+    try {
+      await win.setSize(new LogicalSize(W, target));
+    } catch {
+      // setSize 在 panel 上偶发失败,忽略 —— 下次更新会再试
+    }
+  });
+}
+
+async function resetSize() {
+  if (lastH === BASE_H) return;
+  lastH = BASE_H;
+  try {
+    await win.setSize(new LogicalSize(W, BASE_H));
+  } catch {}
+}
+
 listen<number>("audio-level", (e) => {
   const raw = Math.max(0, Math.min(1, e.payload));
   smoothed = smoothed * SMOOTH + raw * (1 - SMOOTH);
@@ -162,6 +201,7 @@ listen<string>("asr-partial", (e) => {
   if (text) {
     partialEl.textContent = text;
     partialEl.classList.remove("empty");
+    scheduleFit();
   }
 });
 
@@ -183,6 +223,7 @@ listen<RecordingStartedPayload>("recording-started", (e) => {
   renderTriggerHint(
     e.payload ?? { hotkey: "", trigger_mode: "toggle", double_tap_modifier: "" },
   );
+  resetSize();
 });
 
 listen("recording-stopped", () => {

@@ -23,7 +23,7 @@
 
       .panel {
         position: fixed;
-        inset: 6px;
+        inset: 0;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -34,11 +34,7 @@
           radial-gradient(120% 120% at 50% 0%, rgba(155, 135, 245, 0.12) 0%, transparent 60%),
           radial-gradient(120% 120% at 50% 100%, rgba(255, 92, 92, 0.08) 0%, transparent 60%),
           linear-gradient(180deg, rgba(22, 22, 28, 0.92) 0%, rgba(15, 15, 20, 0.92) 100%);
-        box-shadow:
-          0 0 0 1px rgba(255, 255, 255, 0.06) inset,
-          0 0 0 1px rgba(0, 0, 0, 0.4),
-          0 20px 60px rgba(0, 0, 0, 0.5),
-          0 0 40px rgba(155, 135, 245, 0.15);
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06) inset;
         color: rgba(230, 230, 240, 1);
         -webkit-user-select: none;
         user-select: none;
@@ -72,11 +68,11 @@
         min-height: 18px;
         max-width: 440px;
         font-size: 13px;
+        line-height: 1.5;
         color: rgba(230, 230, 240, 0.95);
         text-align: center;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        white-space: pre-wrap;
+        word-break: break-word;
         transition: opacity 0.2s;
       }
       .partial.empty {

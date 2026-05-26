@@ -1254,12 +1254,60 @@ function BackendCard({
   onDelete: () => void;
 }) {
   const [showKey, setShowKey] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [draftName, setDraftName] = useState(backend.name);
+
+  // 进入编辑前同步最新值,避免父级 patch 后 draft 失活
+  const beginEdit = () => {
+    setDraftName(backend.name);
+    setEditingName(true);
+  };
+  const commitName = () => {
+    const trimmed = draftName.trim();
+    if (trimmed && trimmed !== backend.name) {
+      onChange({ name: trimmed });
+    }
+    setEditingName(false);
+  };
+  const cancelName = () => {
+    setDraftName(backend.name);
+    setEditingName(false);
+  };
+
   return (
     <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3 space-y-3">
       <div className="flex items-center gap-2">
-        <div className="flex-1 px-3 py-2 rounded-lg bg-white/[0.02] border border-white/[0.04] text-sm text-gray-200 font-medium truncate">
-          {backend.name}
-        </div>
+        {editingName ? (
+          <input
+            className="flex-1 px-3 py-2 rounded-lg bg-white/[0.04] border border-purple-400/40 text-sm text-gray-100 font-medium outline-none focus:border-purple-400"
+            autoFocus
+            value={draftName}
+            onChange={(e) => setDraftName(e.target.value)}
+            onBlur={commitName}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitName();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                cancelName();
+              }
+            }}
+          />
+        ) : (
+          <div className="flex-1 px-3 py-2 rounded-lg bg-white/[0.02] border border-white/[0.04] text-sm text-gray-200 font-medium truncate">
+            {backend.name}
+          </div>
+        )}
+        {!editingName && (
+          <button
+            title="重命名"
+            className="w-7 h-7 rounded-md flex items-center justify-center text-gray-500 hover:bg-white/[0.06] hover:text-gray-200 transition text-xs"
+            onClick={beginEdit}
+          >
+            ✎
+          </button>
+        )}
         <button
           title={canDelete ? "删除后端" : "至少保留一个后端"}
           className={
