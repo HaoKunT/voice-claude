@@ -109,10 +109,14 @@ handy-keys = "0.2"
 #   实现 macOS NSPanel 的「不抢焦点」等价行为
 [target.'cfg(target_os = "windows")'.dependencies]
 window-vibrancy = "0.6"
-# windows 0.61 跟 tauri 2 内部依赖对齐 —— tauri::WebviewWindow::hwnd()
-# 返回的 HWND 是 0.61 的 InterfaceType 风格,如果我们这里 pin 老版本(0.58)
-# 会让调用 GetWindowLongPtrW(hwnd, ...) 出现 type mismatch (CopyType vs InterfaceType)
-windows = { version = "0.62", features = [
+# windows 必须严格跟 tauri 2 内部依赖对齐 —— tauri::WebviewWindow::hwnd() 返回
+# 的 HWND 类型由 tauri 内部用的 windows 版本决定。我们这里调 GetWindowLongPtrW /
+# SetWindowLongPtrW 时直接传该 hwnd,版本不一致会触发 type mismatch
+# (struct HWND 同名但不同 crate 版本=不同类型,无法互转)。
+# !! 不要让 dependabot 自动升这个 crate,必须等 tauri 同步升级再升 !!
+# 历史:0.4.0 release 周期里 dependabot 把这里从 0.61 升到 0.62,CI 没跑 windows
+# job 没拦下来,Release workflow 才暴雷。
+windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
 ] }
