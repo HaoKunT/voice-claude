@@ -12,6 +12,10 @@ updates:
           - minor
           - patch
     open-pull-requests-limit: 5
+    # windows crate 必须跟 tauri 内部 windows 版本保持一致(类型 mismatch
+    # 见 43d43fb)。等 tauri 同步升级再手动一起升,不让 dependabot 自动来。
+    ignore:
+      - dependency-name: "windows"
 
   # 前端 (pnpm 读 package.json)
   - package-ecosystem: npm
