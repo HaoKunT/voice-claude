@@ -116,7 +116,7 @@ window-vibrancy = "0.7"
 # !! 不要让 dependabot 自动升这个 crate,必须等 tauri 同步升级再升 !!
 # 历史:0.4.0 release 周期里 dependabot 把这里从 0.61 升到 0.62,CI 没跑 windows
 # job 没拦下来,Release workflow 才暴雷。
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
 ] }
