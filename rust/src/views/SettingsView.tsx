@@ -266,6 +266,61 @@ export function SettingsView({ section }: { section: SettingsSection }) {
             </>
           )}
 
+          {cfg.asr_provider === "mimo" && (
+            <>
+              <TextField
+                label="MiMo API Key"
+                value={cfg.mimo_api_key}
+                onChange={(v) => update("mimo_api_key", v)}
+                password
+              />
+              <Field label="服务端点">
+                <select
+                  className="input"
+                  value={cfg.mimo_endpoint || "public"}
+                  onChange={(e) => update("mimo_endpoint", e.target.value)}
+                >
+                  <option value="public">官方服务 (api.xiaomimimo.com)</option>
+                  <option value="custom">自部署 (填 base_url + model)</option>
+                </select>
+                <p className="text-[11px] text-gray-500 leading-relaxed mt-1">
+                  官方:走 platform.xiaomimimo.com,model 固定 mimo-v2.5-asr。
+                  自部署:MiMo-V2.5-ASR 权重在 HuggingFace 开源
+                  (XiaomiMiMo/MiMo-V2.5-ASR),想用 vLLM / sglang 等
+                  自托管 OpenAI 兼容 endpoint 就填这里的 URL + Model。
+                </p>
+              </Field>
+              {cfg.mimo_endpoint === "custom" && (
+                <>
+                  <TextField
+                    label="Base URL"
+                    value={cfg.mimo_base_url}
+                    onChange={(v) => update("mimo_base_url", v)}
+                  />
+                  <TextField
+                    label="Model"
+                    value={cfg.mimo_model}
+                    onChange={(v) => update("mimo_model", v)}
+                  />
+                </>
+              )}
+              <Field label="识别语言">
+                <select
+                  className="input"
+                  value={cfg.mimo_language || "auto"}
+                  onChange={(e) => update("mimo_language", e.target.value)}
+                >
+                  <option value="auto">auto - 自动检测</option>
+                  <option value="zh">zh - 中文</option>
+                  <option value="en">en - English</option>
+                </select>
+                <p className="text-[11px] text-gray-500 leading-relaxed mt-1">
+                  明确单语种时建议手动指定提升识别效果。
+                </p>
+              </Field>
+            </>
+          )}
+
           {cfg.asr_provider === "local" && (
             <LocalEnginePanel cfg={cfg} update={update} />
           )}
@@ -2040,6 +2095,12 @@ function unavailableReason(
         return "未配豆包密钥";
       }
       return null;
+    case "mimo":
+      if (!cfg.mimo_api_key) return "未配 API Key";
+      if (cfg.mimo_endpoint === "custom" && (!cfg.mimo_base_url || !cfg.mimo_model)) {
+        return "自定义端点需填 URL + Model";
+      }
+      return null;
     case "sense_voice":
     case "fire_red_aed":
     case "qwen3_asr": {
@@ -2057,6 +2118,7 @@ const BENCH_PROVIDERS: { id: string; label: string; group: "cloud" | "local" }[]
   { id: "openrouter", label: "OpenRouter Whisper", group: "cloud" },
   { id: "xfyun", label: "讯飞(流式)", group: "cloud" },
   { id: "volc", label: "豆包(流式)", group: "cloud" },
+  { id: "mimo", label: "MiMo ASR (mimo-v2.5-asr)", group: "cloud" },
   { id: "sense_voice", label: "SenseVoice · 极速", group: "local" },
   { id: "fire_red_aed", label: "FireRedASR-AED-L · 中文最准", group: "local" },
   { id: "qwen3_asr", label: "Qwen3-ASR · LLM", group: "local" },

@@ -10,6 +10,7 @@ pub const ASR_PROVIDER_ZHIPU: &str = "zhipu";
 pub const ASR_PROVIDER_XFYUN: &str = "xfyun";
 pub const ASR_PROVIDER_VOLC: &str = "volc";
 pub const ASR_PROVIDER_OPENROUTER: &str = "openrouter";
+pub const ASR_PROVIDER_MIMO: &str = "mimo";
 pub const ASR_PROVIDER_LOCAL: &str = "local";
 
 pub const POLISH_MODE_OFF: &str = "off";
@@ -144,6 +145,26 @@ pub struct Config {
     /// 时强烈建议填 "zh"。
     #[serde(default = "default_openrouter_language")]
     pub openrouter_language: String,
+    /// MiMo ASR(`mimo-v2.5-asr`) API key。
+    #[serde(default)]
+    pub mimo_api_key: String,
+    /// MiMo endpoint 模式:`public`(默认,官方服务 api.xiaomimimo.com)/
+    /// `custom`(自部署,用户自填 `mimo_base_url` + `mimo_model`)。
+    /// MiMo-V2.5-ASR 权重在 HuggingFace 开源,自部署成 OpenAI 兼容 endpoint
+    /// 后通过 custom 模式接入,无需改代码。
+    #[serde(default = "default_mimo_endpoint")]
+    pub mimo_endpoint: String,
+    /// `mimo_endpoint == "custom"` 时的 chat completions URL。
+    /// `public` 模式下被忽略,asr/mimo.rs 用内置常量。
+    #[serde(default)]
+    pub mimo_base_url: String,
+    /// `mimo_endpoint == "custom"` 时的 model id(自部署时通常是 model 加载名)。
+    /// `public` 模式下被忽略。
+    #[serde(default)]
+    pub mimo_model: String,
+    /// MiMo `asr_options.language`:`auto` / `zh` / `en`。空字符串自动当 auto。
+    #[serde(default = "default_mimo_language")]
+    pub mimo_language: String,
     #[serde(default)]
     pub volc_app_key: String,
     #[serde(default)]
@@ -306,6 +327,12 @@ fn default_openrouter_model() -> String {
 fn default_openrouter_language() -> String {
     "zh".into()
 }
+fn default_mimo_endpoint() -> String {
+    crate::asr::mimo::MIMO_ENDPOINT_PUBLIC.into()
+}
+fn default_mimo_language() -> String {
+    "auto".into()
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -318,6 +345,11 @@ impl Default for Config {
             openrouter_api_key: String::new(),
             openrouter_model: default_openrouter_model(),
             openrouter_language: default_openrouter_language(),
+            mimo_api_key: String::new(),
+            mimo_endpoint: default_mimo_endpoint(),
+            mimo_base_url: String::new(),
+            mimo_model: String::new(),
+            mimo_language: default_mimo_language(),
             volc_app_key: String::new(),
             volc_access_token: String::new(),
             volc_resource_id: default_volc_resource_id(),
