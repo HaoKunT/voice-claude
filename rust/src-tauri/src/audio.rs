@@ -27,12 +27,15 @@ pub struct CaptureDevice {
 }
 
 /// 枚举所有录音设备。
-#[allow(deprecated)] // cpal 0.17 推荐 description()/id(),但 .name() 默认实现等价,改造代价大
 pub fn list_capture_devices() -> Result<Vec<CaptureDevice>> {
     let host = cpal::default_host();
     let devices = host.input_devices().context("list input devices")?;
     Ok(devices
-        .filter_map(|d| d.name().ok().map(|name| CaptureDevice { name }))
+        .filter_map(|d| {
+            d.description().ok().map(|desc| CaptureDevice {
+                name: desc.name().to_string(),
+            })
+        })
         .collect())
 }
 
@@ -103,7 +106,7 @@ impl Recorder {
     ///
     /// 兼容各种麦克风：用设备默认 config（通常 44.1/48kHz 立体声 F32），
     /// 在回调里线性降采样到 16kHz mono PCM16。
-    #[allow(deprecated)] // cpal 0.17 推荐 description()/id(),但 .name() 默认实现等价,改造代价大
+    #[allow(clippy::arc_with_non_send_sync)] // Recorder 上已经 unsafe impl Send/Sync，stream 由固定线程持有
     pub fn start(&self) -> Result<()> {
         let host = cpal::default_host();
         let device = if self.device_name.is_empty() {
@@ -111,10 +114,17 @@ impl Recorder {
                 .ok_or_else(|| anyhow!("无可用默认录音设备"))?
         } else {
             host.input_devices()?
-                .find(|d| d.name().map(|n| n == self.device_name).unwrap_or(false))
+                .find(|d| {
+                    d.description()
+                        .map(|desc| desc.name() == self.device_name)
+                        .unwrap_or(false)
+                })
                 .unwrap_or_else(|| host.default_input_device().expect("no default input"))
         };
-        let device_name = device.name().unwrap_or_default();
+        let device_name = device
+            .description()
+            .map(|d| d.name().to_string())
+            .unwrap_or_default();
 
         let default_cfg = device.default_input_config().context("get input config")?;
 
@@ -138,7 +148,7 @@ impl Recorder {
                 };
                 (cfg, default_cfg.sample_format(), SAMPLE_RATE, 1u16)
             } else {
-                let cfg: cpal::StreamConfig = default_cfg.clone().into();
+                let cfg: cpal::StreamConfig = default_cfg.into();
                 (
                     cfg,
                     default_cfg.sample_format(),
@@ -176,7 +186,7 @@ impl Recorder {
                 let state = Arc::clone(&state);
                 let enhancer = Arc::clone(&enhancer);
                 device.build_input_stream(
-                    &config,
+                    config,
                     move |data: &[i16], _| {
                         let mono = to_mono_f32_from_i16(data, device_channels);
                         push_resampled(
@@ -192,7 +202,7 @@ impl Recorder {
                 let state = Arc::clone(&state);
                 let enhancer = Arc::clone(&enhancer);
                 device.build_input_stream(
-                    &config,
+                    config,
                     move |data: &[f32], _| {
                         let mono = to_mono_f32_from_f32(data, device_channels);
                         push_resampled(
@@ -208,7 +218,7 @@ impl Recorder {
                 let state = Arc::clone(&state);
                 let enhancer = Arc::clone(&enhancer);
                 device.build_input_stream(
-                    &config,
+                    config,
                     move |data: &[u16], _| {
                         let mono = to_mono_f32_from_u16(data, device_channels);
                         push_resampled(
