@@ -2,6 +2,7 @@
 
 pub mod bench;
 pub mod local;
+pub mod mimo;
 pub mod openrouter;
 pub mod volc;
 pub mod wav;
@@ -9,7 +10,8 @@ pub mod xfyun;
 pub mod zhipu;
 
 use crate::config::{
-    Config, ASR_PROVIDER_LOCAL, ASR_PROVIDER_OPENROUTER, ASR_PROVIDER_VOLC, ASR_PROVIDER_XFYUN,
+    Config, ASR_PROVIDER_LOCAL, ASR_PROVIDER_MIMO, ASR_PROVIDER_OPENROUTER, ASR_PROVIDER_VOLC,
+    ASR_PROVIDER_XFYUN,
 };
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -37,6 +39,7 @@ pub async fn transcribe_batch(cfg: &Config, wav: &[u8]) -> Result<String> {
     match cfg.asr_provider.as_str() {
         ASR_PROVIDER_LOCAL => local::transcribe(cfg, wav).await,
         ASR_PROVIDER_OPENROUTER => openrouter::transcribe(cfg, wav).await,
+        ASR_PROVIDER_MIMO => mimo::transcribe(cfg, wav).await,
         _ => zhipu::transcribe(cfg, wav).await,
     }
 }

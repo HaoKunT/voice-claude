@@ -12,7 +12,7 @@ use anyhow::{anyhow, bail, Result};
 use std::path::Path;
 use std::sync::Arc;
 
-const CLOUD_PROVIDERS: &[&str] = &["zhipu", "xfyun", "volc", "openrouter"];
+const CLOUD_PROVIDERS: &[&str] = &["zhipu", "xfyun", "volc", "openrouter", "mimo"];
 const LOCAL_ENGINES: &[&str] = &["sense_voice", "fire_red_aed", "fire_red_ctc2", "qwen3_asr"];
 
 pub fn is_cloud_provider(id: &str) -> bool {

@@ -34,6 +34,17 @@ export interface Config {
   openrouter_api_key: string;
   openrouter_model: string;
   openrouter_language: string;
+  /** MiMo ASR(`mimo-v2.5-asr`)API key */
+  mimo_api_key: string;
+  /** `public`(默认,官方 api.xiaomimimo.com)/ `custom`(自部署,自填 base_url + model)。
+   *  MiMo-V2.5-ASR 权重 HuggingFace 开源,可用 vLLM / sglang 等自托管 */
+  mimo_endpoint: string;
+  /** custom 模式下自部署 endpoint 的 chat completions URL */
+  mimo_base_url: string;
+  /** custom 模式下自部署的 model id */
+  mimo_model: string;
+  /** auto / zh / en */
+  mimo_language: string;
   volc_app_key: string;
   volc_access_token: string;
   volc_resource_id: string;
@@ -247,6 +258,7 @@ export const ASR_PROVIDERS = [
   { value: "xfyun", label: "讯飞(流式)" },
   { value: "zhipu", label: "智谱 GLM-ASR" },
   { value: "openrouter", label: "OpenRouter Whisper" },
+  { value: "mimo", label: "MiMo ASR (mimo-v2.5-asr)" },
   { value: "local", label: "本地引擎(离线)" },
 ];
 
