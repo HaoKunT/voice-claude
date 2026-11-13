@@ -42,8 +42,12 @@ export function formatHotkeyKey(key: string): string {
 }
 
 /// 把 "cmd+shift+f5" 格式化成 "⌘⇧F5"，用在文本里（非 <kbd>）
+///
+/// macOS 的符号（⌘⇧⌥⌃）必须连写才像系统菜单；Windows 上全是单词
+/// （Ctrl / Shift / Alt / Win），连写会得到 "CtrlShiftF5"，所以用 "+" 分隔。
 export function formatHotkey(combo: string): string {
-  return parseHotkeyKeys(combo).map(formatHotkeyKey).join("");
+  const keys = parseHotkeyKeys(combo).map(formatHotkeyKey);
+  return keys.join(IS_MAC ? "" : "+");
 }
 
 // 所有 modifier 的小写名字；和 Rust hotkey.rs 里认的保持一致

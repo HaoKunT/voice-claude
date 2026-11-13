@@ -18,20 +18,15 @@ type FilterHandle = reload::Handle<EnvFilter, Registry>;
 static RELOAD_HANDLE: OnceLock<FilterHandle> = OnceLock::new();
 
 /// 初始化日志系统。返回的 WorkerGuard 保证日志刷盘，需要在 main 中持有。
+///
+/// **日志是可选设施，不能成为启动硬依赖**。曾经这里对 RollingFileAppender 用
+/// `expect()`：只要日志目录不可写（磁盘满、目录权限、杀软/备份软件锁文件、
+/// 受限令牌跑在沙箱里），进程就在 main 的第一行 panic，GUI 双击表现为
+/// "窗口一闪就没"，用户完全无从判断。现在改为降级：文件日志不可用时只输出
+/// stderr，其余功能照常启动。
 pub fn init(level: &str) -> WorkerGuard {
     fs::create_dir_all(log_dir()).ok();
     cleanup_old_logs();
-
-    // daily rotation：voice-claude.2026-05-09.log 格式
-    // （之前用简写 rolling::daily 产出 voice-claude.log.2026-05-09，
-    // .log 不在末尾 macOS 无法识别扩展名，双击打不开）
-    let file_appender = RollingFileAppender::builder()
-        .rotation(Rotation::DAILY)
-        .filename_prefix(LOG_PREFIX)
-        .filename_suffix(LOG_SUFFIX)
-        .build(log_dir())
-        .expect("日志 appender 初始化失败");
-    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(parse_level(level)));
@@ -40,13 +35,40 @@ pub fn init(level: &str) -> WorkerGuard {
     let (filter_layer, reload_handle) = reload::Layer::new(env_filter);
     let _ = RELOAD_HANDLE.set(reload_handle);
 
-    tracing_subscriber::registry()
-        .with(filter_layer)
-        .with(fmt::layer().with_writer(std::io::stderr).with_ansi(true))
-        .with(fmt::layer().with_writer(non_blocking).with_ansi(false))
-        .init();
+    // daily rotation：voice-claude.2026-05-09.log 格式
+    // （之前用简写 rolling::daily 产出 voice-claude.log.2026-05-09，
+    // .log 不在末尾 macOS 无法识别扩展名，双击打不开）
+    let file_appender = RollingFileAppender::builder()
+        .rotation(Rotation::DAILY)
+        .filename_prefix(LOG_PREFIX)
+        .filename_suffix(LOG_SUFFIX)
+        .build(log_dir());
 
-    guard
+    match file_appender {
+        Ok(appender) => {
+            let (non_blocking, guard) = tracing_appender::non_blocking(appender);
+            tracing_subscriber::registry()
+                .with(filter_layer)
+                .with(fmt::layer().with_writer(std::io::stderr).with_ansi(true))
+                .with(fmt::layer().with_writer(non_blocking).with_ansi(false))
+                .init();
+            guard
+        }
+        Err(e) => {
+            // 没有文件日志也要让 app 起来：只接 stderr 的 layer。
+            // guard 用 sink 兜底，保持返回值类型一致。
+            eprintln!(
+                "[voice-claude] 日志文件不可用（{e}），本次运行只输出到 stderr：{}",
+                log_dir().display()
+            );
+            let (_sink, guard) = tracing_appender::non_blocking(std::io::sink());
+            tracing_subscriber::registry()
+                .with(filter_layer)
+                .with(fmt::layer().with_writer(std::io::stderr).with_ansi(true))
+                .init();
+            guard
+        }
+    }
 }
 
 /// 运行时热替换日志级别（save_config 改 log_level 时调）。

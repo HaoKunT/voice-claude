@@ -6,7 +6,11 @@ use crate::config::Config;
 use crate::AppState;
 use crate::{correct, dirs, history};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
+// Manager 只在 macOS 的 check_accessibility 里用到（app.state::<AppState>()），
+// Windows 上不加 cfg 会变成 unused import，clippy -D warnings 直接失败。
+#[cfg(target_os = "macos")]
+use tauri::Manager;
 
 #[derive(Serialize)]
 pub struct DeviceInfo {
@@ -260,9 +264,33 @@ pub fn import_config(
 /// 录入新快捷键前暂停系统级热键。否则用户按当前热键时会触发录音,
 /// webview 拿不到 keydown 事件。
 ///
-/// 实现:把 KeyboardBackend 整个 take 出来 Drop —— 这会发 Shutdown 给 supervisor
-/// 线程,旧 HotkeyManager Drop 自动卸 OS hook。比 unregister_all 更彻底,handy-keys
-/// 没有 unregister_all API 也不影响。
+/// 平台分支实现,语义有意不同:
+/// - **Windows(capture 模式)**:reload 进 capture 模式而不是卸载。完全卸载的话
+///   钩子全消失,用户录入时按下 Alt+Space 会弹出系统窗口菜单(模态循环),
+///   录入界面什么都收不到,看起来就是"录入坏了"。capture 模式钩子保持活跃,
+///   主热键和 Alt+Space 被继续拦截吞掉,其余按键照常透传给录入界面。
+/// - **macOS(完全卸载)**:保持原有 take → Drop 语义。capture 模式若照搬到
+///   macOS,主热键会被 OS 层持续拦截 —— 录入界面收不到等于旧热键的 keydown,
+///   「重新录入当前热键」会静默失败,这是实测确认过的回归(评审 2026-11-09)。
+///   macOS 没有系统保留组合问题,完全卸载才是对的。
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub fn suspend_hotkey(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let cfg = state.snapshot();
+    let bcfg = crate::keyboard::capture_backend_config_from(&cfg).map_err(|e| e.to_string())?;
+    let mut slot = state.keyboard.lock();
+    match slot.as_ref() {
+        Some(kb) => kb.reload(bcfg).map_err(|e| e.to_string()),
+        None => {
+            let kb =
+                crate::keyboard::KeyboardBackend::start(app.clone(), bcfg).map_err(|e| e.to_string())?;
+            *slot = Some(kb);
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
 #[tauri::command]
 pub fn suspend_hotkey(_app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let _ = state.keyboard.lock().take();

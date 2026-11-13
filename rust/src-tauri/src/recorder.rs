@@ -102,6 +102,19 @@ pub fn start(app: AppHandle, cfg: Arc<crate::config::Config>) {
         if let Err(e) = run(app_handle.clone(), cfg, signal_rx).await {
             tracing::error!(error = ?e, "录音流程失败");
             let _ = app_handle.emit("recording-stopped", ());
+            // 失败原因不能只躺在日志里：流式后端没配 key、网络不通、麦克风
+            // 被占用时，悬浮窗一闪就消失，用户完全不知道发生了什么
+            // （例如"请配置豆包 App Key 和 Access Token"只写进日志）。
+            // 这里补一条系统通知，让失败可见。
+            let msg = format!("{e}");
+            let _ = app_handle.emit("recording-error", msg.clone());
+            use tauri_plugin_notification::NotificationExt;
+            let _ = app_handle
+                .notification()
+                .builder()
+                .title("voice-claude 识别失败")
+                .body(&msg)
+                .show();
         }
         recording().active.store(false, Ordering::Relaxed);
     });
@@ -580,13 +593,27 @@ async fn run_batch(
         tracing::warn!(wav_bytes = wav.len(), "未录到声音");
         return Ok((reason, String::new(), 0));
     }
-    // debug：保存最近一次录音 WAV 到 /tmp，方便用 afplay 听
-    let _ = std::fs::write("/tmp/voice-claude-last.wav", &wav);
-    tracing::info!(
-        wav_bytes = wav.len(),
-        path = "/tmp/voice-claude-last.wav",
-        "识别中"
-    );
+    // debug：保存最近一次录音 WAV，方便回放确认录音质量 / 听清空录。
+    //
+    // 早期版本硬编码 "/tmp/voice-claude-last.wav"：macOS 能用，Windows 上
+    // "/tmp/..." 会解析成 "<当前盘>:\\tmp\\..."（通常不存在），而且写入错误被
+    // `let _ =` 吞掉 —— 等于 Windows 上这个调试产物永远不存在。现在放到
+    // 日志目录里（macOS: ~/Library/Logs/voice-claude、Windows: %LOCALAPPDATA%\\
+    // voice-claude\\logs），失败时明确记一条 warn，而不是静默丢弃。
+    let debug_wav = crate::dirs::log_dir().join("voice-claude-last.wav");
+    match std::fs::write(&debug_wav, &wav) {
+        Ok(()) => tracing::info!(
+            wav_bytes = wav.len(),
+            path = %debug_wav.display(),
+            "识别中"
+        ),
+        Err(e) => tracing::warn!(
+            wav_bytes = wav.len(),
+            error = %e,
+            path = %debug_wav.display(),
+            "识别中（调试 wav 未能保存）"
+        ),
+    }
     // 批处理 ASR:整个 transcribe_batch 调用即用户等待时长
     let asr_start = std::time::Instant::now();
     let text = asr::transcribe_batch(cfg, &wav).await?;

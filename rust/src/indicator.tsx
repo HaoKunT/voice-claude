@@ -217,6 +217,7 @@ listen<RecordingStartedPayload>("recording-started", (e) => {
   statusTextEl.textContent = "录音中";
   partialEl.textContent = "等待语音…";
   partialEl.classList.add("empty");
+  partialEl.style.color = "";
   timerEl.style.color = "";
   // 后端 recording-started 永远会带 hotkey + trigger_mode + double_tap_modifier。
   // payload 缺时 fallback 到 toggle 风格,只渲染空 hint —— 比硬编码具体值更安全
@@ -239,6 +240,22 @@ listen("recording-cancelled", () => {
   stopTimer();
   partialEl.textContent = "已取消";
   partialEl.classList.add("empty");
+  partialEl.style.color = "";
+});
+
+// 后端流程失败(流式后端没配 Key / 网络不通 / 麦克风被占用)。macOS 上这类
+// 失败同样一闪而过,但 Windows 用户经常从托盘重进,看不到任何解释,必须把
+// 原因写在悬浮窗里 —— 虽然窗口马上会 hide,至少闪烁期间能瞥见原因;
+// 系统通知兜底由后端负责(recorder.rs 同步发一条 notification)。
+listen<string>("recording-error", (e) => {
+  stopTimer();
+  // 后端失败路径先 emit recording-stopped(切到 processing 视图)再 emit 本事件,
+  // 必须切回 recording 视图,否则红色错误文字渲染在隐藏视图里,用户看不到
+  showView("recording");
+  statusTextEl.textContent = "识别失败";
+  partialEl.textContent = e.payload || "未知错误";
+  partialEl.classList.remove("empty");
+  partialEl.style.color = "rgba(255, 120, 120, 0.95)";
 });
 
 // 页面加载时假设已经进入录音（悬浮窗只在录音时显示）

@@ -119,6 +119,8 @@ window-vibrancy = "0.7"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
+    # MessageBeep（提示音）在 windows 0.61 里被归到 Diagnostics::Debug 命名空间
+    "Win32_System_Diagnostics_Debug",
 ] }
 # 同 macOS:替换 tauri-plugin-global-shortcut。Win 端 handy-keys 走
 # WH_KEYBOARD_LL,普通用户权限即可。AV 误报问题留到发布前签名/白名单流程处理。

@@ -1385,6 +1385,11 @@ function HotkeyRecorder({
   onChange: (v: string) => void;
 }) {
   const [capturing, setCapturing] = useState(false);
+  // Windows 中文输入法的系统级「Ctrl+Shift 切换输入法」热键会整组吃掉按键
+  // (切换发生在系统层,应用收不到完整组合),用户按了却毫无反应,以为录入坏了。
+  // 捕获到"无修饰键的主键"(比如只收到孤零零一个 F5)时,基本就是这种情况,
+  // 给出明确提示而不是静默忽略。
+  const [noModHint, setNoModHint] = useState(false);
   // 用 ref 捕获最新的 onChange，让 effect 的 dep 只跟 capturing 变化；否则父组件
   // 每次 render 新建的 onChange 引用会触发 effect teardown + setup（频繁 suspend/resume）
   const onChangeRef = useRef(onChange);
@@ -1396,11 +1401,10 @@ function HotkeyRecorder({
     let cleanupHandler: (() => void) | null = null;
     let cancelled = false;
 
-    // 必须 await suspend 完成再挂 listener:handy-keys 在 manager 上 block 已注册
-    // 的热键事件,所以挂 listener 前必须确认 backend 已经卸载,否则用户当前的
-    // 主热键(尤其字母 / F 键 / Space)keydown 仍被 OS 层 block,window 拿不到。
-    // suspend_hotkey 后端 take 出 KeyboardBackend → Drop → HotkeyManager::Drop
-    // 同步 join 内部线程,返回时 OS hook 一定已干净。
+    // 必须 await suspend 完成再挂 listener。Windows 上 suspend 是 capture 模式
+    // reload:钩子保持活跃,主热键和 Alt+Space 被 OS 层拦掉(防系统菜单弹窗、
+    // 防旧热键触发录音),其余按键照常到达 webview。macOS 上是完全卸载,所有
+    // 按键透传。两种实现的共同前提:返回时录入界面一定能拿到 keydown。
     (async () => {
       await api.suspendHotkey().catch(() => {});
       if (cancelled) return;
@@ -1421,7 +1425,13 @@ function HotkeyRecorder({
         if (e.altKey) mods.push(IS_MAC ? "option" : "alt");
         if (e.shiftKey) mods.push("shift");
         const main = keyCodeToName(e.code, e.key);
-        if (mods.length === 0 || !main) return;
+        if (mods.length === 0 || !main) {
+          // 主键到了但修饰键一个都没有:大概率是 Ctrl+Shift 被输入法切换
+          // 系统热键整组吃掉了,只剩主键。给出提示,让用户换组合或改系统设置。
+          if (main) setNoModHint(true);
+          return;
+        }
+        setNoModHint(false);
         onChangeRef.current([...mods, main].join("+"));
         setCapturing(false);
       };
@@ -1437,28 +1447,45 @@ function HotkeyRecorder({
   }, [capturing]);
 
   return (
-    <div className="flex gap-2">
-      <input
-        className={
-          "input font-mono flex-1 " +
-          (capturing ? "!bg-accent/10 !border-accent/40" : "")
-        }
-        value={capturing ? "按下目标组合键…（ESC 取消）" : value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="cmd+shift+f5"
-        readOnly={capturing}
-      />
-      <button
-        className={
-          "px-3 rounded-lg text-xs font-medium transition " +
-          (capturing
-            ? "bg-red-500/20 border border-red-500/40 text-red-300 hover:bg-red-500/30"
-            : "bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10")
-        }
-        onClick={() => setCapturing((s) => !s)}
-      >
-        {capturing ? "取消" : "⌨ 录入"}
-      </button>
+    <div>
+      <div className="flex gap-2">
+        <input
+          className={
+            "input font-mono flex-1 " +
+            (capturing ? "!bg-accent/10 !border-accent/40" : "")
+          }
+          value={capturing ? "按下目标组合键…（ESC 取消）" : value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={IS_MAC ? "cmd+shift+f5" : "ctrl+alt+space"}
+          readOnly={capturing}
+        />
+        <button
+          className={
+            "px-3 rounded-lg text-xs font-medium transition " +
+            (capturing
+              ? "bg-red-500/20 border border-red-500/40 text-red-300 hover:bg-red-500/30"
+              : "bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10")
+          }
+          onClick={() => {
+            setNoModHint(false);
+            setCapturing((s) => !s);
+          }}
+        >
+          {capturing ? "取消" : "⌨ 录入"}
+        </button>
+      </div>
+      {capturing && noModHint && !IS_MAC && (
+        <p className="text-[11px] text-amber-400 mt-1.5 leading-relaxed">
+          ⚠ 只收到主键、没收到修饰键 —— 中文输入法的「Ctrl+Shift 切换输入法」系统热键会把整组按键吃掉。
+          试试 Ctrl+Alt+字母 / F 键，或到 Windows 设置→时间和语言→输入法 高级键设置 里更改切换键。
+        </p>
+      )}
+      {capturing && !IS_MAC && (
+        <p className="text-[11px] text-gray-500 mt-1.5 leading-relaxed">
+          Alt+Space 是 Windows 系统窗口菜单的保留快捷键，录入时按下会被拦截、无法捕获。
+          如需使用，直接在输入框里手动输入 alt+space 回车即可。
+        </p>
+      )}
     </div>
   );
 }

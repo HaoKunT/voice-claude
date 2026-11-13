@@ -39,6 +39,18 @@ pub struct BackendConfig {
     pub hotkey: Option<Hotkey>,
     /// DoubleTapHold 模式下要双击的 modifier。
     pub double_tap_modifier: Option<Modifiers>,
+    /// 快捷键「⌨ 录入」期间的捕获模式:钩子保持活跃(Windows 上额外拦截
+    /// Alt+Space 等系统保留组合,防止系统窗口菜单弹出),但所有触发事件直接
+    /// 丢弃,不驱动 recorder。见 `keyboard::capture_backend_config_from`。
+    /// 字段跨平台存在(macOS 上恒 false):triggers_disabled() 读它,避免
+    /// macOS 下的 dead_code / unused 警告在 clippy -D warnings 下挂掉。
+    pub capture_mode: bool,
+}
+
+impl BackendConfig {
+    fn triggers_disabled(&self) -> bool {
+        self.capture_mode
+    }
 }
 
 pub struct KeyboardBackend {
@@ -190,6 +202,23 @@ fn run_manager_path(
     let mut esc_id: Option<HotkeyId> = None;
     let mut last_heartbeat = Instant::now();
 
+    // capture 模式(仅 Windows):额外注册 Alt+Space 为「吞掉」热键。
+    // 钩子层会 block 任何已注册热键,所以系统窗口菜单不会弹出;事件到
+    // supervisor 后因为 id 不属于 main/esc 而被忽略,不会触发录音。
+    // 不注册的话,录入期间按 Alt+Space 会打开窗口系统菜单(模态循环),
+    // 录入界面什么都收不到,用户看起来就是"录入坏了"。
+    #[cfg(target_os = "windows")]
+    if cfg.capture_mode {
+        match Hotkey::new(Modifiers::OPT, Some(Key::Space)) {
+            Ok(hk) => {
+                if let Err(e) = manager.register(hk) {
+                    tracing::warn!(error = %e, "capture: 注册 Alt+Space 吞掉热键失败");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "capture: 构造 Alt+Space 热键失败"),
+        }
+    }
+
     tracing::info!(mode = ?cfg.mode, "keyboard supervisor: 已就位(manager 路径)");
 
     loop {
@@ -219,8 +248,13 @@ fn run_manager_path(
             };
             if let Some(kind) = kind {
                 if let Some(trig) = state.handle(kind, ev.state) {
-                    dispatch_trigger(app, trig);
-                    manage_esc(&manager, &mut esc_id, trig);
+                    // capture 模式:触发事件全部丢弃(recorder 不动)。
+                    // ESC 临时热键也不挂 —— 否则 ESC 会被全局吞掉,录入
+                    // 界面自己收不到 ESC,用户就没法取消录入了。
+                    if !cfg.triggers_disabled() {
+                        dispatch_trigger(app, trig);
+                        manage_esc(&manager, &mut esc_id, trig);
+                    }
                 }
             }
         } else {

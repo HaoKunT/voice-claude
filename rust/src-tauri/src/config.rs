@@ -260,9 +260,17 @@ fn default_correct_model() -> String {
     "qwen2.5:3b".into()
 }
 fn default_hotkey() -> String {
-    #[cfg(target_os = "windows")]
-    return "ctrl+shift+f5".into();
-    "cmd+shift+f5".into()
+    // Windows 没有 Cmd 键,默认用 Ctrl;主键选 Space 而不是 F5 ——
+    // ctrl+shift+f5 与浏览器「强制刷新」冲突(全局热键会拦掉它);
+    // ctrl+alt+space 则避开:Alt+Space 是系统窗口菜单保留键,Ctrl+Space
+    // 是微软拼音中英切换,Ctrl+Alt+Space 全部避开且手感接近 macOS 的
+    // Alt+Space。用 cfg! 而不是 #[cfg] + return:后者在 Windows 上会让
+    // 后面的表达式变成 unreachable,clippy -D warnings 直接报错。
+    if cfg!(target_os = "windows") {
+        "ctrl+alt+space".into()
+    } else {
+        "cmd+shift+f5".into()
+    }
 }
 fn default_gain() -> u8 {
     1
@@ -841,6 +849,10 @@ mod tests {
         let c = Config::default();
         assert_eq!(c.asr_provider, "zhipu");
         assert_eq!(c.correct_mode, "off");
+        // 默认热键是平台相关的:macOS 用 ⌘,Windows 用 Ctrl+Alt+Space
+        #[cfg(target_os = "windows")]
+        assert_eq!(c.hotkey, "ctrl+alt+space");
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(c.hotkey, "cmd+shift+f5");
         assert_eq!(c.gain, 1);
     }
