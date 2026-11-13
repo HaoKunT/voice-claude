@@ -282,8 +282,8 @@ pub fn suspend_hotkey(app: AppHandle, state: State<'_, AppState>) -> Result<(), 
     match slot.as_ref() {
         Some(kb) => kb.reload(bcfg).map_err(|e| e.to_string()),
         None => {
-            let kb =
-                crate::keyboard::KeyboardBackend::start(app.clone(), bcfg).map_err(|e| e.to_string())?;
+            let kb = crate::keyboard::KeyboardBackend::start(app.clone(), bcfg)
+                .map_err(|e| e.to_string())?;
             *slot = Some(kb);
             Ok(())
         }
