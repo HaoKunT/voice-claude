@@ -148,7 +148,7 @@ impl Recorder {
                 };
                 (cfg, default_cfg.sample_format(), SAMPLE_RATE, 1u16)
             } else {
-                let cfg: cpal::StreamConfig = default_cfg.clone().into();
+                let cfg: cpal::StreamConfig = default_cfg.into();
                 (
                     cfg,
                     default_cfg.sample_format(),
