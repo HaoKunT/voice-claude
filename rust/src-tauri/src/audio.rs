@@ -186,7 +186,7 @@ impl Recorder {
                 let state = Arc::clone(&state);
                 let enhancer = Arc::clone(&enhancer);
                 device.build_input_stream(
-                    config.clone(),
+                    config,
                     move |data: &[i16], _| {
                         let mono = to_mono_f32_from_i16(data, device_channels);
                         push_resampled(
@@ -202,7 +202,7 @@ impl Recorder {
                 let state = Arc::clone(&state);
                 let enhancer = Arc::clone(&enhancer);
                 device.build_input_stream(
-                    config.clone(),
+                    config,
                     move |data: &[f32], _| {
                         let mono = to_mono_f32_from_f32(data, device_channels);
                         push_resampled(
@@ -218,7 +218,7 @@ impl Recorder {
                 let state = Arc::clone(&state);
                 let enhancer = Arc::clone(&enhancer);
                 device.build_input_stream(
-                    config.clone(),
+                    config,
                     move |data: &[u16], _| {
                         let mono = to_mono_f32_from_u16(data, device_channels);
                         push_resampled(
