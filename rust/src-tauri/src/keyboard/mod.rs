@@ -79,7 +79,11 @@ fn backend_config_from_impl(
             }
         }
     };
-    let mode = if capture_mode { TriggerMode::Toggle } else { mode };
+    let mode = if capture_mode {
+        TriggerMode::Toggle
+    } else {
+        mode
+    };
 
     Ok(BackendConfig {
         mode,
