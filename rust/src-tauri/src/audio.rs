@@ -1,4 +1,6 @@
-//! 音频录制：cpal 跨平台录音，支持设备枚举、增益、WAV 打包、流式推送�?//! 对应 Go 版的 audio.go�?
+//! 音频录制：cpal 跨平台录音，支持设备枚举、增益、WAV 打包、流式推送。
+//! 对应 Go 版的 audio.go。
+
 use anyhow::{anyhow, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat};
@@ -7,12 +9,15 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-/// Recorder lifecycle 计数�?排查 cpal stream 不释放导�?CoreAudio context 泄漏�?/// 9 段话 = 9 �?audio.context.preventuseridlesleep assertion 共存被观察到,
-/// 每次录音至少 leak 1 �?�?trace �?Recorder Drop 不触�?/ Drop 触发�?stream
-/// 没释�?/ 还是 cpal 自身�?macOS 上的 Drop 不彻底�?static ALIVE_RECORDERS: AtomicU64 = AtomicU64::new(0);
+/// Recorder lifecycle 计数器,排查 cpal stream 不释放导致 CoreAudio context 泄漏。
+/// 9 段话 = 9 个 audio.context.preventuseridlesleep assertion 共存被观察到,
+/// 每次录音至少 leak 1 个,要 trace 是 Recorder Drop 不触发 / Drop 触发但 stream
+/// 没释放 / 还是 cpal 自身在 macOS 上的 Drop 不彻底。
+static ALIVE_RECORDERS: AtomicU64 = AtomicU64::new(0);
 static TOTAL_CREATED: AtomicU64 = AtomicU64::new(0);
 
-/// 16k 16bit mono PCM，和 Go 版一�?pub const SAMPLE_RATE: u32 = 16000;
+/// 16k 16bit mono PCM，和 Go 版一致
+pub const SAMPLE_RATE: u32 = 16000;
 pub const CHANNELS: u16 = 1;
 pub const BITS_PER_SAMPLE: u16 = 16;
 
@@ -21,14 +26,15 @@ pub struct CaptureDevice {
     pub name: String,
 }
 
-/// 枚举所有录音设备�?pub fn list_capture_devices() -> Result<Vec<CaptureDevice>> {
+/// 枚举所有录音设备。
+pub fn list_capture_devices() -> Result<Vec<CaptureDevice>> {
     let host = cpal::default_host();
     let devices = host.input_devices().context("list input devices")?;
     Ok(devices
         .filter_map(|d| {
-            d.description()
-                .ok()
-                .map(|desc| CaptureDevice { name: desc.name().to_string() })
+            d.description().ok().map(|desc| CaptureDevice {
+                name: desc.name().to_string(),
+            })
         })
         .collect())
 }
@@ -43,11 +49,16 @@ pub struct Recorder {
     stream: Arc<Mutex<Option<cpal::Stream>>>,
 }
 
-// cpal::Stream 不是 Send/Sync，但 Mutex 保证的是"同时只有一�?thread �?�?// 在我们场景下 Stream 由主线程创建和销毁，不跨线程移动�?// 使用 SendWrapper 或者在 Mutex 外设计能规避�?// 暂时通过 unsafe impl 绕过，后续如�?cpal 支持 Send 再去掉�?unsafe impl Send for Recorder {}
+// cpal::Stream 不是 Send/Sync，但 Mutex 保证的是"同时只有一个 thread 用"。
+// 在我们场景下 Stream 由主线程创建和销毁，不跨线程移动。
+// 使用 SendWrapper 或者在 Mutex 外设计能规避。
+// 暂时通过 unsafe impl 绕过，后续如果 cpal 支持 Send 再去掉。
+unsafe impl Send for Recorder {}
 unsafe impl Sync for Recorder {}
 
 impl Recorder {
-    #[allow(clippy::arc_with_non_send_sync)] // Recorder 上已�?unsafe impl Send/Sync，stream 由固定线程持�?    pub fn new(gain: u8, device_name: &str, enhance: bool) -> Self {
+    #[allow(clippy::arc_with_non_send_sync)] // Recorder 上已经 unsafe impl Send/Sync，stream 由固定线程持有
+    pub fn new(gain: u8, device_name: &str, enhance: bool) -> Self {
         let alive = ALIVE_RECORDERS.fetch_add(1, Ordering::Relaxed) + 1;
         let total = TOTAL_CREATED.fetch_add(1, Ordering::Relaxed) + 1;
         tracing::info!(
@@ -66,12 +77,14 @@ impl Recorder {
         }
     }
 
-    /// 当前归一�?RMS 音量�?-1），供波形动画读取�?    pub fn current_level(&self) -> f32 {
+    /// 当前归一化 RMS 音量（0-1），供波形动画读取。
+    pub fn current_level(&self) -> f32 {
         f32::from_bits(self.current_level.load(Ordering::Relaxed))
     }
 
-    /// 拷贝 buffer[offset..] 的字�?不消�?。VAD 任务用游标跟踪已喂给检测器
-    /// 的位�?周期�?peek 尾部新增 PCM 增量喂入。返�?(新字�? 总长�?�?    pub fn peek_pcm_since(&self, offset: usize) -> (Vec<u8>, usize) {
+    /// 拷贝 buffer[offset..] 的字节(不消费)。VAD 任务用游标跟踪已喂给检测器
+    /// 的位置,周期性 peek 尾部新增 PCM 增量喂入。返回 (新字节, 总长度)。
+    pub fn peek_pcm_since(&self, offset: usize) -> (Vec<u8>, usize) {
         let buf = self.buffer.lock();
         let total = buf.len();
         let new_bytes = if offset >= total {
@@ -82,19 +95,23 @@ impl Recorder {
         (new_bytes, total)
     }
 
-    /// 开始流式录音：返回 PCM 块接收端。调用方通过 drop Receiver �?stop_stream 停止�?    pub fn start_stream(&self) -> mpsc::Receiver<Vec<u8>> {
+    /// 开始流式录音：返回 PCM 块接收端。调用方通过 drop Receiver 或 stop_stream 停止。
+    pub fn start_stream(&self) -> mpsc::Receiver<Vec<u8>> {
         let (tx, rx) = mpsc::channel::<Vec<u8>>(32);
         *self.stream_tx.lock() = Some(tx);
         rx
     }
 
-    /// 开始录音（必须�?start_stream 之后才能流式推送）�?    ///
-    /// 兼容各种麦克风：用设备默�?config（通常 44.1/48kHz 立体�?F32），
-    /// 在回调里线性降采样�?16kHz mono PCM16�?    #[allow(clippy::arc_with_non_send_sync)] // Recorder 上已�?unsafe impl Send/Sync，stream 由固定线程持�?    pub fn start(&self) -> Result<()> {
+    /// 开始录音（必须在 start_stream 之后才能流式推送）。
+    ///
+    /// 兼容各种麦克风：用设备默认 config（通常 44.1/48kHz 立体声 F32），
+    /// 在回调里线性降采样到 16kHz mono PCM16。
+    #[allow(clippy::arc_with_non_send_sync)] // Recorder 上已经 unsafe impl Send/Sync，stream 由固定线程持有
+    pub fn start(&self) -> Result<()> {
         let host = cpal::default_host();
         let device = if self.device_name.is_empty() {
             host.default_input_device()
-                .ok_or_else(|| anyhow!("无可用默认录音设�?))?
+                .ok_or_else(|| anyhow!("无可用默认录音设备"))?
         } else {
             host.input_devices()?
                 .find(|d| {
@@ -111,7 +128,7 @@ impl Recorder {
 
         let default_cfg = device.default_input_config().context("get input config")?;
 
-        // 优先尝试 16kHz mono 原生配置（避免我们的下采�?aliasing）；设备不支持再�?default
+        // 优先尝试 16kHz mono 原生配置（避免我们的下采样 aliasing）；设备不支持再用 default
         let (config, sample_format, device_rate, device_channels): (cpal::StreamConfig, _, _, _) = {
             let ranges: Vec<_> = device
                 .supported_input_configs()
@@ -158,9 +175,10 @@ impl Recorder {
 
         let err_fn = |err| tracing::error!(?err, "cpal stream error");
 
-        // 降采样累积器（device_rate �?16kHz 线性插值的简化版：等间隔取样�?        let stride = (device_rate as f64 / SAMPLE_RATE as f64).max(1.0);
+        // 降采样累积器（device_rate → 16kHz 线性插值的简化版：等间隔取样）
+        let stride = (device_rate as f64 / SAMPLE_RATE as f64).max(1.0);
         let state = Arc::new(Mutex::new(ResampleState::new()));
-        // 气声增强状�?pre-emphasis + compressor),�?cpal 回调保持
+        // 气声增强状态(pre-emphasis + compressor),跨 cpal 回调保持
         let enhancer = Arc::new(Mutex::new(Enhancer::default()));
 
         let stream = match sample_format {
@@ -220,11 +238,14 @@ impl Recorder {
         Ok(())
     }
 
-    /// 关闭流式 channel（录音仍继续，直�?stop）�?    pub fn stop_stream(&self) {
+    /// 关闭流式 channel（录音仍继续，直到 stop）。
+    pub fn stop_stream(&self) {
         *self.stream_tx.lock() = None;
     }
 
-    /// 停止录音并返回累积的 PCM�?    /// 显式�?stream.pause() �?drop —�?macOS CoreAudio 仅靠 Drop 清理有时系统级录音指示灯不灭�?    pub fn stop(&self) -> Vec<u8> {
+    /// 停止录音并返回累积的 PCM。
+    /// 显式调 stream.pause() 再 drop —— macOS CoreAudio 仅靠 Drop 清理有时系统级录音指示灯不灭。
+    pub fn stop(&self) -> Vec<u8> {
         let had_stream = if let Some(s) = self.stream.lock().take() {
             let _ = s.pause();
             drop(s);
@@ -232,8 +253,9 @@ impl Recorder {
         } else {
             false
         };
-        // 排查 leak:确认 stream slot 现在确实�?None。如果是 Some 说明 stop 之后
-        // 还有 stream(并发 race?),这是 leak 的早期信�?        let slot_after = self.stream.lock().is_some();
+        // 排查 leak:确认 stream slot 现在确实是 None。如果是 Some 说明 stop 之后
+        // 还有 stream(并发 race?),这是 leak 的早期信号
+        let slot_after = self.stream.lock().is_some();
         tracing::info!(
             had_stream,
             slot_after_is_some = slot_after,
@@ -247,14 +269,17 @@ impl Recorder {
 impl Drop for Recorder {
     fn drop(&mut self) {
         let alive = ALIVE_RECORDERS.fetch_sub(1, Ordering::Relaxed) - 1;
-        // 检�?stream 字段�?Drop 时是否还�?Some(没人调过 stop / start 后没 stop)
+        // 检查 stream 字段在 Drop 时是否还是 Some(没人调过 stop / start 后没 stop)
         let stream_still_held = self.stream.lock().is_some();
         tracing::info!(alive_recorders = alive, stream_still_held, "Recorder::drop");
-        // 注意:这里不主�?stop stream —�?Recorder 本身�?drop �?stream 字段
-        // (Arc<Mutex<Option<Stream>>>) 会自�?drop,触发 cpal::Stream::Drop�?        // 留这�?log 是为了观�?自动 Drop 是否有跑�?�?stream 是否最后一刻还活着"�?    }
+        // 注意:这里不主动 stop stream —— Recorder 本身被 drop 时 stream 字段
+        // (Arc<Mutex<Option<Stream>>>) 会自动 drop,触发 cpal::Stream::Drop。
+        // 留这条 log 是为了观察"自动 Drop 是否有跑到"和"stream 是否最后一刻还活着"。
+    }
 }
 
-/// 降采样状态：记录累积�?相位"，按 stride 间隔取样�?struct ResampleState {
+/// 降采样状态：记录累积的"相位"，按 stride 间隔取样。
+struct ResampleState {
     phase: f64,
 }
 
@@ -265,19 +290,24 @@ impl ResampleState {
 }
 
 // ============================================================================
-// 气声增强管线 —�?流式处理,�?sample 级别维持状�?// ============================================================================
+// 气声增强管线 —— 流式处理,单 sample 级别维持状态
+// ============================================================================
 //
-// 气声(whisper / breathy voice)的两个核心麻�?
-//   - 能量偏高�?摩擦音主�?2-4 kHz),ASR 模型训练时见到的频谱包络偏低�?//   - 振幅�?固定 gain 放大正常说话�?clip,不放大气声又识别不出
+// 气声(whisper / breathy voice)的两个核心麻烦:
+//   - 能量偏高频(摩擦音主导,2-4 kHz),ASR 模型训练时见到的频谱包络偏低频
+//   - 振幅小,固定 gain 放大正常说话会 clip,不放大气声又识别不出
 //
-// 管线顺序: pre-emphasis �?compressor
-// - pre-emphasis: Kaldi/ESPnet 等经�?ASR 标准预处�?α=0.97,让频谱包络更�?//   voiced speech,对气声尤其有�?// - compressor: 软膝压缩�?把低能量区抬起来,动态范围压平。替�?固定�?gain
-//   导致爆音"的粗暴做�?跨回调保�?envelope 状态做平滑 attack/release�?
+// 管线顺序: pre-emphasis → compressor
+// - pre-emphasis: Kaldi/ESPnet 等经典 ASR 标准预处理,α=0.97,让频谱包络更像
+//   voiced speech,对气声尤其有效
+// - compressor: 软膝压缩器,把低能量区抬起来,动态范围压平。替代"固定大 gain
+//   导致爆音"的粗暴做法;跨回调保持 envelope 状态做平滑 attack/release。
+
 const PRE_EMPHASIS_ALPHA: f32 = 0.97;
 
 pub struct Enhancer {
     pre_emph_prev: f32,
-    // compressor 状�?—�?envelope �?RMS-ish 估计,gain 平滑跟随
+    // compressor 状态 —— envelope 用 RMS-ish 估计,gain 平滑跟随
     envelope: f32,
     comp_gain: f32,
 }
@@ -293,7 +323,9 @@ impl Default for Enhancer {
 }
 
 impl Enhancer {
-    /// �?16kHz f32 mono sample 处理一个样�?返回增强后样本�?    /// 输入输出都在 [-1, 1] 范围(函数内部会自�?clamp)�?    pub fn process(&mut self, x: f32) -> f32 {
+    /// 对 16kHz f32 mono sample 处理一个样本,返回增强后样本。
+    /// 输入输出都在 [-1, 1] 范围(函数内部会自动 clamp)。
+    pub fn process(&mut self, x: f32) -> f32 {
         // 1. pre-emphasis: y[n] = x[n] - α·x[n-1]
         let pe = x - PRE_EMPHASIS_ALPHA * self.pre_emph_prev;
         self.pre_emph_prev = x;
@@ -301,16 +333,17 @@ impl Enhancer {
         // 2. compressor
         //   threshold = -30 dBFS (linear 0.0316)
         //   ratio     = 3:1
-        //   attack    �?5 ms @ 16kHz  �?coef = 1 - exp(-1 / (5ms × 16k)) �?0.0123
-        //   release   �?50 ms @ 16kHz �?coef �?0.00125
+        //   attack    ≈ 5 ms @ 16kHz  → coef = 1 - exp(-1 / (5ms × 16k)) ≈ 0.0123
+        //   release   ≈ 50 ms @ 16kHz → coef ≈ 0.00125
         const THRESHOLD: f32 = 0.0316; // -30 dBFS
         const RATIO: f32 = 3.0;
         const ATTACK: f32 = 0.0123;
         const RELEASE: f32 = 0.00125;
-        // 软膝(soft knee),单侧 6 dB 宽度,避免阈值附近抖�?        const KNEE_WIDTH_DB: f32 = 6.0;
+        // 软膝(soft knee),单侧 6 dB 宽度,避免阈值附近抖动
+        const KNEE_WIDTH_DB: f32 = 6.0;
 
         let abs = pe.abs();
-        // envelope follower:大信号快�?attack),小信号慢�?release)
+        // envelope follower:大信号快上(attack),小信号慢下(release)
         let coef = if abs > self.envelope { ATTACK } else { RELEASE };
         self.envelope += coef * (abs - self.envelope);
 
@@ -324,20 +357,23 @@ impl Enhancer {
             let over_db = if delta <= -KNEE_WIDTH_DB / 2.0 {
                 0.0
             } else if delta >= KNEE_WIDTH_DB / 2.0 {
-                // 全压缩区:超出阈�?delta dB,�?ratio 压缩输出 delta/ratio dB,
-                // 即衰�?(delta - delta/ratio) = delta × (1 - 1/ratio)
+                // 全压缩区:超出阈值 delta dB,按 ratio 压缩输出 delta/ratio dB,
+                // 即衰减 (delta - delta/ratio) = delta × (1 - 1/ratio)
                 delta * (1.0 - 1.0 / RATIO)
             } else {
-                // 软膝过渡(二次曲线,详见 dbx compressor 白皮�?
+                // 软膝过渡(二次曲线,详见 dbx compressor 白皮书)
                 let x = delta + KNEE_WIDTH_DB / 2.0;
                 (1.0 - 1.0 / RATIO) * x * x / (2.0 * KNEE_WIDTH_DB)
             };
             // 输出 = 输入 × gain_reduction,over_db 是需要衰减的 dB
             10f32.powf(-over_db / 20.0)
         };
-        // gain 平滑(�?envelope 用同一�?coef),避免 gain 突变导致咔哒�?        self.comp_gain += coef * (target_gain - self.comp_gain);
+        // gain 平滑(和 envelope 用同一个 coef),避免 gain 突变导致咔哒声
+        self.comp_gain += coef * (target_gain - self.comp_gain);
 
-        // 3. make-up gain:补偿压缩导致的整体能量下降。threshold -30dB �?        //    稳态信号平均压 10dB,make-up 6dB 接近原响�?        const MAKEUP_GAIN: f32 = 2.0; // +6 dB
+        // 3. make-up gain:补偿压缩导致的整体能量下降。threshold -30dB 下
+        //    稳态信号平均压 10dB,make-up 6dB 接近原响度
+        const MAKEUP_GAIN: f32 = 2.0; // +6 dB
 
         (pe * self.comp_gain * MAKEUP_GAIN).clamp(-1.0, 1.0)
     }
@@ -440,10 +476,13 @@ fn push_resampled(
     }
 }
 
-/// 把累积的 PCM 静音裁剪后打包成 WAV（对�?Go �?Recorder.ToWAV）�?/// 裁剪首尾低于阈值的样本，保底最�?0.5 秒�?///
-/// enhance=true 时额外跑 peak_normalize:扫整段找 99th percentile 绝对�?避开
-/// 敲键�?咳嗽 spike),scale �?0.9 × i16::MAX。只对批处理 ASR 生效 —�?流式
-/// 路径�?PCM 已经边录边发给了 ASR,追不回�?pub fn to_wav(pcm: &[u8], enhance: bool) -> Vec<u8> {
+/// 把累积的 PCM 静音裁剪后打包成 WAV（对应 Go 版 Recorder.ToWAV）。
+/// 裁剪首尾低于阈值的样本，保底最少 0.5 秒。
+///
+/// enhance=true 时额外跑 peak_normalize:扫整段找 99th percentile 绝对值(避开
+/// 敲键盘/咳嗽 spike),scale 到 0.9 × i16::MAX。只对批处理 ASR 生效 —— 流式
+/// 路径的 PCM 已经边录边发给了 ASR,追不回。
+pub fn to_wav(pcm: &[u8], enhance: bool) -> Vec<u8> {
     let trimmed = trim_silence(pcm);
     let processed = if enhance {
         peak_normalize(trimmed)
@@ -455,7 +494,10 @@ fn push_resampled(
 
 const NORMALIZE_TARGET_PEAK: f32 = 0.9 * i16::MAX as f32;
 
-/// Peak normalize:扫一�?PCM �?99th percentile 绝对�?按需放大整段�?/// �?99th percentile 而不�?max,避免偶发 spike(敲键�?麦克�?pop)�?/// 人声整体压得太小�?fn peak_normalize(pcm: &[u8]) -> Vec<u8> {
+/// Peak normalize:扫一遍 PCM 找 99th percentile 绝对值,按需放大整段。
+/// 用 99th percentile 而不是 max,避免偶发 spike(敲键盘/麦克风 pop)把
+/// 人声整体压得太小。
+fn peak_normalize(pcm: &[u8]) -> Vec<u8> {
     if pcm.len() < 4 {
         return pcm.to_vec();
     }
@@ -475,11 +517,11 @@ const NORMALIZE_TARGET_PEAK: f32 = 0.9 * i16::MAX as f32;
         .min(abs.len() - 1);
     let p99 = abs[idx_99] as f32;
 
-    // peak 已经接近满量程就不放�?放大反而增加底�?
+    // peak 已经接近满量程就不放大(放大反而增加底噪)
     if p99 >= NORMALIZE_TARGET_PEAK * 0.95 {
         return pcm.to_vec();
     }
-    // 几乎全静音时也跳�?不然会把底噪放到满量�?
+    // 几乎全静音时也跳过(不然会把底噪放到满量程)
     if p99 < 30.0 {
         return pcm.to_vec();
     }
@@ -493,9 +535,12 @@ const NORMALIZE_TARGET_PEAK: f32 = 0.9 * i16::MAX as f32;
     out
 }
 
-/// 去掉首尾静音，保底最�?0.5 秒�?/// 小端 PCM S16，无通道交织（我们只做单声道）�?fn trim_silence(pcm: &[u8]) -> &[u8] {
+/// 去掉首尾静音，保底最少 0.5 秒。
+/// 小端 PCM S16，无通道交织（我们只做单声道）。
+fn trim_silence(pcm: &[u8]) -> &[u8] {
     const THRESHOLD: i16 = 30;
-    const MIN_SAMPLES: usize = SAMPLE_RATE as usize / 2; // 0.5 �?
+    const MIN_SAMPLES: usize = SAMPLE_RATE as usize / 2; // 0.5 秒
+
     if pcm.len() < 4 {
         return pcm;
     }
@@ -508,7 +553,8 @@ const NORMALIZE_TARGET_PEAK: f32 = 0.9 * i16::MAX as f32;
         start += 1;
     }
     if start >= sample_count {
-        return pcm; // 全静音，别裁�?    }
+        return pcm; // 全静音，别裁了
+    }
     let mut end = sample_count;
     while end > start && read(end - 1).unsigned_abs() < THRESHOLD as u16 {
         end -= 1;
@@ -516,7 +562,8 @@ const NORMALIZE_TARGET_PEAK: f32 = 0.9 * i16::MAX as f32;
 
     let trimmed_count = end - start;
     if trimmed_count < MIN_SAMPLES {
-        return pcm; // 裁剪后太短，用原始数�?    }
+        return pcm; // 裁剪后太短，用原始数据
+    }
 
     &pcm[start * 2..end * 2]
 }
@@ -546,15 +593,18 @@ mod tests {
 
     #[test]
     fn trim_preserves_loud_middle() {
-        // 1秒静�?+ 1秒声�?+ 1秒静�?= 3 �?        let mut pcm = silence_pcm(16000);
+        // 1秒静音 + 1秒声音 + 1秒静音 = 3 秒
+        let mut pcm = silence_pcm(16000);
         pcm.extend(loud_pcm(16000));
         pcm.extend(silence_pcm(16000));
         let out = trim_silence(&pcm);
-        assert_eq!(out.len(), 16000 * 2); // 只剩中间 1 �?    }
+        assert_eq!(out.len(), 16000 * 2); // 只剩中间 1 秒
+    }
 
     #[test]
     fn trim_too_short_uses_original() {
-        // 100 毫秒声音，低�?0.5 秒保�?        let pcm = loud_pcm(1600);
+        // 100 毫秒声音，低于 0.5 秒保底
+        let pcm = loud_pcm(1600);
         let out = trim_silence(&pcm);
         assert_eq!(out.len(), pcm.len());
     }
@@ -575,7 +625,7 @@ mod tests {
 
     #[test]
     fn peak_normalize_scales_quiet_signal_up() {
-        // 峰值只�?~3000,应该被放大到接近 target
+        // 峰值只到 ~3000,应该被放大到接近 target
         let samples: Vec<i16> = (0..200)
             .map(|i| if i % 2 == 0 { 3000 } else { -3000 })
             .collect();
@@ -586,13 +636,14 @@ mod tests {
             .map(|s| s.unsigned_abs() as i32)
             .max()
             .unwrap();
-        // 目标 peak �?29491,允许小误�?        assert!(max > 25_000, "max should be scaled up, got {}", max);
+        // 目标 peak ≈ 29491,允许小误差
+        assert!(max > 25_000, "max should be scaled up, got {}", max);
         assert!(max <= i16::MAX as i32);
     }
 
     #[test]
     fn peak_normalize_skips_near_full_scale() {
-        // 峰值已经接近满量程,不应再放�?�?clip)
+        // 峰值已经接近满量程,不应再放大(防 clip)
         let samples: Vec<i16> = vec![30000; 100];
         let out = peak_normalize(&pcm_from_samples(&samples));
         assert_eq!(out, pcm_from_samples(&samples));
@@ -601,20 +652,21 @@ mod tests {
     #[test]
     fn peak_normalize_skips_silence() {
         // 全静音不放大(不然底噪被放到满量程)
-        let samples: Vec<i16> = vec![10; 100]; // 峰�?< 30 阈�?        let out = peak_normalize(&pcm_from_samples(&samples));
+        let samples: Vec<i16> = vec![10; 100]; // 峰值 < 30 阈值
+        let out = peak_normalize(&pcm_from_samples(&samples));
         assert_eq!(out, pcm_from_samples(&samples));
     }
 
     #[test]
     fn peak_normalize_uses_99th_percentile_not_max() {
-        // 100 个小信号 + 1 �?spike,应按小信号的 peak normalize,不被 spike 影响
+        // 100 个小信号 + 1 个 spike,应按小信号的 peak normalize,不被 spike 影响
         let mut samples: Vec<i16> = vec![3000; 100];
         samples[50] = 30_000; // 单点 spike
         let out = peak_normalize(&pcm_from_samples(&samples));
         let out_samples = read_samples(&out);
         // p99 索引 = ceil(0.99 * 100) - 1 = 98,取第 99 大的 = 3000
-        // 所�?scale = NORMALIZE_TARGET_PEAK / 3000 �?9.83,3000 �?~29491
-        // �?spike 样本应被放大到接�?target
+        // 所以 scale = NORMALIZE_TARGET_PEAK / 3000 ≈ 9.83,3000 → ~29491
+        // 非 spike 样本应被放大到接近 target
         let typical = out_samples[0].unsigned_abs() as i32;
         assert!(
             typical > 25_000,
@@ -633,7 +685,7 @@ mod tests {
 
     #[test]
     fn enhancer_compresses_loud_signal() {
-        // 连续满量程信�?compressor 应该把输出压下来,绝对�?< 1.0
+        // 连续满量程信号,compressor 应该把输出压下来,绝对值 < 1.0
         let mut e = Enhancer::default();
         // warm up
         for _ in 0..2000 {
