@@ -6196,7 +6196,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "urlencoding",
- "window-vibrancy 0.7.1",
+ "window-vibrancy 0.8.1",
  "windows 0.61.3",
 ]
 
@@ -6641,16 +6641,17 @@ dependencies = [
 
 [[package]]
 name = "window-vibrancy"
-version = "0.7.1"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "010797bd7c40396fbc59d3105089fed0885fe267a0ef4a0a4646df54e28647f6"
+checksum = "111e51caca442cafd9bab396628ac4d814880eaea4e63dfd76a12e9f342b5580"
 dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-core-foundation",
  "objc2-foundation",
+ "objc2-quartz-core",
  "raw-window-handle",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
  "windows-version",
 ]
 
