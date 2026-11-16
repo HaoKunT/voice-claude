@@ -101,7 +101,7 @@ objc = "0.2"
 # modifier、拿不到 raw 事件,做不出"双击 RightOption 长按"。handy-keys 是 Handy
 # 作者发布的独立 crate(MIT,~2000 行),已封装 macOS CGEventTap 及内部
 # modifier reconcile / TapDisabled 自愈,生产已用。
-handy-keys = "0.2"
+handy-keys = "0.3"
 
 # Windows 专用：
 # - window-vibrancy:Mica(Win11) / Acrylic(Win10) 毛玻璃,跟 macOS NSPanel 透明背景对位
@@ -124,7 +124,7 @@ windows = { version = "0.61", features = [
 ] }
 # 同 macOS:替换 tauri-plugin-global-shortcut。Win 端 handy-keys 走
 # WH_KEYBOARD_LL,普通用户权限即可。AV 误报问题留到发布前签名/白名单流程处理。
-handy-keys = "0.2"
+handy-keys = "0.3"
 
 [lints.rust]
 # objc 0.2 crate 的 msg_send! / class! 宏内部用了 #[cfg(feature = "cargo-clippy")]，
